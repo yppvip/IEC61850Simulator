@@ -1,23 +1,18 @@
 #include <QApplication>
-#include <QMainWindow>
 #include <QMessageBox>
 #include <QStatusBar>
 #include <QTimer>
 
-#include <DockManager.h>
-
+#include "ApplicationLogger.hpp"
+#include "MainWindow.hpp"
 #include "RedisAvailabilityChecker.hpp"
 
 int main(int argc, char* argv[])
 {
     QApplication application(argc, argv);
+    iec61850sim::InstallApplicationLogger();
 
-    QMainWindow mainWindow;
-    mainWindow.setWindowTitle(QStringLiteral("IEC61850Simulator"));
-    mainWindow.resize(1280, 800);
-
-    auto* dockManager = new ads::CDockManager(&mainWindow);
-    mainWindow.setCentralWidget(dockManager);
+    iec61850sim::MainWindow mainWindow;
     mainWindow.statusBar()->showMessage(QStringLiteral("正在检查 Redis 服务…"));
 
     iec61850sim::RedisAvailabilityChecker redisChecker(&mainWindow);

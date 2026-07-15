@@ -246,6 +246,27 @@ QtADS 源码保存在 `third_party/Qt-Advanced-Docking-System-5.0.0`，由项目
 
 ### 11.3 Redis 启动与连接边界
 
-`config/Redis.json` 首期包含 `host`、`port`、`startupTimeoutMs` 和 `autoStart`。健康检查以连接目标并成功执行 Redis `PING` 为准，不依赖 Windows 服务名；若已有实例在该端口正常响应，直接连接。
+`config/Redis.json` 首期包含 `host`、`port`、`startupTimeoutMs`、`autoStart` 和 `redisWorkingDirectory`。健康检查以连接目标并成功执行 Redis `PING` 为准，不依赖 Windows 服务名；若已有实例在该端口正常响应，直接连接。运行时仅读取可执行文件同级的 `bin/config/Redis.json`；该文件仅在缺失时由默认配置创建，后续构建不会覆盖用户修改。
 
-Redis 不可用时，UI 仍须启动，并弹窗提示“Redis 数据库不可用”，同时显示连接故障状态。应用不停止任何 Redis 实例。仅在 `autoStart` 启用且 `tools/Redis/RedisService.exe` 的启动参数、超时、退出码和日志行为已验证后，才允许尝试启动；启动失败同样不得阻塞 UI。
+Redis 不可用时，UI 仍须启动，并弹窗提示“Redis 数据库不可用”，同时显示连接故障状态。应用不停止任何 Redis 实例。`redisWorkingDirectory` 可使用绝对路径或相对 `bin/config/Redis.json` 的路径；程序从该目录查找 `RedisService.exe` 与 `redis.conf`，并将其作为 RedisService 的工作目录。仅在 `autoStart` 启用且目标为本机地址时，才允许启动 RedisService；启动失败同样不得阻塞 UI。
+
+## 12. 本轮已落地的基础实现
+
+### 12.1 构建与运行时部署
+
+- 根 CMake 已构建并链接 QtADS 5.0.0 动态库，Windows Debug 预设为 `windows-debug`。
+- QtADS 与 Qt 运行时 DLL 部署到 `build/windows-debug/bin/`；默认 Redis 配置部署为 `bin/config/Redis.json`。
+- 当前 Windows 验证环境为 MSYS2 MinGW64 + Qt 6；通过 `cmake --build --preset windows-debug` 构建，并使用 `ctest --preset windows-debug` 运行测试。
+
+### 12.2 Redis 与日志
+
+- `RedisAvailabilityChecker` 通过 Qt Network 异步发送 Redis RESP `PING`；连接、启动等待、可用与不可用状态均回传给 UI。
+- 本机 Redis 不可达且 `autoStart` 启用时，调用 `RedisService.exe run --config <redis.conf> --port <port>`，不停止任何 Redis 实例。
+- 全局 Qt 消息处理器将运行日志写入 `bin/logs/IEC61850Simulator.log`。
+
+### 12.3 UI 与测试
+
+- `MainWindow` 使用 ADS 管理欢迎工作区、服务器侧栏、客户端侧栏与详情 Dock；新建实体目前仅为 UI 占位，不创建 IEC 61850 通信实体。
+- 文件选择仅校验 SCL 扩展名，不解析文件内容。
+- ADS 静态 Dock 布局通过 `QSettings` 保存与恢复；需要先持久化服务器/客户端实体，才能安全恢复动态详情 Dock。
+- 已新增 `RedisConfigurationTest`，覆盖 Redis 配置的有效读取、相对工作目录解析和非法端口拒绝。

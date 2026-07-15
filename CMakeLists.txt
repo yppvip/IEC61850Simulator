@@ -12,8 +12,8 @@ if(MSVC)
     add_compile_options(/utf-8)
 endif()
 
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Gui Network Widgets)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Gui Network Widgets)
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Gui Network Test Widgets)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Gui Network Test Widgets)
 
 # Keep ADS version discovery independent of the vendored source directory's Git state.
 set(ADS_VERSION "5.0.0" CACHE STRING "Qt Advanced Docking System version" FORCE)
@@ -26,13 +26,18 @@ add_executable(${AppTarget}
     app/ui/Main.cpp
     src/core/RedisAvailabilityChecker.cpp
     src/core/RedisAvailabilityChecker.hpp
+    src/core/ApplicationLogger.cpp
+    src/core/ApplicationLogger.hpp
     src/core/RedisConfiguration.cpp
     src/core/RedisConfiguration.hpp
+    src/gui/MainWindow.cpp
+    src/gui/MainWindow.hpp
 )
 
 target_include_directories(${AppTarget}
     PRIVATE
         src/core
+        src/gui
 )
 
 target_link_libraries(${AppTarget}
@@ -78,3 +83,15 @@ install(FILES $<TARGET_FILE:qtadvanceddocking-qt${QT_VERSION_MAJOR}>
     OPTIONAL
 )
 install(FILES config/Redis.json DESTINATION ${CMAKE_INSTALL_BINDIR}/config)
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(RedisConfigurationTest
+        tests/unit/RedisConfigurationTest.cpp
+        src/core/RedisConfiguration.cpp
+        src/core/RedisConfiguration.hpp
+    )
+    target_include_directories(RedisConfigurationTest PRIVATE src/core)
+    target_link_libraries(RedisConfigurationTest PRIVATE Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Test)
+    add_test(NAME RedisConfigurationTest COMMAND RedisConfigurationTest)
+endif()

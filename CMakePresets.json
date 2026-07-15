@@ -30,5 +30,14 @@
       "name": "windows-debug",
       "configurePreset": "windows-debug"
     }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-debug",
+      "configurePreset": "windows-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
   ]
 }

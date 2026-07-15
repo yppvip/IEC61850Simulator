@@ -13,5 +13,6 @@ struct RedisConfiguration
     QString redisWorkingDirectory;
 
     [[nodiscard]] static RedisConfiguration Load(QString* errorMessage = nullptr);
+    [[nodiscard]] static RedisConfiguration LoadFromFile(const QString& configurationPath, QString* errorMessage = nullptr);
 };
 } // namespace iec61850sim

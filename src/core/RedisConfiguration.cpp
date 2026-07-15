@@ -30,6 +30,11 @@ RedisConfiguration RedisConfiguration::Load(QString* errorMessage)
         return {};
     }
 
+    return LoadFromFile(configurationPath, errorMessage);
+}
+
+RedisConfiguration RedisConfiguration::LoadFromFile(const QString& configurationPath, QString* errorMessage)
+{
     QFile configurationFile(configurationPath);
     if (!configurationFile.open(QIODevice::ReadOnly))
     {

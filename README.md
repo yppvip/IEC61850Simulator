@@ -8,7 +8,13 @@ IEC61850Simulator 是一个基于 C++、Qt/QML 和 CMake 开发的 IEC 61850 仿
 
 ## 当前开发阶段
 
-当前正在建立主程序 UI 骨架：使用 `QMainWindow` 与 Qt Advanced Docking System（ADS）提供可自由停靠的服务器、客户端和详情工作区；SCL 文件选择、服务器/客户端创建和 Redis 可用性提示先以最小可运行链路实现。
+主程序 UI 骨架已完成：使用 `QMainWindow` 与 Qt Advanced Docking System（ADS）提供可自由停靠的服务器、客户端和详情工作区。当前已落地的功能包括：
+
+- 文件菜单可选择并校验 ICD、SCD、CID、CCD 文件；尚未解析 SCL 内容。
+- 工具栏可创建服务器和客户端占位实体，并在侧栏和详情 Dock 中显示状态。
+- Redis 通过异步 `PING` 检查可用性；不可用时不阻止 UI 启动并给出提示。
+- ADS 静态布局在退出时保存、下次启动时恢复；动态详情 Dock 暂不跨会话恢复。
+- 日志输出到可执行文件同级的 `logs/IEC61850Simulator.log`。
 
 Redis 连接配置位于 `config/Redis.json`。应用以其中的 `host:port` 执行 Redis `PING` 检查；Redis 不可用不会阻止 UI 启动，但会显示“Redis 数据库不可用”。详细的调用边界和实施顺序见 [AGENTS.md](AGENTS.md)。
 
@@ -175,8 +181,8 @@ cmake --build --preset windows-debug
 
 若在 VSCode 中使用 CMake Tools，需从 MSYS2 MinGW64 终端启动 VSCode，或显式为 CMake Tools 配置同一套 MinGW64 环境，使其能找到 `/mingw64` 下的编译器、Ninja 和 Qt。
 
-后续测试目标加入后，仍通过 `CMakePresets.json` 统一入口：
+当前 Redis 配置单元测试通过 `CMakePresets.json` 统一执行：
 
 ```bash
-ctest --preset <test-preset>
+ctest --preset windows-debug
 ```
