@@ -19,6 +19,9 @@ compile_commands.json
 *.pdb
 *.ilk
 
+# Local QtADS compatibility cache; runtime artifacts are deployed from build trees.
+/tools/QtADS/
+
 # Qt generated files
 *_autogen/
 .qtc_clangd/

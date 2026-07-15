@@ -6,6 +6,12 @@ IEC61850Simulator 是一个基于 C++、Qt/QML 和 CMake 开发的 IEC 61850 仿
 
 > 项目当前处于工程骨架设计阶段，协议能力、依赖版本及交付方式尚需逐步落实。
 
+## 当前开发阶段
+
+当前正在建立主程序 UI 骨架：使用 `QMainWindow` 与 Qt Advanced Docking System（ADS）提供可自由停靠的服务器、客户端和详情工作区；SCL 文件选择、服务器/客户端创建和 Redis 可用性提示先以最小可运行链路实现。
+
+Redis 连接配置位于 `config/Redis.json`。应用以其中的 `host:port` 执行 Redis `PING` 检查；Redis 不可用不会阻止 UI 启动，但会显示“Redis 数据库不可用”。详细的调用边界和实施顺序见 [AGENTS.md](AGENTS.md)。
+
 ## 技术栈
 
 - C++：应用主框架、IEC 61850 报文与业务处理、Qt 集成。
@@ -135,12 +141,42 @@ build/<preset>/
 
 ## 构建
 
-项目尚未提供可用的 CMake 目标。完成工具链和依赖选型后，建议通过 `CMakePresets.json` 统一开发与 CI 构建入口：
+当前 Windows 开发环境使用 **MSYS2 MinGW64** 工具链。必须使用 MSYS2 安装的 Qt 和 MinGW，不要将其与 Qt Online Installer 提供的 MinGW 或 Qt 二进制混用，以避免 C++ ABI 与运行时不兼容。
 
-```powershell
-cmake --preset <configure-preset>
-cmake --build --preset <build-preset>
-ctest --preset <test-preset>
+在 **MSYS2 MinGW64** 终端安装依赖：
+
+```bash
+pacman -Syu
+pacman -S --needed \
+  mingw-w64-x86_64-toolchain \
+  mingw-w64-x86_64-cmake \
+  mingw-w64-x86_64-ninja \
+  mingw-w64-x86_64-qt6-base
 ```
 
-具体预设名称将在构建骨架落地后补充。
+从同一个 MSYS2 MinGW64 终端配置并构建 Debug 版本：
+
+```bash
+cd /e/Code/IEC61850Simulator
+cmake --preset windows-debug -DCMAKE_PREFIX_PATH=/mingw64
+cmake --build --preset windows-debug
+```
+
+可执行文件输出到 `build/windows-debug/bin/`。CMake 会部署 QtADS 动态库；首次本机运行或准备分发时，还需要部署 Qt 的平台插件：
+
+```bash
+/mingw64/bin/windeployqt.exe \
+/e/Code/IEC61850Simulator/build/windows-debug/bin/IEC61850Simulator.exe
+```
+
+运行时 Redis 配置固定从可执行文件同级的 `config/Redis.json` 读取，例如 `build/windows-debug/bin/config/Redis.json`。该文件只会在首次构建时由仓库中的默认配置创建；之后可直接修改它，后续构建不会覆盖本地修改。修改后重启程序使新连接参数生效。
+
+`redisWorkingDirectory` 控制 `RedisService.exe`、`redis.conf` 和 Redis 的工作目录。它支持绝对路径，也支持相对 `bin/config/Redis.json` 的路径；默认的 `../../../../tools/Redis` 对应本项目的 Windows Debug 构建目录。
+
+若在 VSCode 中使用 CMake Tools，需从 MSYS2 MinGW64 终端启动 VSCode，或显式为 CMake Tools 配置同一套 MinGW64 环境，使其能找到 `/mingw64` 下的编译器、Ninja 和 Qt。
+
+后续测试目标加入后，仍通过 `CMakePresets.json` 统一入口：
+
+```bash
+ctest --preset <test-preset>
+```

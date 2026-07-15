@@ -1,0 +1,7 @@
+{
+  "host": "127.0.0.1",
+  "port": 6379,
+  "startupTimeoutMs": 5000,
+  "autoStart": true,
+  "redisWorkingDirectory": "../../../../tools/Redis"
+}

@@ -231,3 +231,21 @@ IEC61850Simulator/
 - 使用 `.editorconfig`、`.gitattributes`、`.clang-format`、`.clang-tidy` 和 QML lint 固化规则。
 - 测试至少覆盖领域模型、协议适配、消息序列化兼容、Redis 重连、客户端/服务端回环及 QML 基础交互。
 - 所有外部 SCL、配置和脚本输入均需校验；Python 扩展应显式启用并记录安全假设。
+
+## 11. 已确认的首期 UI 与 Redis 决策
+
+### 11.1 UI 范围
+
+首期主程序采用 `QMainWindow + ADS`。ADS 管理服务器列表、客户端列表和详情工作区等 Dock；不得与 `QMainWindow::addDockWidget()` 混用来管理同一批 Dock。首期不引入复杂 QML/MDI 页面，服务器与客户端详情以 Widgets 占位，待领域模型稳定后再按需用 `QQuickWidget` 承载 QML。
+
+首期提供文件菜单（仅选择并校验 `.icd`、`.scd`、`.cid`、`.ccd`）、新建服务器/客户端工具栏按钮、两类状态列表、详情占位区、状态栏及 ADS 布局保存/恢复。文件选择不等同于 SCL 解析或 IEC 61850 服务创建。
+
+### 11.2 QtADS 构建产物
+
+QtADS 源码保存在 `third_party/Qt-Advanced-Docking-System-5.0.0`，由项目 CMake 构建并链接。其 DLL 作为运行时依赖部署到 `build/<preset>/bin/` 或安装目录的 `bin/`；不提交构建产物。若需要 `tools/QtADS/`，该目录仅为本机兼容缓存并由 Git 忽略。
+
+### 11.3 Redis 启动与连接边界
+
+`config/Redis.json` 首期包含 `host`、`port`、`startupTimeoutMs` 和 `autoStart`。健康检查以连接目标并成功执行 Redis `PING` 为准，不依赖 Windows 服务名；若已有实例在该端口正常响应，直接连接。
+
+Redis 不可用时，UI 仍须启动，并弹窗提示“Redis 数据库不可用”，同时显示连接故障状态。应用不停止任何 Redis 实例。仅在 `autoStart` 启用且 `tools/Redis/RedisService.exe` 的启动参数、超时、退出码和日志行为已验证后，才允许尝试启动；启动失败同样不得阻塞 UI。
