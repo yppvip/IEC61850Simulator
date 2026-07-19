@@ -12,15 +12,11 @@ compile_commands.json
 # Build products
 *.obj
 *.o
-*.exe
-*.dll
-*.so
 *.dylib
 *.pdb
 *.ilk
 
 # Local QtADS compatibility cache; runtime artifacts are deployed from build trees.
-/tools/QtADS/
 
 # Qt generated files
 *_autogen/
@@ -28,7 +24,6 @@ compile_commands.json
 
 # Python
 __pycache__/
-*.py[cod]
 .venv/
 venv/
 .pytest_cache/
