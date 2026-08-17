@@ -160,6 +160,17 @@ pacman -S --needed \
   mingw-w64-x86_64-qt6-base
 ```
 
+如需使用 UCRT64 工具链，请在 **MSYS2 UCRT64** 终端安装对应依赖：
+
+```bash
+pacman -Syu
+pacman -S --needed \
+  mingw-w64-ucrt-x86_64-toolchain \
+  mingw-w64-ucrt-x86_64-cmake \
+  mingw-w64-ucrt-x86_64-ninja \
+  mingw-w64-ucrt-x86_64-qt6-base
+```
+
 从同一个 MSYS2 MinGW64 终端配置并构建 Debug 版本：
 
 ```bash
@@ -175,6 +186,9 @@ cmake --build --preset windows-debug
 /e/Code/IEC61850Simulator/build/windows-debug/bin/IEC61850Simulator.exe
 ```
 
+`scripts/BuildMinGW64.sh` 和 `scripts/BuildUcrt64.sh` 会在构建完成后自动执行
+`windeployqt`，因此使用脚本构建时无需再手动执行上述命令。
+
 运行时 Redis 配置固定从可执行文件同级的 `config/Redis.json` 读取，例如 `build/windows-debug/bin/config/Redis.json`。该文件只会在首次构建时由仓库中的默认配置创建；之后可直接修改它，后续构建不会覆盖本地修改。修改后重启程序使新连接参数生效。
 
 `redisWorkingDirectory` 控制 `RedisService.exe`、`redis.conf` 和 Redis 的工作目录。它支持绝对路径，也支持相对 `bin/config/Redis.json` 的路径；默认的 `../../../../tools/Redis` 对应本项目的 Windows Debug 构建目录。
@@ -186,3 +200,6 @@ cmake --build --preset windows-debug
 ```bash
 ctest --preset windows-debug
 ```
+
+也可在对应的 MSYS2 终端直接运行 `./scripts/BuildMinGW64.sh` 或
+`./scripts/BuildUcrt64.sh`。脚本使用相互独立的构建目录，避免两种工具链的产物混用。
