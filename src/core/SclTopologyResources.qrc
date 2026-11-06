@@ -1,0 +1,5 @@
+<RCC>
+  <qresource prefix="/scl-topology">
+    <file>SclTopology.html</file>
+  </qresource>
+</RCC>

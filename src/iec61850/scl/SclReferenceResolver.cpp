@@ -119,12 +119,12 @@ private:
     void record(Rule rule, Reference ref, Match match, const QString &detail = {});
     void record(Rule rule, LinkKind kind, NodeId id, const QString &declared, Match match);
     QString domain(NodeId ld) const;
-    Match locateLn(NodeId server, const QString &ld, const QString &ln) const;
+    Match locateLn(NodeId server, const QString &ld, const QString &ln, FcdaTrace *trace = nullptr) const;
     Match serverFor(NodeId ap) const;
     Match sourceLn(NodeId ied, const QString &ld, const QString &ln) const;
-    Match hasFc(NodeId type, const QString &fc) const;
+    Match hasFc(NodeId type, const QString &fc, FcdaTrace *trace) const;
     Match object(NodeId ln, const QString &doName, const QString &daName, const QString &fc,
-                 const QString &ix, Reference &ref, QString &detail) const;
+                 const QString &ix, Reference &ref, QString &detail, FcdaTrace *trace = nullptr) const;
     void fcda(NodeId id, int ordinal);
     void control(NodeId id);
     void communication(NodeId id);
@@ -383,12 +383,19 @@ QString Analysis::domain(NodeId ld) const
     return attr(ied, "name") + instance;
 }
 
-Match Analysis::locateLn(NodeId server, const QString &ld, const QString &ln) const
+Match Analysis::locateLn(NodeId server, const QString &ld, const QString &ln, FcdaTrace *trace) const
 {
     auto device = lookup(server, QStringLiteral("LDevice"), ld);
     if (device.target() == NoNode)
         return device;
-    return lookup(device.target(), QStringLiteral("LN"), ln);
+    if (trace) {
+        trace->steps.push_back({FcdaField::LdInst, device.target()});
+        trace->stoppedAt = FcdaField::LogicalNode;
+    }
+    auto logical = lookup(device.target(), QStringLiteral("LN"), ln);
+    if (trace && logical.target() != NoNode)
+        trace->steps.push_back({FcdaField::LogicalNode, logical.target()});
+    return logical;
 }
 
 Match Analysis::serverFor(NodeId ap) const
@@ -452,7 +459,7 @@ Match Analysis::sourceLn(NodeId ied, const QString &ld, const QString &ln) const
     return matched(std::move(candidates));
 }
 
-Match Analysis::hasFc(NodeId type, const QString &fc) const
+Match Analysis::hasFc(NodeId type, const QString &fc, FcdaTrace *trace) const
 {
     QSet<NodeId> seen;
     std::vector<NodeId> pending{type};
@@ -469,8 +476,11 @@ Match Analysis::hasFc(NodeId type, const QString &fc) const
         blocked |= cyclicTypes.contains(definition);
         for (auto child = node(definition).firstChild; child != NoNode; child = node(child).nextSibling) {
             checkpoint(m_task);
-            if (kind(child, "DA") && attr(child, "fc") == fc)
+            if (kind(child, "DA") && attr(child, "fc") == fc) {
+                if (trace)
+                    trace->steps.push_back({FcdaField::Fc, child});
                 return matched({type});
+            }
             if (kind(child, "SDO")) {
                 const auto target = typeTargets.value(child, {LinkState::Blocked}).target();
                 if (target == NoNode)
@@ -484,8 +494,10 @@ Match Analysis::hasFc(NodeId type, const QString &fc) const
 }
 
 Match Analysis::object(NodeId ln, const QString &doName, const QString &daName, const QString &fc,
-                       const QString &ix, Reference &ref, QString &detail) const
+                       const QString &ix, Reference &ref, QString &detail, FcdaTrace *trace) const
 {
+    const auto stage = [trace](FcdaField field) { if (trace) trace->stoppedAt = field; };
+    stage(FcdaField::DoName);
     if (doName.isEmpty())
         return {LinkState::Unsupported};
     const auto doParts = doName.split('.');
@@ -499,6 +511,7 @@ Match Analysis::object(NodeId ln, const QString &doName, const QString &daName, 
     int inlineAt = -1;
     int inlineIndex = -1;
     int ixIndex = -1;
+    stage(FcdaField::Ix);
     if (!ix.isNull() && !unsignedNumber(ix, ixIndex)) {
         detail = QStringLiteral("Invalid FCDA ix.");
         return {LinkState::Missing};
@@ -518,14 +531,18 @@ Match Analysis::object(NodeId ln, const QString &doName, const QString &daName, 
         return {LinkState::Missing};
     }
 
+    stage(FcdaField::DoName);
     auto owner = typeTargets.value(ln, {LinkState::Blocked}).target();
     if (owner == NoNode)
         return {LinkState::Blocked};
     NodeId member = NoNode;
     std::vector<std::pair<int, int>> arrays;
+    QList<NodeId> path;
     QSet<NodeId> visitedTypes;
     QString actualFc = fc;
     for (int i = 0; i < parts.size(); ++i) {
+        const auto field = i < doParts.size() ? FcdaField::DoName : FcdaField::DaName;
+        stage(field);
         if (cyclicTypes.contains(owner)) {
             if (visitedTypes.contains(owner))
                 return {LinkState::Blocked};
@@ -556,6 +573,12 @@ Match Analysis::object(NodeId ln, const QString &doName, const QString &daName, 
             return found;
         }
         member = found.target();
+        if (trace) {
+            path.push_back(member);
+            trace->steps.push_back({field, member});
+            if (i == doParts.size())
+                trace->steps.push_back({FcdaField::Fc, member});
+        }
         int count = 0;
         const auto countValue = attr(member, "count");
         if (!countValue.isNull() && !unsignedNumber(countValue, count))
@@ -573,10 +596,11 @@ Match Analysis::object(NodeId ln, const QString &doName, const QString &daName, 
         }
     }
     if (daParts.isEmpty() && !fc.isEmpty()) {
+        stage(FcdaField::Fc);
         const auto type = typeTargets.value(member, {LinkState::Blocked}).target();
         if (type == NoNode)
             return {LinkState::Blocked};
-        const auto fcMatch = hasFc(type, fc);
+        const auto fcMatch = hasFc(type, fc, trace);
         if (fcMatch.state != LinkState::Resolved) {
             if (fcMatch.state == LinkState::Missing)
                 detail = QStringLiteral("The referenced DO contains no member with the declared FC.");
@@ -586,6 +610,7 @@ Match Analysis::object(NodeId ln, const QString &doName, const QString &daName, 
 
     int selected = inlineAt;
     int index = inlineAt >= 0 ? inlineIndex : ixIndex;
+    stage(FcdaField::Ix);
     if (selected < 0 && index >= 0) {
         if (arrays.size() > 1)
             return {LinkState::Unsupported};
@@ -604,6 +629,8 @@ Match Analysis::object(NodeId ln, const QString &doName, const QString &daName, 
         if (array.first != selected && array.first + 1 < parts.size())
             return {LinkState::Unsupported};
     }
+    if (trace && selected >= 0)
+        trace->steps.push_back({FcdaField::Ix, path[selected]});
 
     ref.logicalNode = ln;
     ref.arrayIndex = index;
@@ -639,13 +666,19 @@ void Analysis::fcda(NodeId id, int ordinal)
     Reference ref{LinkKind::Fcda, LinkState::Blocked, id,
                   ldInst + '/' + prefix + lnClass + lnInst + '.' + doName + '.' + daName + " [" + fc + ']'};
     ref.memberOrdinal = ordinal;
-    auto target = locateLn(server, ldInst.isEmpty() ? attr(ld, "inst") : ldInst, prefix + lnClass + lnInst);
+    FcdaTrace trace;
+    const auto ied = ancestor(ld, "IED");
+    if (ied != NoNode)
+        trace.steps.push_back({FcdaField::Ied, ied});
+    auto target = locateLn(server, ldInst.isEmpty() ? attr(ld, "inst") : ldInst, prefix + lnClass + lnInst, &trace);
     QString detail;
     if (lnClass.isEmpty() || fc.isEmpty()) {
+        trace.stoppedAt = lnClass.isEmpty() ? FcdaField::LogicalNode : FcdaField::Fc;
         target = {LinkState::Unsupported};
     } else if (target.target() != NoNode) {
-        target = object(target.target(), doName, daName, fc, attr(id, "ix"), ref, detail);
+        target = object(target.target(), doName, daName, fc, attr(id, "ix"), ref, detail, &trace);
     }
+    result.fcdaTraces.insert(id, std::move(trace));
     record(FcdaRule, std::move(ref), std::move(target), detail);
 }
 

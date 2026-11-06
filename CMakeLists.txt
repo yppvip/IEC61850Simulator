@@ -43,7 +43,9 @@ target_link_libraries(SclAnalysis PUBLIC Qt${QT_VERSION_MAJOR}::Core)
 add_library(SclApplication STATIC src/core/SclAnalysisService.cpp src/core/SclAnalysisService.hpp
     src/core/SclBrowseIndex.cpp src/core/SclBrowseIndex.hpp
     src/core/SclSearch.cpp src/core/SclSearch.hpp
-    src/core/SclIssueExport.cpp src/core/SclIssueExport.hpp)
+    src/core/SclIssueExport.cpp src/core/SclIssueExport.hpp
+    src/core/SclTopology.cpp src/core/SclTopology.hpp src/core/SclTopologyResources.qrc)
+set_target_properties(SclApplication PROPERTIES AUTORCC ON)
 target_include_directories(SclApplication PUBLIC src/core)
 target_link_libraries(SclApplication PUBLIC SclAnalysis PRIVATE Qt${QT_VERSION_MAJOR}::Concurrent)
 
@@ -71,6 +73,9 @@ add_executable(${AppTarget}
     src/gui/MainWindow.hpp
     src/gui/SclWorkspace.cpp
     src/gui/SclWorkspace.hpp
+    src/gui/SclSourcePreview.cpp
+    src/gui/SclSourcePreview.hpp
+    src/gui/SclWorkspaceTopology.cpp
     src/gui/SclSearchSession.cpp
     src/gui/SclSearchSession.hpp
     src/gui/SclWorkspaceSearch.cpp
@@ -158,7 +163,8 @@ if(BUILD_TESTING)
         add_executable(MainWindowBaselineTest
             tests/integration/MainWindowBaselineTest.cpp
             src/gui/MainWindow.cpp src/gui/MainWindow.hpp src/gui/SclWorkspace.cpp src/gui/SclWorkspace.hpp
-            src/gui/SclSearchSession.cpp src/gui/SclSearchSession.hpp src/gui/SclWorkspaceSearch.cpp)
+            src/gui/SclSearchSession.cpp src/gui/SclSearchSession.hpp src/gui/SclWorkspaceSearch.cpp
+            src/gui/SclSourcePreview.cpp src/gui/SclSourcePreview.hpp src/gui/SclWorkspaceTopology.cpp)
         target_include_directories(MainWindowBaselineTest PRIVATE src/gui)
         target_link_libraries(MainWindowBaselineTest PRIVATE Qt${QT_VERSION_MAJOR}::Widgets
             Qt${QT_VERSION_MAJOR}::Test Qt${QT_VERSION_MAJOR}::Concurrent SclApplication ads::qtadvanceddocking-qt${QT_VERSION_MAJOR})

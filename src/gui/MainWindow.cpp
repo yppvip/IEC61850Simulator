@@ -216,8 +216,10 @@ void MainWindow::ShowSclHelp()
 {
     QMessageBox help(QMessageBox::Information, QStringLiteral("SCL 使用帮助"),
         QStringLiteral("在「文件」中打开 ICD、SCD、CID 或 CCD。分析完成后进入工作台。\n\n"
-            "在报告表选中报告，通过「引用与使用方」跳到数据集。选择 FCDA 后可继续查看类型和原文。\n"
-            "Ctrl+F 聚焦搜索，Enter 立即查询，Esc 取消，Alt+左右方向键浏览历史。\n"
+            "用方向键在树或表格中选择对象，另一侧会跟随定位。面包屑可返回祖先，窄窗时可点「详情」收起右栏。\n"
+            "Ctrl+F 聚焦搜索，Enter 立即查询或打开选中的结果，Esc 取消搜索，Alt+左右方向键浏览历史。\n\n"
+            "在「引用与使用方」中沿报告、数据集和 FCDA 追查对象。点「打开引用拓扑」在默认浏览器查看本地快照。\n"
+            "浏览器中可用 Tab 和 Enter 操作关系列表及「以此为焦点」。重载后请从工作台重新打开拓扑。\n"
             "使用「导出问题」保存校验摘要。「概览」列出规则执行范围和完整 XSD 的执行状态。\n\n"
             "「文件 → 关闭 SCL 文档」释放当前分析会话。「视图」可切回仿真或恢复默认布局。\n"
             "SCL 分析支持离线运行。"), QMessageBox::Ok, this);

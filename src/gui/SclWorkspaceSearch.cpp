@@ -92,6 +92,7 @@ public:
 
     void More() { Show(qMin(total(), m_visible + PageSize)); }
     int total() const { return int(m_hits.size()); }
+    const SclHit& Hit(int row) const { return m_hits[row]; }
     int rowCount(const QModelIndex& parent = {}) const override { return parent.isValid() ? 0 : m_visible; }
     int columnCount(const QModelIndex& = {}) const override { return 5; }
 
@@ -234,8 +235,12 @@ void SclWorkspace::AttachSearchResults()
     m_results->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_results->setSelectionMode(QAbstractItemView::SingleSelection);
     m_results->setAlternatingRowColors(true);
+    m_results->setShowGrid(false);
+    m_results->setAccessibleName(QStringLiteral("搜索结果"));
     m_results->setWordWrap(false);
     m_results->verticalHeader()->hide();
+    m_results->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    m_results->verticalHeader()->setDefaultSectionSize(qMax(28, m_results->fontMetrics().height() + 8));
     m_results->horizontalHeader()->setDefaultSectionSize(110);
     m_resultsModel = new SclResultsModel(m_results);
     m_results->setModel(m_resultsModel);
@@ -243,8 +248,13 @@ void SclWorkspace::AttachSearchResults()
     m_results->setColumnWidth(2, 250);
     m_tables->addTab(m_results, QStringLiteral("搜索结果"));
     connect(m_results, &QTableView::activated, this, [this](const QModelIndex& index) {
-        if (index.isValid())
-            Select(index.data(Qt::UserRole).toInt());
+        if (!index.isValid())
+            return;
+        const auto hit = m_resultsModel->Hit(index.row());
+        if (hit.field == MatchField::Finding)
+            SelectFinding(hit.detail, true, true);
+        else
+            Select(hit.node, true);
     });
     connect(m_tables, &QTabWidget::currentChanged, this, [this] {
         if (m_searchMode->currentIndex() == 1 && !m_restoring)

@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Task2 · SCL 工作台视觉小样</title>
+<style>
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  :root { color-scheme: light; --surface: #fff; --canvas: #f1f4f8; --line: #dbe3ec;
+    --text: #182635; --muted: #526378; --accent: #2355a4; --selection: #e8f0ff;
+    font: 14px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif; color: var(--text); }
+  body { margin: 0; background: var(--canvas); }
+  .sample { max-width: 1440px; margin: auto; padding: 24px; }
+  h1, h2, p { margin: 0; }
+  h1 { font-size: 24px; margin-bottom: 8px; }
+  h2 { font-size: 15px; }
+  .muted { color: var(--muted); }
+  .states, .top, .tabs, .path, .summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .states { margin: 16px 0 12px; }
+  button { font: inherit; color: inherit; background: white; border: 1px solid var(--line);
+    border-radius: 5px; padding: 4px 10px; cursor: pointer; }
+  button[aria-pressed="true"] { background: var(--selection); color: var(--accent); border-color: #9ab4de; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .frame { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .top, .summary { padding: 12px 16px; }
+  .top { justify-content: space-between; border-bottom: 1px solid var(--line); }
+  .summary { border-top: 1px solid var(--line); }
+  .grid { display: grid; grid-template-columns: minmax(144px, 22fr) minmax(280px, 45fr) minmax(210px, 33fr); min-height: 360px; }
+  .grid > * { padding: 16px; min-width: 0; }
+  .grid > * + * { border-left: 1px solid var(--line); }
+  .tree { margin: 12px 0; }
+  .tree div { min-height: 30px; padding: 4px 8px 4px calc(8px + var(--depth, 0) * 12px); }
+  .selected { background: var(--selection); color: var(--accent); }
+  .badge { display: inline-block; font-size: 12px; font-weight: 600; border-radius: 4px; padding: 1px 5px; }
+  .ld { background: #e6efff; color: #2355a4; }
+  .ln { background: #ddf4f0; color: #13675e; }
+  .obj { background: #f1e8ff; color: #60378a; }
+  .attr { background: #edf0f4; color: #415367; }
+  .tabs { border-bottom: 1px solid var(--line); margin: 12px 0; gap: 14px; }
+  .tabs span { padding-bottom: 7px; }
+  .active { border-bottom: 2px solid var(--accent); color: var(--accent); font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; text-align: left; }
+  th, td { padding: 5px 8px; border-bottom: 1px solid var(--line); }
+  th { background: #f7f9fc; font-weight: 600; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; }
+  dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
+  .notice { background: #f7f9fc; border: 1px solid var(--line); border-radius: 6px; padding: 16px; margin-top: 12px; }
+  .failure { background: #fff3ee; color: #8b341d; border-color: #ecc4b5; }
+  .action { color: var(--accent); font-weight: 600; }
+  .legend { margin-top: 12px; }
+  @media (max-width: 780px) {
+    .sample { padding: 12px; }
+    .grid { grid-template-columns: minmax(118px, 1fr) minmax(0, 2fr); }
+    .grid > aside:last-child { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); }
+  }
+</style>
+<main class="sample">
+  <h1>SCL 分析工作台</h1>
+  <p class="muted">T2.0 视觉小样 · 仅使用自建样本字段 · 下方按钮切换状态</p>
+  <div class="states" aria-label="小样状态">
+    <button type="button" data-state="normal" aria-pressed="true">正常</button>
+    <button type="button" data-state="empty" aria-pressed="false">尚未打开</button>
+    <button type="button" data-state="failure" aria-pressed="false">加载失败</button>
+    <button type="button" data-state="filtered" aria-pressed="false">筛选无匹配</button>
+  </div>
+  <section class="frame" aria-label="工作台预览">
+    <header class="top"><strong id="file">Minimal.scd</strong><span class="muted">全局搜索　·　后退 / 前进</span></header>
+    <div class="grid">
+      <aside>
+        <h2>导航树</h2>
+        <div class="tree" id="tree">
+          <div>▾ IED_TEST</div>
+          <div style="--depth:1">▾ <span class="badge ld">LD</span> LD0</div>
+          <div style="--depth:2">▾ <span class="badge ln">LN0</span> LLN0</div>
+          <div style="--depth:3">数据集 dsEvents</div>
+          <div class="selected" style="--depth:3">报告 brcbEvents</div>
+        </div>
+        <p id="empty-tree" class="muted" hidden>打开 SCL 后显示设备结构</p>
+      </aside>
+      <section>
+        <div class="path" id="path"><span>IED_TEST</span> › <span class="badge ld">LD0</span> › <span class="badge ln">LLN0</span> › brcbEvents</div>
+        <div class="tabs"><span>概览</span><span>数据集</span><span class="active">报告</span><span>对象</span><span>问题</span></div>
+        <div id="notice" class="notice" role="status" hidden></div>
+        <div id="rows">
+          <p class="muted">表格筛选　·　可见 2 / 共 2</p>
+          <table>
+            <thead><tr><th scope="col">报告定义</th><th scope="col">原始 rptID</th></tr></thead>
+            <tbody><tr class="selected"><td>brcbEvents</td><td>TEST_EVENTS</td></tr><tr><td>urcbEvents</td><td>未声明</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+      <aside>
+        <h2 id="detail-title">brcbEvents · 报告定义</h2>
+        <div class="tabs"><span class="active">属性</span><span>引用</span><span>原文</span></div>
+        <div id="details">
+          <dl><dt>原始 rptID</dt><dd><code>TEST_EVENTS</code></dd><dt>声明的数据集</dt><dd><code>dsEvents</code></dd>
+            <dt>解析状态</dt><dd>已解析</dd><dt>原文位置</dt><dd>第 28 行</dd></dl>
+          <span class="action">↗ 打开引用拓扑</span>
+        </div>
+      </aside>
+    </div>
+    <footer class="summary muted" id="summary">XML 可读　·　内部一致性检查已执行　·　完整 XSD 未执行</footer>
+  </section>
+  <p class="legend muted">层级配色　<span class="badge ld">LD</span> <span class="badge ln">LN / LN0</span> <span class="badge obj">DO</span> <span class="badge attr">DA</span></p>
+</main>
+<script>
+  const states = {
+    normal: { file: "Minimal.scd", message: "" },
+    empty: { file: "尚未打开 SCL", message: "打开 ICD、SCD、CID 或 CCD 文件后开始分析。" },
+    failure: { file: "Minimal.scd · 保留已打开文档", message: "Truncated.scd 加载失败。XML 意外结束，可查看失败文件的原文。" },
+    filtered: { file: "Minimal.scd", message: "筛选后 0 / 2 行。目标被当前筛选隐藏，可清除筛选后定位。" }
+  };
+  const get = id => document.getElementById(id);
+  const controls = document.querySelectorAll("[data-state]");
+  for (const button of controls) {
+    button.addEventListener("click", () => {
+      const name = button.dataset.state;
+      const { file, message } = states[name];
+      const empty = name === "empty";
+      for (const control of controls) control.setAttribute("aria-pressed", String(control === button));
+      get("file").textContent = file;
+      get("notice").textContent = message;
+      get("notice").hidden = !message;
+      get("notice").classList.toggle("failure", name === "failure");
+      get("rows").hidden = empty || name === "filtered";
+      for (const id of ["tree", "path", "details", "summary"]) get(id).hidden = empty;
+      get("empty-tree").hidden = !empty;
+      get("detail-title").textContent = empty ? "尚未选择对象" : "brcbEvents · 报告定义";
+    });
+  }
+</script>
+</html>

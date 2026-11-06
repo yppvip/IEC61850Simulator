@@ -4,6 +4,9 @@
 #include <utility>
 
 namespace Scl {
+namespace {
+constexpr int MaxPreviewBytes = 8192;
+}
 
 SourceIndex::SourceIndex(QByteArray bytes, int maxLines, TaskControl *task) : m_bytes(std::move(bytes))
 {
@@ -70,7 +73,6 @@ SourceLine SourceIndex::line(int number) const
 {
     if (number < 1 || number > lineCount())
         return {};
-    constexpr int MaxPreviewBytes = 8192;
     const int start = m_lines[number - 1];
     const int end = number < lineCount() ? m_lines[number] : int(m_bytes.size());
     int stop = std::min(end, start + MaxPreviewBytes);
@@ -89,6 +91,18 @@ SourceLine SourceIndex::line(int number) const
     for (int i = start; i + 1 < stop; i += 2)
         text.append(QChar(ushort(unit(i))));
     return {text, stop < end};
+}
+
+int SourceIndex::previewColumn(SourceLocation location) const
+{
+    if (location.line < 1 || location.line > lineCount())
+        return -1;
+    const int start = m_lines[location.line - 1];
+    const int end = location.line < lineCount() ? m_lines[location.line] : int(m_bytes.size());
+    const int bytes = location.byteOffset - start;
+    if (bytes < 0 || bytes >= end - start || bytes >= MaxPreviewBytes)
+        return -1;
+    return m_width == 2 ? bytes / 2 : int(QString::fromUtf8(m_bytes.constData() + start, bytes).size());
 }
 
 SourceCursor::SourceCursor(const SourceIndex &source, TaskControl *task)

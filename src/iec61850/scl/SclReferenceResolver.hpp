@@ -13,6 +13,14 @@ enum class LinkState { Resolved, Missing, Ambiguous, Unbound, External, Unsuppor
 enum class Severity { Error, Warning, Info };
 enum class Coverage { Executed, NotApplicable, Blocked, NotImplemented };
 
+enum class FcdaField { Ied, LdInst, LogicalNode, DoName, DaName, Fc, Ix };
+
+struct FcdaTrace {
+    struct Step { FcdaField field; NodeId node; };
+    QList<Step> steps;
+    FcdaField stoppedAt = FcdaField::LdInst; // Relevant when the reference did not resolve.
+};
+
 struct Reference {
     LinkKind kind;
     LinkState state;
@@ -65,6 +73,7 @@ struct ReferenceAnalysis {
     std::vector<Reference> references;
     QMultiHash<NodeId, int> outgoing; // Values are indexes in references.
     QMultiHash<NodeId, int> incoming; // Resolved targets only.
+    QHash<NodeId, FcdaTrace> fcdaTraces;
     std::vector<ReportMapping> reports;
     std::vector<Finding> findings;
     std::vector<RuleCoverage> coverage;

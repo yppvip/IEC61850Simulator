@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<title>SCL 引用拓扑</title>
+<style>
+  * { box-sizing: border-box }
+  :root { color-scheme: light; font: 14px/1.55 "Segoe UI", "Microsoft YaHei", sans-serif; color: #1d2b3c; background: #f1f4f8 }
+  body { margin: 0 }
+  header, main { padding: 16px clamp(12px, 3vw, 36px) }
+  header { background: #fff; border-bottom: 1px solid #dbe3ec }
+  h1, h2, h3, p { margin: 0 0 8px }
+  h1 { font-size: 22px } h2 { font-size: 17px } h3 { font-size: 14px }
+  small, .muted { color: #53647a }
+  button { font: inherit; color: #2355a4; background: #fff; border: 1px solid #b9c9dc; padding: 4px 9px; border-radius: 5px; cursor: pointer }
+  button:disabled { color: #67788a; opacity: .65; cursor: default }
+  button:focus-visible, summary:focus-visible { outline: 2px solid #2355a4; outline-offset: 2px }
+  .tools, .legend { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px }
+  .layout { display: grid; grid-template-columns: minmax(0, 2.5fr) minmax(270px, 1fr); gap: 14px }
+  .card { background: #fff; border: 1px solid #dbe3ec; border-radius: 8px; min-width: 0; padding: 12px }
+  svg { width: 100%; height: clamp(340px, 59vh, 660px); border: 1px solid #dbe3ec; border-radius: 6px; touch-action: none; cursor: grab; background: #f8fafc }
+  svg.dragging { cursor: grabbing }
+  .lane { font-size: 16px; font-weight: 650; fill: #53647a }
+  .node { cursor: pointer }
+  .node rect { fill: #fff; stroke: #879cb5 }
+  .node.declaration rect { fill: #e9f1ff; stroke: #6b92cf }
+  .node.evidence rect { fill: #eaf6f2; stroke: #579986 }
+  .node.derived rect { fill: #f3ecff; stroke: #9675be }
+  .node text { fill: #17283c; font-size: 13px; pointer-events: none }
+  .node.current rect { stroke-width: 2.5; stroke: #2355a4 }
+  .node.selected rect { stroke-width: 3; stroke: #b25419 }
+  .edge { cursor: pointer }
+  .edge .line { fill: none; stroke: #667d96; stroke-width: 1.6 }
+  .edge .hit { fill: none; stroke: transparent; stroke-width: 15 }
+  .edge.contains .line { stroke-dasharray: 3 4 }
+  .edge.candidate .line, .edge.status .line { stroke: #a85028; stroke-dasharray: 7 4 }
+  .edge.derived .line { stroke: #7953a8 }
+  .edge.selected .line { stroke-width: 3 }
+  .dim { opacity: .25 }
+  .details { overflow-wrap: anywhere }
+  pre, textarea { white-space: pre-wrap; overflow-wrap: anywhere; background: #f1f4f8; padding: 8px; border: 0; border-radius: 5px; width: 100%; font: 13px/1.5 Consolas, monospace }
+  .source-line { display: block } .source-line.hit { background: #dce8fa }
+  details { border-top: 1px solid #dbe3ec; padding: 7px 0 }
+  summary { cursor: pointer; font-weight: 600 }
+  .rows { display: grid; gap: 4px; padding-top: 5px }
+  .rows button { text-align: left }
+  @media (max-width: 880px) { .layout { grid-template-columns: 1fr } }
+</style>
+</head>
+<body>
+<header>
+  <h1>SCL 引用拓扑</h1>
+  <p id="snapshot"></p>
+  <small>本地只读快照。主程序切换或重载文件后，请重新打开拓扑以查看新内容。</small>
+</header>
+<main>
+  <div class="tools" aria-label="图操作">
+    <button id="back" type="button">上一个焦点</button>
+    <button id="home" type="button">回到起点</button>
+    <button id="fit" type="button">适配视图</button>
+    <button id="minus" type="button" aria-label="缩小">−</button>
+    <button id="plus" type="button" aria-label="放大">＋</button>
+    <span id="focus" aria-live="polite"></span>
+  </div>
+  <div class="layout">
+    <section class="card" aria-label="引用关系图">
+      <svg id="canvas" role="img" aria-label="引用关系图，键盘操作请使用下方关系列表">
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+            <path d="M0,0 L8,4 L0,8 Z" fill="#667d96"/>
+          </marker>
+        </defs>
+        <g id="drawing"></g>
+      </svg>
+      <p class="legend muted">点线：包含 · 实线：引用 · 橙色虚线：状态或候选 · 紫色线：派生</p>
+      <p id="notice" class="muted" role="status"></p>
+      <h2>关系列表</h2>
+      <div id="groups"></div>
+    </section>
+    <aside class="card details" aria-labelledby="detail-heading">
+      <h2 id="detail-heading">证据详情</h2>
+      <div id="details" aria-live="polite"></div>
+    </aside>
+  </div>
+</main>
+<script type="application/octet-stream" id="graph-data"><!--SCL_GRAPH_DATA--></script>
+<script>
+"use strict";
+const byId = id => document.getElementById(id);
+const graph = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(byId("graph-data").textContent.trim()), ch => ch.charCodeAt(0))));
+const {nodes, views} = graph;
+const svg = byId("canvas");
+const drawing = byId("drawing");
+const laneNames = {declaration: "声明与成员", evidence: "解析证据", derived: "对象实例与派生"};
+const pageSize = 8;
+const box = {width: 252, height: 35};
+let focus = graph.focus;
+let selection = {node: focus};
+let camera = {x: 0, y: 0, w: 960, h: 360};
+let fitBox = {...camera};
+let pages = [];
+let opened = [];
+let history = [];
+let rendered = {nodes: new Map(), edges: []};
+
+function html(tag, value, parent) {
+  const item = document.createElement(tag);
+  if (value !== "") item.textContent = value;
+  if (parent) parent.append(item);
+  return item;
+}
+function graphic(tag, attributes, parent) {
+  const item = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [key, value] of Object.entries(attributes)) item.setAttribute(key, value);
+  parent.append(item);
+  return item;
+}
+function button(parent, label, click) {
+  const item = html("button", label, parent);
+  item.type = "button";
+  item.addEventListener("click", click);
+  return item;
+}
+function setCamera() { svg.setAttribute("viewBox", [camera.x, camera.y, camera.w, camera.h].join(" ")); }
+function fit() { camera = {...fitBox}; setCamera(); }
+function zoom(factor, x = camera.x + camera.w / 2, y = camera.y + camera.h / 2) {
+  const ratio = Math.max(.25, Math.min(4, camera.w * factor / fitBox.w)) * fitBox.w / camera.w;
+  camera = {x: x - (x - camera.x) * ratio, y: y - (y - camera.y) * ratio, w: camera.w * ratio, h: camera.h * ratio};
+  setCamera();
+}
+function point(event) {
+  const p = svg.createSVGPoint();
+  p.x = event.clientX; p.y = event.clientY;
+  return p.matrixTransform(svg.getScreenCTM().inverse());
+}
+function selectNode(id) { selection = {node: id}; highlight(); details(); }
+function selectEdge(edge, group) { selection = {edge, group}; highlight(); details(); }
+function highlight() {
+  const active = new Set();
+  const selectedGroups = new Set(rendered.edges.filter(({edge}) => edge.from === selection.node || edge.to === selection.node)
+    .map(({group}) => group));
+  for (const item of rendered.edges) {
+    const {edge, group, element} = item;
+    const selected = selection.edge === edge;
+    const related = selection.edge ? group === selection.group : selection.node === focus || selectedGroups.has(group);
+    element.classList.toggle("selected", selected);
+    element.classList.toggle("dim", !related);
+    if (related) { active.add(edge.from); active.add(edge.to); }
+  }
+  for (const [id, element] of rendered.nodes) {
+    element.classList.toggle("selected", selection.node === id);
+    element.classList.toggle("dim", selection.node !== id && !active.has(id) && id !== focus);
+  }
+}
+function focusOn(id, remember = true) {
+  if (!Object.hasOwn(views, id)) return;
+  if (remember && id !== focus) history.push(focus);
+  focus = id;
+  selection = {node: id};
+  pages = views[id].map(() => 0);
+  opened = views[id].map(() => true);
+  byId("focus").textContent = "焦点 · " + nodes[id].title;
+  byId("back").disabled = history.length === 0;
+  byId("home").disabled = id === graph.focus;
+  render();
+  details();
+}
+function render() {
+  const groups = views[focus];
+  const ids = new Set([focus]);
+  const edges = [];
+  const hidden = groups.reduce((sum, group) => sum + group.total - group.edges.length, 0);
+  let canvasHidden = 0;
+  groups.forEach((group, i) => {
+    if (!opened[i]) return;
+    for (const edge of group.edges.slice(pages[i] * pageSize, (pages[i] + 1) * pageSize)) {
+      const additions = new Set([edge.from, edge.to].filter(id => !ids.has(id)));
+      if (ids.size + additions.size > graph.visibleLimit) { canvasHidden++; continue; }
+      ids.add(edge.from); ids.add(edge.to);
+      edges.push({edge, group: i});
+    }
+  });
+  byId("notice").textContent = (hidden ? `本次局部图还有 ${hidden} 条关系未载入，可从主程序选择相关对象后重新打开。 ` : "")
+    + (canvasHidden ? `画布另省略 ${canvasHidden} 条关系，可收起其他分组或用列表检查。 ` : "")
+    + (!groups.length ? "此节点在本次快照中没有可展开的关系。" : "");
+  drawing.replaceChildren();
+  rendered = {nodes: new Map(), edges: []};
+  const positions = new Map();
+  let height = 320;
+  Object.entries(laneNames).forEach(([lane, title], index) => {
+    const x = 32 + index * 320;
+    graphic("text", {x, y: 30, class: "lane"}, drawing).textContent = title;
+    let y = 53;
+    for (const id of ids) {
+      if (nodes[id].lane !== lane) continue;
+      positions.set(id, {x, y});
+      y += 49;
+    }
+    height = Math.max(height, y + 12);
+  });
+  for (const {edge, group} of edges) {
+    const from = positions.get(edge.from), to = positions.get(edge.to);
+    const a = from.y + box.height / 2, b = to.y + box.height / 2;
+    let path;
+    if (from.x === to.x) {
+      const x = from.x + box.width;
+      path = `M ${x} ${a} C ${x + 24} ${a}, ${x + 24} ${b}, ${x} ${b}`;
+    } else {
+      const x = from.x < to.x ? from.x + box.width : from.x;
+      const end = from.x < to.x ? to.x : to.x + box.width;
+      const middle = (x + end) / 2;
+      path = `M ${x} ${a} C ${middle} ${a}, ${middle} ${b}, ${end} ${b}`;
+    }
+    const item = graphic("g", {class: "edge " + edge.kind}, drawing);
+    graphic("path", {d: path, class: "line", "marker-end": "url(#arrow)"}, item);
+    graphic("path", {d: path, class: "hit"}, item);
+    graphic("title", {}, item).textContent = edge.label;
+    item.addEventListener("click", () => selectEdge(edge, group));
+    rendered.edges.push({edge, group, element: item});
+  }
+  for (const id of ids) {
+    const data = nodes[id], {x, y} = positions.get(id);
+    const item = graphic("g", {class: "node " + data.lane + (id === focus ? " current" : "")}, drawing);
+    graphic("rect", {x, y, width: box.width, height: box.height, rx: 6}, item);
+    const title = graphic("text", {x: x + 9, y: y + 22}, item);
+    title.textContent = data.title;
+    if (title.getComputedTextLength() > box.width - 18) {
+      const chars = [...data.title];
+      let low = 0, high = chars.length;
+      while (low < high) {
+        const mid = Math.ceil((low + high) / 2);
+        title.textContent = chars.slice(0, mid).join("") + "…";
+        if (title.getComputedTextLength() > box.width - 18) high = mid - 1;
+        else low = mid;
+      }
+      title.textContent = chars.slice(0, low).join("") + "…";
+    }
+    graphic("title", {}, item).textContent = data.title;
+    item.addEventListener("click", () => selectNode(id));
+    item.addEventListener("dblclick", () => focusOn(id));
+    rendered.nodes.set(id, item);
+  }
+  fitBox = {x: 0, y: 0, w: 960, h: height};
+  fit();
+  highlight();
+  renderGroups();
+}
+function renderGroups() {
+  const container = byId("groups");
+  container.replaceChildren();
+  views[focus].forEach((group, i) => {
+    const section = html("details", "", container);
+    section.open = opened[i];
+    const summary = html("summary", `${group.label} · 已载入 ${group.edges.length}/${group.total}`, section);
+    section.addEventListener("toggle", () => {
+      if (section.open === opened[i] || !section.isConnected) return;
+      opened[i] = section.open;
+      render();
+      byId("groups").children[i].querySelector("summary").focus();
+    });
+    const list = html("div", "", section);
+    list.className = "rows";
+    const count = Math.ceil(group.edges.length / pageSize);
+    if (count > 1) {
+      const controls = html("div", "", list);
+      controls.className = "tools";
+      for (const [text, delta] of [["上一页", -1], ["下一页", 1]]) {
+        const turn = button(controls, text, () => {
+          pages[i] += delta;
+          render();
+          byId("groups").children[i].querySelector("summary").focus();
+        });
+        turn.disabled = pages[i] + delta < 0 || pages[i] + delta >= count;
+      }
+      html("span", `第 ${pages[i] + 1} / ${count} 页`, controls);
+    }
+    for (const edge of group.edges.slice(pages[i] * pageSize, (pages[i] + 1) * pageSize))
+      button(list, `${nodes[edge.from].title} → ${nodes[edge.to].title} · ${edge.label}`, () => selectEdge(edge, i));
+  });
+}
+async function copy(text, target) {
+  try {
+    await navigator.clipboard.writeText(text);
+    byId("copy-status").textContent = "已复制";
+  } catch {
+    const field = html("textarea", "", target);
+    field.readOnly = true;
+    field.value = text;
+    field.setAttribute("aria-label", "待复制内容");
+    field.focus();
+    field.select();
+    byId("copy-status").textContent = "请按 Ctrl+C 复制选中的内容";
+  }
+}
+function details() {
+  const target = byId("details");
+  target.replaceChildren();
+  if (selection.edge) {
+    const {edge, group} = selection;
+    html("h3", views[focus][group].label + " · " + edge.label, target);
+    if (edge.detail) html("pre", edge.detail, target);
+    button(target, "起点 · " + nodes[edge.from].title, () => selectNode(edge.from));
+    button(target, "终点 · " + nodes[edge.to].title, () => selectNode(edge.to));
+    return;
+  }
+  const id = selection.node, item = nodes[id];
+  html("h3", item.title, target);
+  if (item.scope) html("p", item.scope, target);
+  if (item.detail) html("pre", item.detail, target);
+  const controls = html("div", "", target);
+  controls.className = "tools";
+  const next = button(controls, "以此为焦点", () => focusOn(id));
+  next.disabled = id === focus || !Object.hasOwn(views, id);
+  if (id !== focus && !Object.hasOwn(views, id) && item.node !== undefined)
+    html("p", "此证据可供查看。需要更多关系时，可从主程序选择相关对象后重新打开。", target);
+  if (item.copy) button(controls, "复制完整值", () => copy(item.copy, target));
+  if (item.copyLimited) html("p", "完整值超过局部图的存储上限，请在主程序中核对。", target);
+  if (item.line > 0) {
+    button(controls, "复制来源位置", () => copy(`${graph.file} · 第 ${item.line} 行 · SHA-256 ${graph.sha256}`, target));
+    html("p", "第 " + item.line + " 行", target);
+    const excerpt = html("pre", "", target);
+    for (const line of item.excerpt) {
+      const row = html("span", `${line.line}  ${line.text}${line.clipped ? " [片段截断]" : ""}`, excerpt);
+      row.className = "source-line" + (line.line === item.line ? " hit" : "");
+    }
+  }
+  const status = html("p", "", target);
+  status.id = "copy-status";
+  status.setAttribute("role", "status");
+}
+
+byId("snapshot").textContent = graph.file + " · SHA-256 " + graph.sha256;
+byId("fit").addEventListener("click", fit);
+byId("minus").addEventListener("click", () => zoom(1.25));
+byId("plus").addEventListener("click", () => zoom(.8));
+byId("home").addEventListener("click", () => focusOn(graph.focus));
+byId("back").addEventListener("click", () => { if (history.length) focusOn(history.pop(), false); });
+svg.addEventListener("wheel", event => {
+  event.preventDefault();
+  const p = point(event);
+  zoom(event.deltaY < 0 ? .85 : 1.18, p.x, p.y);
+}, {passive: false});
+let drag = null;
+svg.addEventListener("pointerdown", event => {
+  if (event.button !== 0 || event.target.closest(".node, .edge")) return;
+  drag = {pointer: event.pointerId, point: point(event)};
+  svg.setPointerCapture(event.pointerId);
+  svg.classList.add("dragging");
+});
+svg.addEventListener("pointermove", event => {
+  if (!drag || drag.pointer !== event.pointerId) return;
+  const p = point(event);
+  camera.x += drag.point.x - p.x;
+  camera.y += drag.point.y - p.y;
+  setCamera();
+});
+svg.addEventListener("lostpointercapture", () => { drag = null; svg.classList.remove("dragging"); });
+focusOn(graph.focus, false);
+</script>
+</body>
+</html>

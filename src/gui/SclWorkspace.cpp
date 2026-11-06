@@ -1,13 +1,15 @@
 #include "SclWorkspace.hpp"
+#include "SclSourcePreview.hpp"
 
 #include <QAbstractItemModel>
+#include <QApplication>
+#include <QClipboard>
 #include <QComboBox>
 #include <QFileInfo>
-#include <QFontDatabase>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QPlainTextEdit>
+#include <QMenu>
 #include <QPushButton>
 #include <QScopedValueRollback>
 #include <QShortcut>
@@ -16,7 +18,8 @@
 #include <QStyle>
 #include <QTabWidget>
 #include <QTableView>
-#include <QTextBlock>
+#include <QTextBrowser>
+#include <QToolButton>
 #include <QTreeView>
 #include <QVBoxLayout>
 #include <algorithm>
@@ -64,6 +67,29 @@ QString Path(const SclSnapshot& snapshot, NodeId id, bool ownerOnly = false)
     for (; id > 0; id = snapshot.analysis.document->nodes[id].parent)
         parts.prepend(Title(snapshot, id));
     return parts.isEmpty() ? QStringLiteral("SCL") : parts.join(QStringLiteral(" / "));
+}
+
+QColor TypeColor(const Scl::Node& node, const QPalette& palette)
+{
+    if (!node.isScl())
+        return {};
+    const bool dark = palette.base().color().lightness() < 128;
+    if (node.name == "LDevice") return QColor(dark ? "#8ab4f8" : "#2355a4");
+    if (node.name == "LN" || node.name == "LN0") return QColor(dark ? "#8de0c5" : "#13675e");
+    if (node.name == "DO" || node.name == "DOI" || node.name == "SDO" || node.name == "SDI")
+        return QColor(dark ? "#d6a9f5" : "#693c85");
+    if (node.name == "DA" || node.name == "DAI" || node.name == "BDA") return QColor(dark ? "#bcc9d8" : "#526378");
+    return {};
+}
+
+QString NodeLink(const SclSnapshot& snapshot, NodeId id, const QPalette& palette, int maxLength = 80)
+{
+    auto title = Title(snapshot, id);
+    if (title.size() > maxLength)
+        title = title.left(maxLength - title.at(maxLength - 1).isHighSurrogate()) + QStringLiteral("…");
+    const auto color = TypeColor(snapshot.analysis.document->nodes[id], palette);
+    return QStringLiteral("<a href='%1'><span style='color:%2'>%3</span></a>").arg(id)
+        .arg(color.isValid() ? color.name() : palette.link().color().name(), title.toHtmlEscaped());
 }
 
 QString LinkState(Scl::LinkState state)
@@ -172,6 +198,12 @@ public:
             return Title(*m_snapshot, Node(index));
         if (role == Qt::UserRole)
             return Node(index);
+        if (role == Qt::ForegroundRole)
+        {
+            const auto color = TypeColor(m_snapshot->analysis.document->nodes[Node(index)], QApplication::palette());
+            if (color.isValid())
+                return QBrush(color);
+        }
         return {};
     }
 
@@ -253,22 +285,22 @@ public:
         return link.incoming ? QList<NodeId>{ref.source} : ref.candidates;
     }
 
+    const Scl::Reference& ReferenceAt(int row) const { return m_snapshot->analysis.references[m_links[row].index]; }
+    bool IsIncoming(int row) const { return m_links[row].incoming; }
+
     NodeId Node(int row) const
     {
-        row = m_filter ? (*m_filter)[row] : row;
+        row = OriginalRow(row);
         switch (m_table)
         {
-        case Table::Reports: return m_snapshot->analysis.reports[row].source;
         case Table::Findings: return m_snapshot->analysis.findings[row].node;
         case Table::Candidates: return m_candidates[row];
-        case Table::Members:
-            return m_snapshot->browse.memberRows[m_snapshot->browse.dataSetMembers.value(m_context).first + row];
         case Table::Links:
         {
             const auto targets = Targets(row);
             return targets.size() == 1 ? targets.front() : NoNode;
         }
-        default: return Category()[row];
+        default: return UnfilteredNode(row);
         }
     }
 
@@ -279,7 +311,7 @@ public:
         const auto id = Node(index.row());
         if (role == Qt::UserRole)
             return id;
-        return Cells(m_filter ? (*m_filter)[index.row()] : index.row(), id).value(index.column());
+        return Cells(OriginalRow(index.row()), id).value(index.column());
     }
 
     void Filter(std::optional<std::vector<int>> rows)
@@ -289,6 +321,57 @@ public:
         beginResetModel();
         m_filter = std::move(rows);
         endResetModel();
+    }
+
+    int VisibleRow(int row) const
+    {
+        if (row < 0 || !m_filter)
+            return row;
+        const auto found = std::lower_bound(m_filter->begin(), m_filter->end(), row);
+        return found != m_filter->end() && *found == row ? int(found - m_filter->begin()) : -1;
+    }
+
+    int OriginalRow(int row) const { return m_filter ? (*m_filter)[row] : row; }
+
+    // Browse lists and report mappings are emitted in document order.
+    int FirstAtOrAfter(NodeId id) const
+    {
+        if (m_table == Table::Reports)
+        {
+            const auto& reports = m_snapshot->analysis.reports;
+            return int(std::lower_bound(reports.begin(), reports.end(), id,
+                [](const auto& report, NodeId needle) { return report.source < needle; }) - reports.begin());
+        }
+        if (m_table == Table::Members)
+        {
+            const auto range = m_snapshot->browse.dataSetMembers.value(m_context);
+            const auto first = m_snapshot->browse.memberRows.begin() + range.first;
+            return int(std::lower_bound(first, first + range.count, id) - first);
+        }
+        const auto& rows = Category();
+        return int(std::lower_bound(rows.begin(), rows.end(), id) - rows.begin());
+    }
+
+    NodeId UnfilteredNode(int row) const
+    {
+        if (m_table == Table::Reports)
+        {
+            const auto& reports = m_snapshot->analysis.reports;
+            return row < int(reports.size()) ? reports[row].source : NoNode;
+        }
+        if (m_table == Table::Members)
+        {
+            const auto range = m_snapshot->browse.dataSetMembers.value(m_context);
+            return row < range.count ? m_snapshot->browse.memberRows[range.first + row] : NoNode;
+        }
+        const auto& rows = Category();
+        return row < int(rows.size()) ? rows[row] : NoNode;
+    }
+
+    int RowForNode(NodeId id) const
+    {
+        const int row = FirstAtOrAfter(id);
+        return UnfilteredNode(row) == id ? row : -1;
     }
 
 private:
@@ -393,12 +476,27 @@ private:
 void SclWorkspace::ApplyTableFilter(QTableView* table, std::optional<std::vector<int>> rows)
 {
     if (table)
+    {
         static_cast<SclTableModel*>(table->model())->Filter(std::move(rows));
+        if (table == m_tables->currentWidget() && !m_restoring)
+            LocateTableRow();
+    }
 }
 
 SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
 {
     setObjectName("SclWorkspace");
+    setStyleSheet(QStringLiteral(
+        "#SclWorkspace QTreeView, #SclWorkspace QTableView {"
+        " background: palette(base); alternate-background-color: palette(alternate-base);"
+        " selection-background-color: #2355a4; selection-color: white;"
+        " border: 1px solid palette(mid); }"
+        "#SclWorkspace QTreeView::item:selected, #SclWorkspace QTableView::item:selected { color: white; }"
+        "#SclWorkspace QTreeView:focus, #SclWorkspace QTableView:focus { border-color: palette(highlight); }"
+        "#SclWorkspace QHeaderView::section { background: palette(window); color: palette(window-text);"
+        " border: 0; border-bottom: 1px solid palette(mid); padding: 5px 7px; }"
+        "#SclWorkspace QTreeView::item { padding-top: 3px; padding-bottom: 3px; }"
+        "#SclWorkspace QLabel#SclTableEmpty { background: palette(alternate-base); padding: 8px; }"));
     auto* outer = new QVBoxLayout(this);
     auto* navigation = new QHBoxLayout;
     m_back = new QPushButton(QStringLiteral("返回"), this);
@@ -409,16 +507,63 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     m_forward->setObjectName("SclForward");
     m_forward->setEnabled(false);
     m_breadcrumb = new QLabel(QStringLiteral("打开 SCL 文件以开始分析"), this);
-    m_breadcrumb->setTextFormat(Qt::PlainText);
+    m_breadcrumb->setObjectName("SclBreadcrumb");
+    m_breadcrumb->setTextFormat(Qt::RichText);
+    m_breadcrumb->setTextInteractionFlags(Qt::LinksAccessibleByMouse | Qt::LinksAccessibleByKeyboard);
     m_breadcrumb->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    m_pathMenu = new QToolButton(this);
+    m_pathMenu->setText(QStringLiteral("完整路径"));
+    m_pathMenu->setPopupMode(QToolButton::InstantPopup);
+    m_pathMenu->setMenu(new QMenu(m_pathMenu));
+    m_pathMenu->setEnabled(false);
+    const auto jumpLink = [this](const QString& link) {
+        bool ok = false;
+        const auto id = link.toInt(&ok);
+        if (ok)
+            Select(id, true);
+    };
+    connect(m_breadcrumb, &QLabel::linkActivated, this, jumpLink);
+    connect(m_pathMenu->menu(), &QMenu::aboutToShow, this, [this] {
+        auto* menu = m_pathMenu->menu();
+        menu->clear();
+        if (!m_snapshot || m_selected == NoNode)
+            return;
+        const std::weak_ptr<const SclSnapshot> snapshot = m_snapshot;
+        const auto path = Path(*m_snapshot, m_selected);
+        menu->addAction(QStringLiteral("复制完整路径"), this, [this, snapshot, path] {
+            if (snapshot.lock() == m_snapshot && m_snapshot)
+                QApplication::clipboard()->setText(path);
+        });
+        menu->addSeparator();
+        std::vector<NodeId> nodes;
+        for (auto id = m_selected; id != NoNode; id = m_snapshot->analysis.document->nodes[id].parent)
+            nodes.push_back(id);
+        for (auto it = nodes.rbegin(); it != nodes.rend(); ++it)
+        {
+            const auto id = *it;
+            auto title = Title(*m_snapshot, id).left(120);
+            title.replace('&', QStringLiteral("&&"));
+            menu->addAction(title, this, [this, snapshot, id] {
+                if (snapshot.lock() == m_snapshot && m_snapshot)
+                    Select(id, true);
+            });
+        }
+    });
     m_failedSource = new QPushButton(QStringLiteral("查看失败文件原文"), this);
+    m_failedSource->setObjectName("SclFailedSource");
     m_failedSource->hide();
     navigation->addWidget(m_back);
     navigation->addWidget(m_forward);
     navigation->addWidget(m_breadcrumb, 1);
+    navigation->addWidget(m_pathMenu);
     navigation->addWidget(m_failedSource);
     outer->addLayout(navigation);
     CreateSearchBar(outer);
+    m_clearNavigationFilter = new QPushButton(QStringLiteral("目标被当前筛选隐藏 · 清除筛选"), this);
+    m_clearNavigationFilter->setObjectName("SclClearNavigationFilter");
+    m_clearNavigationFilter->hide();
+    outer->addWidget(m_clearNavigationFilter, 0, Qt::AlignLeft);
+    connect(m_clearNavigationFilter, &QPushButton::clicked, this, [this] { ResetSearch(true); });
 
     auto* splitter = new QSplitter(Qt::Horizontal, this);
     outer->addWidget(splitter, 1);
@@ -426,17 +571,41 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     m_tree->setObjectName("SclTree");
     m_tree->setHeaderHidden(true);
     m_tree->setUniformRowHeights(true);
+    m_tree->setAlternatingRowColors(true);
+    m_tree->setAccessibleName(QStringLiteral("SCL 对象树"));
     m_treeModel = new SclTreeModel(m_tree);
     m_tree->setModel(m_treeModel);
-    m_tables = new QTabWidget(splitter);
+    auto* tablePane = new QWidget(splitter);
+    auto* tableLayout = new QVBoxLayout(tablePane);
+    tableLayout->setContentsMargins(0, 0, 0, 0);
+    m_tables = new QTabWidget(tablePane);
+    tableLayout->addWidget(m_tables, 1);
+    auto* empty = new QLabel(tablePane);
+    empty->setObjectName("SclTableEmpty");
+    empty->setWordWrap(true);
+    tableLayout->addWidget(empty);
+    empty->hide();
     m_tables->setObjectName("SclTables");
     m_tables->setUsesScrollButtons(true);
     m_inspector = new QTabWidget(splitter);
     m_inspector->setObjectName("SclInspector");
-    splitter->setSizes({210, 520, 420});
+    splitter->setSizes({253, 517, 380});
     splitter->setCollapsible(0, false);
     splitter->setCollapsible(1, false);
     splitter->setCollapsible(2, false);
+    auto* details = new QToolButton(this);
+    details->setObjectName("SclToggleDetails");
+    details->setCheckable(true);
+    details->setChecked(true);
+    details->setText(QStringLiteral("详情"));
+    details->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    details->setIcon(style()->standardIcon(QStyle::SP_ArrowRight));
+    details->setToolTip(QStringLiteral("显示或收起详情"));
+    navigation->addWidget(details);
+    connect(details, &QToolButton::toggled, m_inspector, [this, details](bool visible) {
+        m_inspector->setVisible(visible);
+        details->setIcon(style()->standardIcon(visible ? QStyle::SP_ArrowRight : QStyle::SP_ArrowLeft));
+    });
 
     auto* overview = new QWidget(m_tables);
     auto* overviewLayout = new QVBoxLayout(overview);
@@ -446,6 +615,17 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     m_summary->setWordWrap(true);
     m_summary->setTextInteractionFlags(Qt::TextSelectableByMouse);
     overviewLayout->addWidget(m_summary);
+    m_scope = new QLabel(overview);
+    m_scope->setObjectName("SclNodeOverview");
+    m_scope->setTextFormat(Qt::PlainText);
+    m_scope->setWordWrap(true);
+    overviewLayout->addWidget(m_scope);
+    m_scopeActions = new QWidget(overview);
+    auto* scopeLayout = new QVBoxLayout(m_scopeActions);
+    scopeLayout->setContentsMargins(0, 0, 0, 0);
+    overviewLayout->addWidget(m_scopeActions);
+    m_scope->hide();
+    m_scopeActions->hide();
     overviewLayout->addStretch();
     m_tables->addTab(overview, QStringLiteral("概览"));
 
@@ -458,9 +638,11 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
         view->setSelectionBehavior(QAbstractItemView::SelectRows);
         view->setSelectionMode(QAbstractItemView::SingleSelection);
         view->setAlternatingRowColors(true);
+        view->setShowGrid(false);
         view->setWordWrap(false);
         view->verticalHeader()->hide();
         view->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+        view->verticalHeader()->setDefaultSectionSize(qMax(28, view->fontMetrics().height() + 8));
         view->horizontalHeader()->setDefaultSectionSize(135);
         if (table == Table::Findings)
         {
@@ -488,30 +670,62 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     };
     const auto addTable = [&](Table table, const QString& label, const char* name) {
         auto* view = createTable(table, m_tables, name);
+        view->setAccessibleName(label);
         m_tables->addTab(view, label);
-        connect(view->selectionModel(), &QItemSelectionModel::currentChanged, this, [this](const QModelIndex& index) {
-            if (index.isValid())
-                Select(index.data(Qt::UserRole).toInt());
+        connect(view->selectionModel(), &QItemSelectionModel::currentChanged, this, [this, table, view](const QModelIndex& index) {
+            if (index.isValid() && !m_restoring)
+            {
+                if (table == Table::Findings)
+                    SelectFinding(static_cast<SclTableModel*>(view->model())->OriginalRow(index.row()), false);
+                else
+                    Select(index.data(Qt::UserRole).toInt());
+            }
         });
         return view;
     };
-    addTable(Table::Reports, QStringLiteral("报告"), "SclReports");
-    addTable(Table::DataSets, QStringLiteral("数据集"), "SclDataSets");
+    m_routeTables.push_back(addTable(Table::Reports, QStringLiteral("报告"), "SclReports"));
+    m_routeTables.push_back(addTable(Table::DataSets, QStringLiteral("数据集"), "SclDataSets"));
     m_members = addTable(Table::Members, QStringLiteral("成员"), "SclMembers");
-    addTable(Table::Objects, QStringLiteral("对象"), "SclObjects");
-    addTable(Table::Communication, QStringLiteral("通信"), "SclCommunication");
-    addTable(Table::Templates, QStringLiteral("模板"), "SclTemplates");
-    auto* findings = addTable(Table::Findings, QStringLiteral("问题"), "SclFindings");
-    connect(findings, &QTableView::activated, this, [this](const QModelIndex& index) {
-        if (index.isValid() && index.data(Qt::UserRole).toInt() != NoNode)
-        {
-            Select(index.data(Qt::UserRole).toInt());
-            m_inspector->setCurrentIndex(2);
-        }
+    m_routeTables.push_back(addTable(Table::Objects, QStringLiteral("对象"), "SclObjects"));
+    m_routeTables.push_back(addTable(Table::Communication, QStringLiteral("通信"), "SclCommunication"));
+    m_routeTables.push_back(addTable(Table::Templates, QStringLiteral("模板"), "SclTemplates"));
+    for (auto* view : m_routeTables)
+    {
+        auto* button = new QPushButton(m_scopeActions);
+        scopeLayout->addWidget(button, 0, Qt::AlignLeft);
+        m_scopeButtons.push_back(button);
+        connect(button, &QPushButton::clicked, this, [this, view] {
+            auto* model = static_cast<SclTableModel*>(view->model());
+            const auto id = model->UnfilteredNode(model->FirstAtOrAfter(m_selected + 1));
+            Select(id);
+            m_tables->setCurrentWidget(view);
+        });
+    }
+    m_findings = addTable(Table::Findings, QStringLiteral("问题"), "SclFindings");
+    connect(m_findings, &QTableView::activated, this, [this](const QModelIndex& index) {
+        if (index.isValid())
+            SelectFinding(static_cast<SclTableModel*>(m_findings->model())->OriginalRow(index.row()), true);
     });
     AttachSearchResults();
+    const auto updateEmpty = [this, empty] {
+        const auto* table = qobject_cast<QTableView*>(m_tables->currentWidget());
+        empty->setVisible(table && table->model()->rowCount() == 0);
+        if (table)
+            empty->setText(!m_snapshot ? QStringLiteral("打开 SCL 文件后查看数据。")
+                : table == m_results ? QStringLiteral("此处显示匹配结果，请查看搜索状态。")
+                : QStringLiteral("此视图没有可显示的行，请检查当前对象或筛选条件。"));
+    };
+    connect(m_tables, &QTabWidget::currentChanged, this, updateEmpty);
+    for (int i = 0; i < m_tables->count(); ++i)
+    {
+        if (const auto* table = qobject_cast<QTableView*>(m_tables->widget(i)))
+        {
+            connect(table->model(), &QAbstractItemModel::modelReset, this, updateEmpty);
+            connect(table->model(), &QAbstractItemModel::rowsInserted, this, updateEmpty);
+        }
+    }
 
-    m_properties = new QPlainTextEdit(m_inspector);
+    m_properties = new QTextBrowser(m_inspector);
     m_properties->setObjectName("SclProperties");
     m_properties->setReadOnly(true);
     m_inspector->addTab(m_properties, QStringLiteral("属性"));
@@ -520,6 +734,34 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     auto* relationsLayout = new QVBoxLayout(relations);
     relationsLayout->setContentsMargins(4, 4, 4, 4);
     relationsLayout->addWidget(new QLabel(QStringLiteral("双击引用、使用方或候选目标即可跳转"), relations));
+    m_referencePath = new QLabel(relations);
+    m_referencePath->setObjectName("SclReferencePath");
+    m_referencePath->setTextFormat(Qt::RichText);
+    m_referencePath->setWordWrap(true);
+    m_referencePath->setTextInteractionFlags(Qt::LinksAccessibleByMouse | Qt::LinksAccessibleByKeyboard);
+    m_referencePath->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    connect(m_referencePath, &QLabel::linkActivated, this, jumpLink);
+    relationsLayout->addWidget(m_referencePath);
+    auto* referenceActions = new QHBoxLayout;
+    m_copyDeclared = new QPushButton(QStringLiteral("复制声明"), relations);
+    m_copyDeclared->setObjectName("SclCopyDeclared");
+    m_copyDerived = new QPushButton(QStringLiteral("复制推导引用"), relations);
+    m_copyDerived->setObjectName("SclCopyDerived");
+    for (auto* button : {m_copyDeclared, m_copyDerived})
+    {
+        button->setEnabled(false);
+        referenceActions->addWidget(button);
+        connect(button, &QPushButton::clicked, this, [button] {
+            QApplication::clipboard()->setText(button->property("sclCopyValue").toString());
+        });
+    }
+    referenceActions->addStretch();
+    relationsLayout->addLayout(referenceActions);
+    CreateTopologyControls(relationsLayout);
+    for (auto* table : m_routeTables)
+        AddTopologyAction(table);
+    AddTopologyAction(m_members);
+    AddTopologyAction(m_tree);
     m_links = createTable(Table::Links, relations, "SclLinks");
     m_candidates = createTable(Table::Candidates, relations, "SclCandidates");
     relationsLayout->addWidget(m_links, 3);
@@ -530,33 +772,34 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     auto* sourcePage = new QWidget(m_inspector);
     auto* sourceLayout = new QVBoxLayout(sourcePage);
     m_sourceLabel = new QLabel(sourcePage);
+    m_sourceLabel->setObjectName("SclSourceLabel");
     m_sourceLabel->setTextFormat(Qt::PlainText);
     m_sourceLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    m_source = new QPlainTextEdit(sourcePage);
-    m_source->setObjectName("SclSource");
-    m_source->setReadOnly(true);
-    m_source->setLineWrapMode(QPlainTextEdit::NoWrap);
-    m_source->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    m_source = new SclSourcePreview(sourcePage);
     sourceLayout->addWidget(m_sourceLabel);
     sourceLayout->addWidget(m_source);
     m_inspector->addTab(sourcePage, QStringLiteral("原文"));
 
-    connect(m_tree->selectionModel(), &QItemSelectionModel::currentChanged, this, [this](const QModelIndex& index) {
-        Select(SclTreeModel::Node(index));
-    });
+    const auto selectTree = [this](const QModelIndex& index) {
+        if (!m_restoring)
+            Select(SclTreeModel::Node(index), true);
+    };
+    connect(m_tree->selectionModel(), &QItemSelectionModel::currentChanged, this, selectTree);
+    connect(m_tree, &QTreeView::clicked, this, selectTree);
     connect(m_links->selectionModel(), &QItemSelectionModel::currentChanged, this, [this](const QModelIndex& index) {
         auto* model = static_cast<SclTableModel*>(m_links->model());
         auto targets = index.isValid() ? model->Targets(index.row()) : QList<NodeId>{};
-        m_candidates->setVisible(targets.size() > 1);
+        const bool unresolved = index.isValid() && !model->IsIncoming(index.row())
+            && model->ReferenceAt(index.row()).state != Scl::LinkState::Resolved;
+        m_candidates->setVisible(targets.size() > 1 || (unresolved && !targets.isEmpty()));
         static_cast<SclTableModel*>(m_candidates->model())->Reset(m_snapshot, NoNode, std::move(targets));
+        UpdateReferencePath(index);
     });
     const auto jump = [this](const QModelIndex& index) {
         const auto id = index.data(Qt::UserRole).toInt();
         if (!index.isValid() || id == NoNode)
             return;
-        Select(id);
-        if (m_snapshot->analysis.document->nodes[id].name == "DataSet")
-            m_tables->setCurrentWidget(m_members);
+        Select(id, true);
     };
     connect(m_links, &QTableView::activated, this, jump);
     connect(m_candidates, &QTableView::activated, this, jump);
@@ -568,11 +811,15 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     forwardShortcut->setContext(Qt::WidgetWithChildrenShortcut);
     connect(backShortcut, &QShortcut::activated, m_back, &QPushButton::click);
     connect(forwardShortcut, &QShortcut::activated, m_forward, &QPushButton::click);
-    connect(m_tables, &QTabWidget::currentChanged, this, [this] { RememberView(); });
+    connect(m_tables, &QTabWidget::currentChanged, this, [this] {
+        if (!m_restoring)
+            LocateTableRow();
+        RememberView();
+    });
     connect(m_inspector, &QTabWidget::currentChanged, this, [this] { RememberView(); });
     connect(m_failedSource, &QPushButton::clicked, this, [this] {
         m_showingFailure = true;
-        Preview(m_failure.source.get(), int(m_failure.diagnostic.line), QStringLiteral("失败的加载请求"));
+        Preview(m_failure.source.get(), {-1, int(m_failure.diagnostic.line)}, QStringLiteral("失败的加载请求"));
         m_inspector->setCurrentIndex(2);
     });
 }
@@ -583,10 +830,14 @@ bool SclWorkspace::UpdateSession(Snapshot snapshot, const Scl::Result& failure)
     {
         m_showingFailure = false;
         if (m_snapshot && m_selected != NoNode)
-            Preview(m_snapshot->analysis.source.get(), m_snapshot->analysis.document->nodes[m_selected].source.line,
-                    QFileInfo(m_snapshot->path).fileName());
+        {
+            const auto& analysis = m_snapshot->analysis;
+            const auto location = m_finding >= 0 ? analysis.findings[m_finding].location
+                : analysis.document->nodes[m_selected].source;
+            Preview(analysis.source.get(), location, QFileInfo(m_snapshot->path).fileName());
+        }
         else
-            Preview(nullptr, 0, {});
+            Preview(nullptr, {}, {});
     }
     m_failure = failure;
     m_failedSource->setVisible(bool(failure.source));
@@ -594,6 +845,8 @@ bool SclWorkspace::UpdateSession(Snapshot snapshot, const Scl::Result& failure)
         return false;
 
     m_selected = NoNode;
+    m_finding = -1;
+    m_clearNavigationFilter->hide();
     m_showingFailure = false;
     m_history.clear();
     m_historyIndex = -1;
@@ -601,6 +854,9 @@ bool SclWorkspace::UpdateSession(Snapshot snapshot, const Scl::Result& failure)
     UpdateHistoryButtons();
     ResetSearch(true);
     m_snapshot = std::move(snapshot);
+    m_topologyPath.clear();
+    m_topologyStatus->clear();
+    UpdateTopologyControls();
     m_export->setEnabled(bool(m_snapshot) && !m_exporting);
     m_treeModel->Reset(m_snapshot);
     for (auto* model : m_models)
@@ -609,12 +865,17 @@ bool SclWorkspace::UpdateSession(Snapshot snapshot, const Scl::Result& failure)
     m_inspector->setCurrentIndex(0);
     if (!m_snapshot)
     {
+        m_summary->show();
+        m_scope->hide();
+        m_scopeActions->hide();
         m_summary->setText(QStringLiteral("尚无可浏览的文档"));
         m_summary->setToolTip({});
         m_breadcrumb->setText(QStringLiteral("打开 SCL 文件以开始分析"));
         m_breadcrumb->setToolTip({});
+        m_pathMenu->setEnabled(false);
         m_properties->clear();
-        Preview(nullptr, 0, {});
+        UpdateReferencePath({});
+        Preview(nullptr, {}, {});
         m_candidates->hide();
         return false;
     }
@@ -654,7 +915,7 @@ bool SclWorkspace::UpdateSession(Snapshot snapshot, const Scl::Result& failure)
     }
     m_summary->setText(QStringLiteral("%1\n\n%2 MiB · %3 个元素\nIED %4 · LD %5 · LN / LN0 %6\n"
         "数据集 %7 · 报告定义 %8 · GOOSE %9 · SV %10\n版本线索 %11\n\n"
-        "错误 %12 · 警告 %13 · 提示 %14\n规则集 %15\n%16")
+        "XML 读取：成功\n内部一致性：错误 %12 · 警告 %13 · 提示 %14\n完整 XSD：未执行\n\n规则集 %15\n%16")
         .arg(QFileInfo(m_snapshot->path).fileName())
         .arg(double(analysis.source->bytes().size()) / (1024 * 1024), 0, 'f', 2)
         .arg(analysis.document->nodes.size()).arg(counts.value("IED")).arg(counts.value("LDevice"))
@@ -668,39 +929,105 @@ bool SclWorkspace::UpdateSession(Snapshot snapshot, const Scl::Result& failure)
     return true;
 }
 
-void SclWorkspace::Select(NodeId id, bool remember)
+void SclWorkspace::Select(NodeId id, bool route, int finding, bool openSource)
 {
-    if (!m_snapshot || id == NoNode || (id == m_selected && !m_showingFailure))
+    if (!m_snapshot || id < 0 || size_t(id) >= m_snapshot->analysis.document->nodes.size())
         return;
-    if (remember && id != m_selected)
+    const bool changed = id != m_selected || finding != m_finding;
+    const bool refreshDetails = changed || m_showingFailure;
+    const auto* previousTable = m_tables->currentWidget();
+    const auto previousScope = m_dataSet;
+    const bool restoring = m_restoring;
+    {
+        const QScopedValueRollback<bool> guard(m_restoring, true);
+        m_showingFailure = false;
+        m_selected = id;
+        m_finding = finding;
+        const auto index = m_treeModel->ForNode(id);
+        if (m_tree->currentIndex() != index)
+        {
+            m_tree->scrollTo(index);
+            m_tree->setCurrentIndex(index);
+        }
+        if (refreshDetails)
+            UpdateDetails();
+        if (finding >= 0 && (refreshDetails || openSource))
+            Preview(m_snapshot->analysis.source.get(), m_snapshot->analysis.findings[finding].location,
+                    QFileInfo(m_snapshot->path).fileName());
+        if (openSource)
+            m_inspector->setCurrentIndex(2);
+        if (route)
+        {
+            QWidget* page = m_tables->widget(0);
+            const auto& node = m_snapshot->analysis.document->nodes[id];
+            if (finding >= 0)
+                page = m_findings;
+            else if (node.isScl() && node.name == "FCDA"
+                && static_cast<SclTableModel*>(m_members->model())->RowForNode(id) >= 0)
+                page = m_members;
+            else if (node.name != "LN" && node.name != "LN0")
+            {
+                for (auto* table : m_routeTables)
+                {
+                    if (static_cast<SclTableModel*>(table->model())->RowForNode(id) >= 0)
+                    {
+                        page = table;
+                        break;
+                    }
+                }
+            }
+            m_tables->setCurrentWidget(page);
+        }
+    }
+    if (restoring)
+        return;
+    UpdateTopologyControls();
+    if (changed)
     {
         m_history.resize(size_t(m_historyIndex + 1));
-        m_history.push_back({id, m_dataSet, m_tables->currentIndex(), m_inspector->currentIndex()});
+        m_history.push_back({});
         m_historyIndex = int(m_history.size()) - 1;
     }
-    m_showingFailure = false;
-    m_selected = id;
     UpdateHistoryButtons();
-
-    const auto index = m_treeModel->ForNode(id);
-    if (m_tree->currentIndex() != index)
-    {
-        const QSignalBlocker blocked(m_tree->selectionModel());
-        m_tree->scrollTo(index);
-        m_tree->setCurrentIndex(index);
-    }
-    UpdateDetails();
     RememberView();
+    if (m_searchMode->currentIndex() == 1 && (previousTable != m_tables->currentWidget()
+        || (m_tables->currentWidget() == m_members && previousScope != m_dataSet)))
+        ScheduleSearch();
+    LocateTableRow();
+}
+
+void SclWorkspace::SelectFinding(int finding, bool openSource, bool route)
+{
+    const auto id = m_snapshot->analysis.findings[finding].node;
+    Select(id == NoNode ? m_selected : id, route, finding, openSource);
+}
+
+void SclWorkspace::LocateTableRow()
+{
+    m_clearNavigationFilter->hide();
+    auto* table = qobject_cast<QTableView*>(m_tables->currentWidget());
+    if (!m_snapshot || m_selected == NoNode || !table || table == m_results)
+        return;
+    auto* model = static_cast<SclTableModel*>(table->model());
+    const int original = table == m_findings ? m_finding : model->RowForNode(m_selected);
+    const int visible = model->VisibleRow(original);
+    const QScopedValueRollback<bool> guard(m_restoring, true);
+    if (visible < 0)
+        table->selectionModel()->clear();
+    else
+    {
+        const auto current = table->currentIndex();
+        const auto index = model->index(visible, current.isValid() ? current.column() : 0);
+        table->setCurrentIndex(index);
+        table->scrollTo(index);
+    }
+    m_clearNavigationFilter->setVisible(original >= 0 && visible < 0);
 }
 
 void SclWorkspace::RememberView()
 {
     if (!m_restoring && m_historyIndex >= 0)
-    {
-        const auto* table = qobject_cast<QTableView*>(m_tables->currentWidget());
-        m_history[m_historyIndex] = {m_selected, m_dataSet, m_tables->currentIndex(), m_inspector->currentIndex(),
-            table ? QPersistentModelIndex(table->currentIndex()) : QPersistentModelIndex{}};
-    }
+        m_history[m_historyIndex] = {m_selected, m_dataSet, m_tables->currentIndex(), m_inspector->currentIndex(), m_finding};
 }
 
 void SclWorkspace::UpdateHistoryButtons()
@@ -714,24 +1041,62 @@ void SclWorkspace::Navigate(int direction)
     const int next = m_historyIndex + direction;
     if (next < 0 || next >= int(m_history.size()))
         return;
-    const QScopedValueRollback<bool> restoring(m_restoring, true);
-    m_historyIndex = next;
     const auto location = m_history[next];
-    Select(location.node, false);
-    m_dataSet = location.dataSet;
-    static_cast<SclTableModel*>(m_members->model())->SetMembers(m_snapshot, m_dataSet);
-    m_tables->setCurrentIndex(location.table);
-    m_inspector->setCurrentIndex(location.inspector);
-    if (auto* table = qobject_cast<QTableView*>(m_tables->currentWidget());
-        table && location.row.isValid() && location.row.model() == table->model())
+    const auto previousTable = m_tables->currentIndex();
+    const auto previousScope = m_dataSet;
     {
-        const QSignalBlocker blocked(table->selectionModel());
-        table->setCurrentIndex(location.row);
-        table->scrollTo(location.row);
+        const QScopedValueRollback<bool> restoring(m_restoring, true);
+        m_historyIndex = next;
+        Select(location.node, false, location.finding);
+        SetMemberScope(location.dataSet);
+        m_tables->setCurrentIndex(location.table);
+        m_inspector->setCurrentIndex(location.inspector);
+        if (m_tables->currentWidget() == m_results)
+            m_results->selectionModel()->clear();
     }
     UpdateHistoryButtons();
-    if (m_searchMode->currentIndex() == 1)
+    UpdateTopologyControls();
+    if (m_searchMode->currentIndex() == 1 && (previousTable != location.table
+        || (m_tables->currentWidget() == m_members && previousScope != m_dataSet)))
         ScheduleSearch();
+    LocateTableRow();
+}
+
+void SclWorkspace::SetMemberScope(NodeId dataSet)
+{
+    m_dataSet = dataSet;
+    static_cast<SclTableModel*>(m_members->model())->SetMembers(m_snapshot, dataSet);
+}
+
+void SclWorkspace::UpdateOverview()
+{
+    const auto& nodes = m_snapshot->analysis.document->nodes;
+    const auto id = m_selected;
+    m_summary->setVisible(id == 0);
+    m_scope->setVisible(id != 0);
+    m_scopeActions->setVisible(id != 0);
+    if (id == 0)
+        return;
+    m_scope->setText(QStringLiteral("当前节点\n%1\n直接子节点：%2")
+        .arg(Path(*m_snapshot, id)).arg(m_snapshot->browse.branches[id].count));
+    auto end = NodeId(nodes.size());
+    for (auto ancestor = id; ancestor != NoNode; ancestor = nodes[ancestor].parent)
+    {
+        if (nodes[ancestor].nextSibling != NoNode)
+        {
+            end = nodes[ancestor].nextSibling;
+            break;
+        }
+    }
+    for (size_t i = 0; i < m_routeTables.size(); ++i)
+    {
+        const auto* table = m_routeTables[i];
+        const auto* model = static_cast<SclTableModel*>(table->model());
+        const int count = model->FirstAtOrAfter(end) - model->FirstAtOrAfter(id + 1);
+        m_scopeButtons[i]->setVisible(count > 0);
+        m_scopeButtons[i]->setText(QStringLiteral("%1 · %2 项 · 定位首项")
+            .arg(m_tables->tabText(m_tables->indexOf(table))).arg(count));
+    }
 }
 
 void SclWorkspace::UpdateDetails()
@@ -740,92 +1105,184 @@ void SclWorkspace::UpdateDetails()
     const auto& snapshot = *m_snapshot;
     const auto& analysis = snapshot.analysis;
     const auto& node = analysis.document->nodes[id];
-    const auto path = Path(snapshot, id);
-    m_breadcrumb->setText(path);
-    m_breadcrumb->setToolTip(path.toHtmlEscaped());
+    UpdatePath();
+    UpdateOverview();
 
-    QString text = QStringLiteral("%1\n命名空间：%2\n原文：第 %3 行\n\n原始属性\n")
-        .arg(Title(snapshot, id), node.namespaceUri).arg(node.source.line);
-    for (int i = 0; i < node.attributeCount && i < 100 && text.size() < 24000; ++i)
-    {
-        const auto& attr = analysis.document->attributes[node.firstAttribute + i];
-        const auto key = attr.namespaceUri.isEmpty() ? attr.name : '{' + attr.namespaceUri + '}' + attr.name;
-        text += QStringLiteral("%1 = %2%3\n").arg(key, attr.value.left(2000),
-            attr.value.size() > 2000 ? QStringLiteral("…") : QString());
-    }
-    if (node.attributeCount > 100 || text.size() >= 24000)
-        text += QStringLiteral("…属性预览已截断\n");
-    if (!node.text.isEmpty())
-        text += QStringLiteral("\n原始文本\n%1\n").arg(node.text.left(2000));
-    if (node.name == "ReportControl")
+    QString html = QStringLiteral("<h3>%1</h3>").arg(Title(snapshot, id).toHtmlEscaped());
+    const auto group = [&](const QString& heading) {
+        html += QStringLiteral("<h4>%1</h4><table cellspacing='4'>").arg(heading);
+    };
+    const auto field = [&](const QString& name, const QString& value) {
+        html += QStringLiteral("<tr><td><b>%1</b></td><td>%2</td></tr>")
+            .arg(name.toHtmlEscaped(), value.toHtmlEscaped().replace('\n', QStringLiteral("<br>")));
+    };
+    const auto mapped = [](const QString& value) { return value.isEmpty() ? QStringLiteral("无法推导") : value; };
+    group(QStringLiteral("位置"));
+    field(QStringLiteral("命名空间"), node.namespaceUri);
+    field(QStringLiteral("原文行"), QString::number(node.source.line));
+    html += QStringLiteral("</table>");
+
+    if (node.isScl() && node.name == "ReportControl")
     {
         const auto report = std::lower_bound(analysis.reports.begin(), analysis.reports.end(), id,
             [](const auto& entry, NodeId needle) { return entry.source < needle; });
         if (report != analysis.reports.end() && report->source == id)
         {
-            text += QStringLiteral("\n推导映射\n定义引用：%1\n数据集引用：%2\nMMS domain：%3\nMMS item：%4\n")
-                .arg(report->definitionReference, report->dataSetReference, report->mmsDomain, report->mmsItem);
+            group(QStringLiteral("报告声明"));
+            field(QStringLiteral("报告定义名"), Attribute(snapshot, id, "name"));
+            field(QStringLiteral("原始 rptID"), report->rptId.isNull() ? QStringLiteral("未声明")
+                : report->rptId.isEmpty() ? QStringLiteral("已声明空值") : report->rptId);
+            field(QStringLiteral("声明的数据集"), report->declaredDataSet.isNull() ? QStringLiteral("未声明")
+                : report->declaredDataSet.isEmpty() ? QStringLiteral("已声明空值") : report->declaredDataSet);
+            html += QStringLiteral("</table>");
+            group(QStringLiteral("派生报告映射"));
+            field(QStringLiteral("定义引用"), mapped(report->definitionReference));
+            field(QStringLiteral("数据集引用"), mapped(report->dataSetReference));
+            field(QStringLiteral("MMS domain"), mapped(report->mmsDomain));
+            field(QStringLiteral("MMS item"), mapped(report->mmsItem));
+            field(QStringLiteral("运行时实际报告标识"), QStringLiteral("需在线确认"));
+            html += QStringLiteral("</table>");
         }
     }
     const auto link = analysis.outgoing.constFind(id);
     if (link != analysis.outgoing.cend() && analysis.references[*link].kind == Scl::LinkKind::Fcda)
     {
         const auto& ref = analysis.references[*link];
-        text += QStringLiteral("\n推导映射\n对象引用：%1\nMMS domain：%2\nMMS item：%3\n")
-            .arg(ref.objectReference, ref.mmsDomain, ref.mmsItem);
+        group(QStringLiteral("FCDA 派生映射"));
+        field(QStringLiteral("解析状态"), LinkState(ref.state));
+        field(QStringLiteral("对象引用"), mapped(ref.objectReference));
+        field(QStringLiteral("MMS domain"), mapped(ref.mmsDomain));
+        field(QStringLiteral("MMS item"), mapped(ref.mmsItem));
         if (ref.arrayIndex >= 0)
-            text += QStringLiteral("下标：%1\n后续组件：%2\n").arg(ref.arrayIndex).arg(ref.mmsComponent);
+        {
+            field(QStringLiteral("下标"), QString::number(ref.arrayIndex));
+            field(QStringLiteral("后续组件"), ref.mmsComponent);
+        }
+        html += QStringLiteral("</table>");
     }
-    m_properties->setPlainText(text);
+    group(QStringLiteral("原始属性"));
+    int shown = 0;
+    for (; shown < node.attributeCount && shown < 100 && html.size() < 24000; ++shown)
+    {
+        const auto& attr = analysis.document->attributes[node.firstAttribute + shown];
+        const auto key = attr.namespaceUri.isEmpty() ? attr.name : '{' + attr.namespaceUri + '}' + attr.name;
+        field(key, attr.value.size() > 2000 ? attr.value.left(2000) + QStringLiteral("…") : attr.value);
+    }
+    html += QStringLiteral("</table>");
+    if (shown < node.attributeCount)
+        html += QStringLiteral("<p>属性预览已截断</p>");
+    if (!node.text.isEmpty())
+        html += QStringLiteral("<h4>原始文本</h4><p>%1</p>").arg(node.text.left(2000).toHtmlEscaped());
+    m_properties->setHtml(html);
     static_cast<SclTableModel*>(m_links->model())->Reset(m_snapshot, id);
     static_cast<SclTableModel*>(m_candidates->model())->Reset(m_snapshot);
     m_candidates->hide();
+    if (m_links->model()->rowCount())
+        m_links->setCurrentIndex(m_links->model()->index(0, 0));
+    else
+        UpdateReferencePath({});
 
     const auto dataSet = node.name == "DataSet" ? id : node.name == "FCDA" ? node.parent : NoNode;
-    if (dataSet != NoNode && m_dataSet != dataSet)
-    {
-        m_dataSet = dataSet;
-        static_cast<SclTableModel*>(m_members->model())->SetMembers(m_snapshot, dataSet);
-        if (m_tables->currentWidget() == m_members && !m_restoring && m_searchMode->currentIndex() == 1)
-            ScheduleSearch();
-    }
-    Preview(analysis.source.get(), node.source.line, QFileInfo(snapshot.path).fileName());
+    if (m_snapshot->browse.dataSetMembers.contains(dataSet))
+        SetMemberScope(dataSet);
+    Preview(analysis.source.get(), node.source, QFileInfo(snapshot.path).fileName());
 }
 
-void SclWorkspace::Preview(const Scl::SourceIndex* source, int line, const QString& path)
+void SclWorkspace::UpdatePath()
 {
-    m_sourceLabel->setText(path);
-    if (!source || source->lineCount() == 0)
+    std::vector<NodeId> nodes;
+    for (auto id = m_selected; id != NoNode; id = m_snapshot->analysis.document->nodes[id].parent)
+        nodes.push_back(id);
+    QStringList links;
+    links << NodeLink(*m_snapshot, nodes.back(), palette(), 24);
+    if (nodes.size() > 4)
+        links << QStringLiteral("…");
+    for (auto i = qMin(size_t(3), nodes.size() - 1); i > 0; --i)
+        links << NodeLink(*m_snapshot, nodes[i - 1], palette(), 24);
+    m_breadcrumb->setText(links.join(QStringLiteral(" › ")));
+    m_breadcrumb->setToolTip(Path(*m_snapshot, m_selected).toHtmlEscaped());
+    m_pathMenu->setEnabled(true);
+}
+
+void SclWorkspace::UpdateReferencePath(const QModelIndex& index)
+{
+    QString declared;
+    QString derived;
+    QString html = QStringLiteral("当前节点没有可查看的引用。");
+    if (index.isValid() && m_snapshot)
     {
-        m_source->clear();
-        if (source)
-            m_sourceLabel->setText(path + QStringLiteral(" · 原文行索引不可用"));
-        return;
+        const auto* model = static_cast<SclTableModel*>(m_links->model());
+        const auto& ref = model->ReferenceAt(index.row());
+        const auto& snapshot = *m_snapshot;
+        const auto& nodes = snapshot.analysis.document->nodes;
+        QStringList segments{NodeLink(snapshot, ref.source, palette())};
+        declared = ref.declared;
+        if (ref.kind == Scl::LinkKind::Fcda)
+        {
+            QStringList fields;
+            for (const auto* key : {"ldInst", "prefix", "lnClass", "lnInst", "doName", "daName", "fc", "ix"})
+            {
+                const auto value = Attribute(snapshot, ref.source, key);
+                if (!value.isNull())
+                    fields << QString::fromLatin1(key) + '=' + value;
+            }
+            declared = fields.join('\n');
+            derived = ref.objectReference;
+            if (ref.logicalNode != NoNode)
+            {
+                segments << NodeLink(snapshot, nodes[ref.logicalNode].parent, palette())
+                         << NodeLink(snapshot, ref.logicalNode, palette());
+            }
+            else
+            {
+                const auto ld = Attribute(snapshot, ref.source, "ldInst");
+                const auto ln = Attribute(snapshot, ref.source, "prefix") + Attribute(snapshot, ref.source, "lnClass")
+                    + Attribute(snapshot, ref.source, "lnInst");
+                if (!ld.isEmpty())
+                    segments << QStringLiteral("LD 声明 %1").arg(ld.left(100).toHtmlEscaped());
+                if (!ln.isEmpty())
+                    segments << QStringLiteral("LN 声明 %1").arg(ln.left(100).toHtmlEscaped());
+            }
+            for (const auto* key : {"doName", "daName", "fc", "ix"})
+            {
+                const auto value = Attribute(snapshot, ref.source, key);
+                if (!value.isEmpty())
+                    segments << QStringLiteral("%1 %2").arg(QString::fromLatin1(key), value.left(100).toHtmlEscaped());
+            }
+        }
+        else if (!ref.declared.isEmpty())
+            segments << QStringLiteral("声明 %1").arg(ref.declared.left(160).toHtmlEscaped());
+        if (ref.state == Scl::LinkState::Resolved && ref.candidates.size() == 1)
+            segments << NodeLink(snapshot, ref.candidates.front(), palette());
+        if (ref.kind == Scl::LinkKind::ControlDataSet && nodes[ref.source].name == "ReportControl")
+        {
+            const auto& reports = snapshot.analysis.reports;
+            const auto report = std::lower_bound(reports.begin(), reports.end(), ref.source,
+                [](const auto& entry, NodeId id) { return entry.source < id; });
+            if (report != reports.end() && report->source == ref.source)
+                derived = report->dataSetReference;
+        }
+        html = QStringLiteral("<b>%1 · %2</b><br>%3").arg(
+            model->IsIncoming(index.row()) ? QStringLiteral("使用方") : QStringLiteral("引用"),
+            LinkState(ref.state), segments.join(QStringLiteral(" → ")));
+        if (!ref.detail.isEmpty())
+            html += QStringLiteral("<br>%1").arg(ref.detail.left(400).toHtmlEscaped());
+        if (ref.state != Scl::LinkState::Resolved && !ref.candidates.isEmpty())
+            html += QStringLiteral("<br>候选 %1 项，见下方列表。").arg(ref.candidates.size());
     }
-    line = qBound(1, line, source->lineCount());
-    const int first = qMax(1, line - 15);
-    const int last = qMin(source->lineCount(), line + 15);
-    QStringList lines;
-    for (int n = first; n <= last; ++n)
-    {
-        auto entry = source->line(n);
-        while (entry.text.endsWith('\r') || entry.text.endsWith('\n'))
-            entry.text.chop(1);
-        const bool clipped = entry.truncated || entry.text.size() > 1024;
-        if (entry.text.size() > 1024)
-            entry.text.truncate(entry.text.at(1023).isHighSurrogate() ? 1023 : 1024);
-        lines << QStringLiteral("%1  %2%3").arg(n, 7).arg(entry.text,
-            clipped ? QStringLiteral(" …[已截断]") : QString());
-    }
-    m_sourceLabel->setText(QStringLiteral("%1 · 第 %2 行（%3–%4）").arg(path).arg(line).arg(first).arg(last));
-    m_source->setPlainText(lines.join('\n'));
-    QTextCursor cursor(m_source->document()->findBlockByNumber(line - first));
-    m_source->setTextCursor(cursor);
-    QTextEdit::ExtraSelection highlight;
-    highlight.cursor = cursor;
-    highlight.format.setBackground(palette().alternateBase());
-    highlight.format.setProperty(QTextFormat::FullWidthSelection, true);
-    m_source->setExtraSelections({highlight});
-    m_source->centerCursor();
+    m_referencePath->setText(html);
+    m_copyDeclared->setProperty("sclCopyValue", declared);
+    m_copyDerived->setProperty("sclCopyValue", derived);
+    m_copyDeclared->setEnabled(!declared.isEmpty());
+    m_copyDerived->setEnabled(!derived.isEmpty());
+}
+
+void SclWorkspace::Preview(const Scl::SourceIndex* source, Scl::SourceLocation location, const QString& path)
+{
+    const auto* document = m_snapshot && m_snapshot->analysis.source.get() == source
+        ? m_snapshot->analysis.document.get() : nullptr;
+    const auto status = m_source->Show(source, location, document);
+    m_sourceLabel->setText(status.isEmpty() ? path : path + QStringLiteral(" · ") + status);
+    m_sourceLabel->setToolTip(m_sourceLabel->text().toHtmlEscaped());
 }
 } // namespace iec61850sim

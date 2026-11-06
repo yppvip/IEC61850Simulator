@@ -3,7 +3,6 @@
 #include "SclAnalysisService.hpp"
 #include "SclSearch.hpp"
 #include <QWidget>
-#include <QPersistentModelIndex>
 #include <optional>
 
 class QAbstractItemView;
@@ -13,7 +12,8 @@ class QLineEdit;
 class QCheckBox;
 class QTimer;
 class QVBoxLayout;
-class QPlainTextEdit;
+class QTextBrowser;
+class QToolButton;
 class QPushButton;
 class QTabWidget;
 class QTableView;
@@ -25,6 +25,8 @@ class SclTreeModel;
 class SclTableModel;
 class SclSearchSession;
 class SclResultsModel;
+class SclSourcePreview;
+class SclTopologyFiles;
 
 class SclWorkspace final : public QWidget
 {
@@ -39,13 +41,19 @@ private:
         Scl::NodeId dataSet;
         int table;
         int inspector;
-        QPersistentModelIndex row;
+        int finding;
     };
-    void Select(Scl::NodeId id, bool remember = true);
+    void Select(Scl::NodeId id, bool route = false, int finding = -1, bool openSource = false);
+    void SelectFinding(int finding, bool openSource, bool route = false);
+    void LocateTableRow();
+    void UpdateOverview();
+    void SetMemberScope(Scl::NodeId dataSet);
     void RememberView();
     void Navigate(int direction);
     void UpdateHistoryButtons();
-    void Preview(const Scl::SourceIndex* source, int line, const QString& path);
+    void Preview(const Scl::SourceIndex* source, Scl::SourceLocation location, const QString& path);
+    void UpdatePath();
+    void UpdateReferencePath(const QModelIndex& index);
     void UpdateDetails();
     void CreateSearchBar(QVBoxLayout* layout);
     void AttachSearchResults();
@@ -56,10 +64,15 @@ private:
     void UpdateSearchStatus();
     void ApplyTableFilter(QTableView* table, std::optional<std::vector<int>> rows);
     void SaveIssues();
+    void CreateTopologyControls(QVBoxLayout* layout);
+    void AddTopologyAction(QAbstractItemView* view);
+    void UpdateTopologyControls();
+    void OpenTopology(Scl::NodeId id);
 
     std::shared_ptr<const SclSnapshot> m_snapshot;
     Scl::Result m_failure;
     Scl::NodeId m_selected = Scl::NoNode;
+    int m_finding = -1;
     bool m_showingFailure = false;
     Scl::NodeId m_dataSet = Scl::NoNode;
     std::vector<Location> m_history;
@@ -70,17 +83,33 @@ private:
     QTabWidget* m_tables;
     QTabWidget* m_inspector;
     QLabel* m_summary;
+    QLabel* m_scope;
+    QWidget* m_scopeActions;
+    QPushButton* m_clearNavigationFilter;
     QLabel* m_breadcrumb;
+    QToolButton* m_pathMenu;
+    QLabel* m_referencePath;
+    QPushButton* m_copyDeclared;
+    QPushButton* m_copyDerived;
+    QPushButton* m_topology;
+    QPushButton* m_copyTopologyPath;
+    QLabel* m_topologyStatus;
+    std::shared_ptr<SclTopologyFiles> m_topologyFiles;
+    QString m_topologyPath;
+    bool m_buildingTopology = false;
     QLabel* m_sourceLabel;
-    QPlainTextEdit* m_properties;
-    QPlainTextEdit* m_source;
+    QTextBrowser* m_properties;
+    SclSourcePreview* m_source;
     QPushButton* m_back;
     QPushButton* m_forward;
     QPushButton* m_failedSource;
     QTableView* m_members;
+    QTableView* m_findings;
     QTableView* m_links;
     QTableView* m_candidates;
     std::vector<SclTableModel*> m_models;
+    std::vector<QTableView*> m_routeTables;
+    std::vector<QPushButton*> m_scopeButtons;
     QLineEdit* m_query;
     QLineEdit* m_iedFilter;
     QLineEdit* m_typeFilter;

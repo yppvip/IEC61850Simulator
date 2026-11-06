@@ -24,6 +24,12 @@ Redis 连接配置位于 `config/Redis.json`。应用以其中的 `host:port` �
 
 分析工作台支持全局搜索、当前表格筛选、前后退和 JSON/CSV 问题导出。按 F1 查看应用内帮助，或在「文件」菜单关闭当前 SCL 文档。本机 MSYS2 UCRT64 的 Debug 构建和 7 组 CTest 均通过。十次真实 SCD 加载与关闭及复现命令见 [P6 验收记录](docs/Tasks/Task1P6.md)。
 
+SCL 工作台优化见 [Task2](docs/Tasks/Task2.md)。树表双向定位和历史见 [T2.1](docs/Tasks/Task2T2.1.md)，可点击引用路径、分组详情与 XML 原文高亮见 [T2.2](docs/Tasks/Task2T2.2.md)。
+
+选中有引用关系的对象，在「引用与使用方」页打开离线拓扑，可追查 FCDA 字段来源、同对象的使用方和共享模板。见 [T2.3](docs/Tasks/Task2T2.3.md)。
+
+窄窗可点「详情」收起右栏，按 F1 查看导航和拓扑操作。测试与人工复核进度见 [T2.4](docs/Tasks/Task2T2.4.md)。
+
 ## 技术栈
 
 - C++：应用主框架、IEC 61850 报文与业务处理、Qt 集成。

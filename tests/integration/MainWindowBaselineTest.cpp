@@ -1,13 +1,17 @@
 #include "MainWindow.hpp"
 #include "SclAnalysisService.hpp"
 #include "SclIssueExport.hpp"
+#include "SclSourcePreview.hpp"
+#include "SclTopology.hpp"
 
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
+#include <QClipboard>
 #include <QComboBox>
 #include <QCryptographicHash>
 #include <QDir>
+#include <QDesktopServices>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -24,13 +28,19 @@
 #include <QTabWidget>
 #include <QTableView>
 #include <QTemporaryDir>
+#include <QTextBlock>
+#include <QTextBrowser>
+#include <QTextLayout>
 #include <QThreadPool>
 #include <QToolBar>
+#include <QToolButton>
 #include <QTreeView>
+#include <QUrl>
 #include <QtTest>
 #include <DockManager.h>
 #include <DockAreaWidget.h>
 #include <DockWidget.h>
+#include <algorithm>
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <psapi.h>
@@ -62,6 +72,7 @@ void CheckWorkspaceFlow(iec61850sim::MainWindow& window)
     auto* service = window.findChild<iec61850sim::SclAnalysisService*>();
     auto* workspace = window.findChild<QWidget*>("SclWorkspace");
     auto* reports = window.findChild<QTableView*>("SclReports");
+    auto* dataSets = window.findChild<QTableView*>("SclDataSets");
     auto* members = window.findChild<QTableView*>("SclMembers");
     auto* links = window.findChild<QTableView*>("SclLinks");
     auto* findings = window.findChild<QTableView*>("SclFindings");
@@ -69,13 +80,14 @@ void CheckWorkspaceFlow(iec61850sim::MainWindow& window)
     auto* tabs = window.findChild<QTabWidget*>("SclTables");
     auto* inspector = window.findChild<QTabWidget*>("SclInspector");
     auto* source = window.findChild<QPlainTextEdit*>("SclSource");
-    auto* properties = window.findChild<QPlainTextEdit*>("SclProperties");
+    auto* properties = window.findChild<QTextBrowser*>("SclProperties");
+    auto* sourceLabel = window.findChild<QLabel*>("SclSourceLabel");
     auto* back = window.findChild<QPushButton*>("SclBack");
     auto* simulation = window.findChild<QAction*>("ShowSimulation");
     auto* showAnalysis = window.findChild<QAction*>("ShowSclWorkspace");
     auto* manager = window.findChild<ads::CDockManager*>();
-    QVERIFY(service && workspace && reports && members && links && findings && tree && tabs
-        && inspector && source && properties && back && simulation && showAnalysis && manager);
+    QVERIFY(service && workspace && reports && dataSets && members && links && findings && tree && tabs
+        && inspector && source && sourceLabel && properties && back && simulation && showAnalysis && manager);
     auto* serverDock = manager->findDockWidget(QStringLiteral("服务器"));
     auto* clientDock = manager->findDockWidget(QStringLiteral("客户端"));
     QVERIFY(serverDock && clientDock);
@@ -105,7 +117,10 @@ void CheckWorkspaceFlow(iec61850sim::MainWindow& window)
     jump(0);
     QCOMPARE(selected(), dataSet);
     QCOMPARE(analysis.document->nodes[dataSet].name, QStringLiteral("DataSet"));
-    QCOMPARE(tabs->currentWidget(), members);
+    QCOMPARE(tabs->currentWidget(), dataSets);
+    QCOMPARE(dataSets->currentIndex().data(Qt::UserRole).toInt(), dataSet);
+    const auto dataSetTree = tree->currentIndex();
+    tabs->setCurrentWidget(members);
     QVERIFY(members->model()->rowCount() > 0);
     const auto memberIndex = members->model()->index(0, 0);
     const auto member = memberIndex.data(Qt::UserRole).toInt();
@@ -115,7 +130,10 @@ void CheckWorkspaceFlow(iec61850sim::MainWindow& window)
 
     const auto target = links->model()->index(0, 0).data(Qt::UserRole).toInt();
     QVERIFY(target > 0 && target != NoNode);
-    jump(0);
+    auto* referencePath = window.findChild<QLabel*>("SclReferencePath");
+    QVERIFY(referencePath && referencePath->text().contains("doName"));
+    QVERIFY(referencePath->text().contains(QStringLiteral("href='%1'").arg(target)));
+    QVERIFY(QMetaObject::invokeMethod(referencePath, "linkActivated", Q_ARG(QString, QString::number(target))));
     QCOMPARE(selected(), target);
     QVERIFY(tree->visualRect(tree->currentIndex()).isValid());
     QCOMPARE(links->model()->index(links->model()->rowCount() - 1, 0).data().toString(), QStringLiteral("使用方"));
@@ -147,6 +165,20 @@ void CheckWorkspaceFlow(iec61850sim::MainWindow& window)
     back->click();
     QCOMPARE(selected(), report);
     QCOMPARE(tabs->currentWidget(), reports);
+    QCOMPARE(reports->currentIndex(), reportIndex);
+
+    tree->setCurrentIndex(dataSetTree.parent());
+    QCOMPARE(tabs->currentIndex(), 0);
+    auto* scope = window.findChild<QLabel*>("SclNodeOverview");
+    QVERIFY(scope && scope->isVisible() && scope->text().contains("LN"));
+    tree->setCurrentIndex(dataSetTree);
+    QCOMPARE(tabs->currentWidget(), dataSets);
+    QCOMPARE(analysis.document->nodes[member].parent, dataSet);
+    const auto memberTree = tree->model()->index(snapshot->browse.branches[member].row, 0, dataSetTree);
+    QVERIFY(memberTree.isValid());
+    tree->setCurrentIndex(memberTree);
+    QCOMPARE(tabs->currentWidget(), members);
+    QCOMPARE(members->currentIndex().data(Qt::UserRole).toInt(), member);
 
     QVERIFY(findings->model()->rowCount() > 0);
     tabs->setCurrentWidget(findings);
@@ -154,6 +186,11 @@ void CheckWorkspaceFlow(iec61850sim::MainWindow& window)
     QVERIFY(QMetaObject::invokeMethod(findings, "activated", Q_ARG(QModelIndex, issue)));
     QCOMPARE(selected(), issue.data(Qt::UserRole).toInt());
     QCOMPARE(inspector->currentIndex(), 2);
+    QCOMPARE(source->extraSelections().size(), 1);
+    const auto issueLine = issue.siblingAtColumn(2).data().toInt();
+    QVERIFY(sourceLabel->text().contains(QStringLiteral("第 %1 行").arg(issueLine)));
+    QCOMPARE(source->extraSelections().front().cursor.block().text().trimmed(),
+             analysis.source->line(issueLine).text.trimmed().left(1024).trimmed());
     simulation->trigger();
     QVERIFY(!workspace->isVisible());
     QVERIFY(!serverDock->isClosed() && !clientDock->isClosed());
@@ -248,6 +285,18 @@ ProcessMemory Memory()
 }
 }
 
+class TopologyUrlReceiver final : public QObject
+{
+    Q_OBJECT
+public:
+    TopologyUrlReceiver() { QDesktopServices::setUrlHandler(QStringLiteral("file"), this, "Capture"); }
+    ~TopologyUrlReceiver() override { QDesktopServices::unsetUrlHandler(QStringLiteral("file")); }
+    QUrl url;
+
+public slots:
+    void Capture(const QUrl& value) { url = value; }
+};
+
 class MainWindowBaselineTest final : public QObject
 {
     Q_OBJECT
@@ -258,6 +307,9 @@ private slots:
     void SclLifecycle();
     void SclResponsiveAndClose();
     void SclWorkspaceFlow();
+    void SclReferenceDetails();
+    void SclSourceHighlighting();
+    void SclTopologyFlow();
     void SclSearchFlow();
     void SclIssueExport();
     void SclLocalAcceptance();
@@ -485,6 +537,39 @@ void MainWindowBaselineTest::SclLocalAcceptance()
             << analysis.sha256;
     QVERIFY(!analysis.document->nodes.empty());
     CheckWorkspaceFlow(window);
+    if (QTest::currentTestFailed())
+        return;
+    auto* tabs = window.findChild<QTabWidget*>("SclTables");
+    auto* tree = window.findChild<QTreeView*>("SclTree");
+    auto* reports = window.findChild<QTableView*>("SclReports");
+    auto* inspector = window.findChild<QTabWidget*>("SclInspector");
+    QVERIFY(reports->model()->rowCount() >= 2);
+    tabs->setCurrentWidget(reports);
+    reports->setCurrentIndex(reports->model()->index(0, 0));
+    const auto first = tree->currentIndex();
+    reports->setCurrentIndex(reports->model()->index(1, 0));
+    const auto second = tree->currentIndex();
+    QVERIFY(first.isValid() && second.isValid() && first != second);
+    inspector->setCurrentIndex(2);
+    const auto overview = tabs->widget(0);
+    tabs->setCurrentWidget(overview);
+    tree->setCurrentIndex(first);
+    QCOMPARE(tabs->currentWidget(), reports);
+    QCOMPARE(reports->currentIndex().row(), 0);
+    QApplication::processEvents();
+    QList<qint64> samples;
+    for (int i = 0; i < 40; ++i)
+    {
+        elapsed.start();
+        tree->setCurrentIndex(i % 2 == 0 ? second : first);
+        QApplication::processEvents();
+        // Force an offscreen raster update of the visible window.
+        const auto frame = window.grab();
+        samples.push_back(elapsed.nsecsElapsed());
+        QVERIFY(!frame.isNull());
+    }
+    std::sort(samples.begin(), samples.end());
+    qInfo() << "Tree navigation P95 ms (40 offscreen frames):" << samples[37] / 1e6;
     auto* query = window.findChild<QLineEdit*>("SclQuery");
     auto* exact = window.findChild<QCheckBox*>("SclExact");
     auto* results = window.findChild<QTableView*>("SclSearchResults");
@@ -500,6 +585,24 @@ void MainWindowBaselineTest::SclLocalAcceptance()
     QTRY_VERIFY(results->model()->rowCount() > 0);
     qInfo() << "First report match in" << elapsed.elapsed() << "ms (debounce excluded)";
     QTRY_VERIFY(status->text().startsWith(QStringLiteral("共")));
+
+    const auto reportWithId = std::find_if(analysis.reports.cbegin(), analysis.reports.cend(),
+        [](const auto& report) { return !report.rptId.isEmpty(); });
+    QVERIFY(reportWithId != analysis.reports.cend());
+    query->setText(reportWithId->rptId);
+    QTest::keyClick(query, Qt::Key_Return);
+    QTRY_VERIFY(results->model()->rowCount() > 0);
+    QTRY_VERIFY(status->text().startsWith(QStringLiteral("共")));
+    qInfo() << "Exact raw rptID search returned results";
+
+    elapsed.restart();
+    const auto topology = iec61850sim::BuildSclTopology(*service->snapshot(), analysis.reports.front().source);
+    QVERIFY(!topology.isEmpty());
+    QCOMPARE(topology.value("sha256").toString(), QString::fromLatin1(analysis.sha256));
+    const auto topologyViews = topology.value("views").toObject();
+    QVERIFY(topologyViews.size() > 1);
+    qInfo() << "Report topology ms, nodes, views:" << elapsed.elapsed() << topology.value("nodes").toArray().size()
+            << topologyViews.size();
 
     query->setText("DAI");
     elapsed.restart();
@@ -537,6 +640,284 @@ void MainWindowBaselineTest::SclWorkspaceFlow()
     CheckWorkspaceFlow(window);
     QDir().mkpath(QString::fromUtf8(BASELINE_ARTIFACT_DIR));
     QVERIFY(window.grab().save(QString::fromUtf8(BASELINE_ARTIFACT_DIR) + QStringLiteral("/SclWorkspace.png")));
+    auto* details = window.findChild<QToolButton*>("SclToggleDetails");
+    auto* inspector = window.findChild<QTabWidget*>("SclInspector");
+    auto* tables = window.findChild<QTabWidget*>("SclTables");
+    QVERIFY(details && inspector && tables && inspector->isVisible());
+    window.resize(760, 640);
+    QCoreApplication::processEvents();
+    const int width = tables->width();
+    const int page = inspector->currentIndex();
+    details->setFocus();
+    QTest::keyClick(details, Qt::Key_Space);
+    QTRY_VERIFY(!inspector->isVisible() && tables->width() > width);
+    QTest::keyClick(details, Qt::Key_Space);
+    QTRY_VERIFY(inspector->isVisible());
+    QCOMPARE(inspector->currentIndex(), page);
+}
+
+void MainWindowBaselineTest::SclReferenceDetails()
+{
+    using Service = iec61850sim::SclAnalysisService;
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    IsolateSettings(temp.path());
+    iec61850sim::MainWindow window;
+    window.show();
+    auto* service = window.findChild<Service*>();
+    auto* tabs = window.findChild<QTabWidget*>("SclTables");
+    auto* inspector = window.findChild<QTabWidget*>("SclInspector");
+    auto* reports = window.findChild<QTableView*>("SclReports");
+    auto* candidates = window.findChild<QTableView*>("SclCandidates");
+    auto* tree = window.findChild<QTreeView*>("SclTree");
+    auto* path = window.findChild<QLabel*>("SclBreadcrumb");
+    auto* reference = window.findChild<QLabel*>("SclReferencePath");
+    auto* properties = window.findChild<QTextBrowser*>("SclProperties");
+    auto* copy = window.findChild<QPushButton*>("SclCopyDeclared");
+    auto* copyDerived = window.findChild<QPushButton*>("SclCopyDerived");
+    auto* failed = window.findChild<QPushButton*>("SclFailedSource");
+    auto* sourceLabel = window.findChild<QLabel*>("SclSourceLabel");
+    auto* source = window.findChild<QPlainTextEdit*>("SclSource");
+    QVERIFY(service && tabs && inspector && reports && candidates && tree && path && reference && properties
+        && copy && copyDerived && failed && sourceLabel && source);
+
+    service->Open(QStringLiteral(SCL_FIXTURE_DIR "/Minimal.scd"));
+    QTRY_COMPARE(service->state(), Service::State::Ready);
+    auto* overview = window.findChild<QLabel*>("SclOverview");
+    QVERIFY(overview && overview->text().contains(QStringLiteral("完整 XSD：未执行")));
+    tabs->setCurrentWidget(reports);
+    reports->setCurrentIndex(reports->model()->index(1, 0));
+    QVERIFY(properties->toPlainText().contains(QStringLiteral("原始 rptID\n未声明")));
+    reports->setCurrentIndex(reports->model()->index(0, 0));
+    const auto owner = tree->currentIndex().parent();
+    QVERIFY(owner.isValid());
+    QVERIFY(path->text().contains(QStringLiteral("href='%1'").arg(owner.data(Qt::UserRole).toInt())));
+    QVERIFY(QMetaObject::invokeMethod(path, "linkActivated", Q_ARG(QString, owner.data(Qt::UserRole).toString())));
+    QCOMPARE(tree->currentIndex(), owner);
+    tabs->setCurrentWidget(reports);
+    reports->setCurrentIndex(reports->model()->index(0, 0));
+    inspector->setCurrentIndex(1);
+    QVERIFY(reference->text().contains(QStringLiteral("已解析")));
+    copy->click();
+    QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("dsEvents"));
+    QVERIFY(copyDerived->isEnabled());
+    copyDerived->click();
+    QCOMPARE(QApplication::clipboard()->text(), service->snapshot()->analysis.reports.front().dataSetReference);
+
+    service->Open(QStringLiteral(SCL_FIXTURE_DIR "/DanglingDataSet.scd"));
+    QTRY_COMPARE(service->state(), Service::State::Ready);
+    tabs->setCurrentWidget(reports);
+    reports->setCurrentIndex(reports->model()->index(0, 0));
+    QVERIFY(reference->text().contains(QStringLiteral("找不到目标")));
+    QVERIFY(reference->text().contains("missingDataSet"));
+
+    service->Open(QStringLiteral(SCL_FIXTURE_DIR "/DuplicateDataSet.scd"));
+    QTRY_COMPARE(service->state(), Service::State::Ready);
+    tabs->setCurrentWidget(reports);
+    reports->setCurrentIndex(reports->model()->index(0, 0));
+    inspector->setCurrentIndex(1);
+    QVERIFY(reference->text().contains(QStringLiteral("有歧义")));
+    QCOMPARE(candidates->model()->rowCount(), 2);
+    QVERIFY(candidates->isVisible());
+
+    const auto retained = service->snapshot();
+    service->Open(QStringLiteral(SCL_FIXTURE_DIR "/Truncated.scd"));
+    QTRY_COMPARE(service->state(), Service::State::Failed);
+    QCOMPARE(service->snapshot(), retained);
+    failed->click();
+    QVERIFY(sourceLabel->text().contains(QStringLiteral("失败的加载请求")));
+    QVERIFY(!source->toPlainText().isEmpty());
+    QVERIFY(source->toPlainText().contains(service->failure().source->line(service->failure().diagnostic.line).text.trimmed()));
+    tree->setCurrentIndex(tree->model()->index(0, 0));
+    QVERIFY(sourceLabel->text().contains("DuplicateDataSet.scd"));
+}
+
+void MainWindowBaselineTest::SclSourceHighlighting()
+{
+    const auto xml = QStringLiteral("<SCL xmlns='http://www.iec.ch/61850/2003/SCL'>\r\n"
+        "<!-- comment\r\n<DO> fake -->\r\n"
+        "<Header id='值 &amp;\r\n继续'/>\r\n"
+        "<Private><![CDATA[内容\r\n<fake>]]></Private>\r\n"
+        "<Private>前\u2029后</Private>\r\n</SCL>");
+    iec61850sim::SclSourcePreview preview(nullptr);
+    const auto color = [&](int block, int column) {
+        for (const auto& range : preview.document()->findBlockByNumber(block).layout()->formats())
+            if (column >= range.start && column < range.start + range.length)
+                return range.format.foreground().color();
+        return QColor();
+    };
+    for (const bool utf16 : {false, true})
+    {
+        QByteArray bytes = xml.toUtf8();
+        if (utf16)
+        {
+            bytes = QByteArray("\xff\xfe", 2);
+            for (const auto ch : xml)
+            {
+                bytes.append(char(ch.unicode() & 0xff));
+                bytes.append(char(ch.unicode() >> 8));
+            }
+        }
+        const auto result = Scl::Reader::readBytes(bytes);
+        QVERIFY(result.document);
+        const auto location = result.document->nodes[1].source;
+        QVERIFY(preview.Show(result.source.get(), location, result.document.get()).contains(QStringLiteral("第 4 行")));
+        QCOMPARE(preview.extraSelections().front().cursor.block().text(), QStringLiteral("<Header id='值 &amp;"));
+        QVERIFY(color(0, 0).isValid());
+        QVERIFY(color(0, 0) != color(3, 8)); // Tag and attribute
+        QCOMPARE(color(1, 0), color(2, 0)); // Multiline comment
+        QCOMPARE(color(3, 12), color(4, 0)); // Multiline value
+        QVERIFY(color(3, 14) != color(3, 12)); // Entity and value
+        QVERIFY(color(6, 0).isValid() && color(6, 0) != color(0, 0)); // CDATA
+        preview.selectAll();
+        preview.copy();
+        auto expected = xml;
+        QCOMPARE(QApplication::clipboard()->text(), expected.replace(QStringLiteral("\r\n"), QStringLiteral("\n")));
+    }
+
+    const auto bounded = Scl::Reader::readBytes("<SCL xmlns='http://www.iec.ch/61850/2003/SCL'>\n<!--\n"
+        + QByteArray("  <DO>\n").repeated(20) + "-->\n" + QByteArray(1100, ' ')
+        + "<Header id='late'/>\n<Private/>\n</SCL>");
+    QVERIFY(bounded.document);
+    const auto location = bounded.document->nodes[1].source;
+    const auto status = preview.Show(bounded.source.get(), location, bounded.document.get());
+    QVERIFY(status.contains(QStringLiteral("已截断")) && status.contains(QStringLiteral("仅定位到行")));
+    QVERIFY(!color(0, 2).isValid()); // The window starts inside a comment, with no trusted opening tag yet.
+    const auto line = preview.extraSelections().front().cursor.block();
+    QCOMPARE(line.text(), QString(1024, ' '));
+    QVERIFY(color(line.blockNumber() + 1, 0).isValid()); // Resume at a verified opening tag.
+}
+
+void MainWindowBaselineTest::SclTopologyFlow()
+{
+    using namespace iec61850sim;
+    using Service = SclAnalysisService;
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    IsolateSettings(temp.path());
+    const auto input = temp.filePath("Topology.scd");
+    const auto bytes = QByteArray(R"(<SCL xmlns="http://www.iec.ch/61850/2003/SCL">
+<IED name="Synthetic"><AccessPoint name="A"><Server>
+<LDevice inst="Owner"><LN0 lnType="L"><DataSet name="d">
+<FCDA lnClass="LLN0" doName="Obj.Sub" daName="values.leaf" fc="ST" ix="0"/>
+<FCDA lnClass="LLN0" doName="Obj.Sub" daName="values(0).leaf" fc="ST"/>
+<FCDA lnClass="LLN0" doName="Obj.Sub" daName="values.leaf" fc="ST" ix="1"/>
+<FCDA ldInst="Other" lnClass="LLN0" doName="Obj.Sub" daName="values.leaf" fc="ST" ix="0"/>
+<FCDA lnClass="LLN0" doName="Obj.Sub" daName="values.leaf" fc="ST" ix="9"/>
+)") + QByteArray("<FCDA lnClass='LLN0' doName='Obj.Sub' daName='values.leaf' fc='ST' ix='1'/>\n").repeated(26)
+        + R"(</DataSet><ReportControl name="r&lt;/script&gt;&quot;&apos;" datSet="d"/></LN0></LDevice>
+<LDevice inst="Other"><LN0 lnType="L"/></LDevice>
+</Server></AccessPoint></IED>
+<DataTypeTemplates>
+<LNodeType id="L" lnClass="LLN0"><DO name="Obj" type="D"/></LNodeType>
+<DOType id="D" cdc="SPS"><SDO name="Sub" type="S"/></DOType>
+<DOType id="S" cdc="SPS"><DA name="values" fc="ST" bType="Struct" type="A" count="3"/></DOType>
+<DAType id="A"><BDA name="leaf" bType="BOOLEAN"/></DAType>
+</DataTypeTemplates></SCL>)";
+    QVERIFY(WriteFile(input, bytes));
+    TopologyUrlReceiver browser;
+    QString pagePath;
+    {
+        MainWindow window;
+        window.show();
+        auto* service = window.findChild<Service*>();
+        auto* reports = window.findChild<QTableView*>("SclReports");
+        auto* tabs = window.findChild<QTabWidget*>("SclTables");
+        auto* open = window.findChild<QPushButton*>("SclOpenTopology");
+        QVERIFY(service && reports && tabs && open && !open->isEnabled());
+        service->Open(input);
+        QTRY_COMPARE(service->state(), Service::State::Ready);
+        const auto snapshot = service->snapshot();
+        QVERIFY(snapshot && snapshot->analysis.reports.size() == 1);
+        const auto report = snapshot->analysis.reports.front().source;
+        const auto graph = BuildSclTopology(*snapshot, report);
+        QCOMPARE(graph.value("version").toInt(), 1);
+        const auto nodes = graph.value("nodes").toArray();
+        QVERIFY(nodes.size() <= 768);
+        const auto views = graph.value("views").toObject();
+        const auto group = [&views](int id, const QString& prefix) {
+            for (const auto item : views.value(QString::number(id)).toArray())
+                if (item.toObject().value("label").toString().startsWith(prefix))
+                    return item.toObject();
+            return QJsonObject{};
+        };
+        const auto edges = [](const QJsonObject& data) { return data.value("edges").toArray(); };
+        const auto target = [](const QJsonArray& list, int row) { return list.at(row).toObject().value("to").toInt(-1); };
+        const int root = graph.value("focus").toInt(-1);
+        const int dataSet = target(edges(group(root, QStringLiteral("控制块引用数据集"))), 0);
+        QVERIFY(dataSet >= 0);
+        const auto members = group(dataSet, QStringLiteral("数据集成员"));
+        QCOMPARE(members.value("total").toInt(), 31);
+        const auto memberEdges = edges(members);
+        QCOMPARE(memberEdges.size(), 24);
+        for (int row = 0; row < memberEdges.size(); ++row)
+            QCOMPARE(memberEdges.at(row).toObject().value("label").toString(), QStringLiteral("FCDA #%1").arg(row + 1));
+
+        const auto instance = [&](int row) {
+            return target(edges(group(target(memberEdges, row), QStringLiteral("对象实例和派生映射"))), 0);
+        };
+        const int first = instance(0);
+        QVERIFY(first >= 0);
+        QCOMPARE(instance(1), first); // inline and explicit selectors for the same access
+        QVERIFY(instance(2) != first && instance(3) != first);
+        QCOMPARE(group(first, QStringLiteral("引用同一对象实例")).value("total").toInt(), 2);
+        const int definition = target(edges(group(first, QStringLiteral("对象实例和模板定义"))), 0);
+        QVERIFY(definition >= 0);
+        QCOMPARE(group(definition, QStringLiteral("引用同一模板定义")).value("total").toInt(), 30);
+        const auto doSteps = edges(group(target(memberEdges, 0), "doName"));
+        QCOMPARE(nodes.at(target(doSteps, 1)).toObject().value("kind").toString(), QStringLiteral("DO"));
+        QCOMPARE(nodes.at(target(doSteps, 2)).toObject().value("kind").toString(), QStringLiteral("SDO"));
+        const auto daSteps = edges(group(target(memberEdges, 0), "daName"));
+        QCOMPARE(nodes.at(target(daSteps, 1)).toObject().value("kind").toString(), QStringLiteral("DA"));
+        QCOMPARE(nodes.at(target(daSteps, 2)).toObject().value("kind").toString(), QStringLiteral("BDA"));
+        const auto arraySteps = edges(group(target(memberEdges, 0), "ix"));
+        QCOMPARE(nodes.at(target(arraySteps, 1)).toObject().value("kind").toString(), QStringLiteral("DA"));
+        QVERIFY(!nodes.at(target(doSteps, 1)).toObject().value("excerpt").toArray().isEmpty());
+        const auto invalid = target(memberEdges, 4);
+        QVERIFY(group(invalid, QStringLiteral("对象实例和派生映射")).isEmpty());
+        const auto stopped = edges(group(invalid, "ix"));
+        QCOMPARE(stopped.last().toObject().value("kind").toString(), QStringLiteral("status"));
+        QCOMPARE(stopped.last().toObject().value("label").toString(), QStringLiteral("缺失"));
+
+        tabs->setCurrentWidget(reports);
+        reports->setCurrentIndex(reports->model()->index(0, 0));
+        QVERIFY(open->isEnabled());
+        open->click();
+        QTRY_VERIFY(browser.url.isLocalFile());
+        pagePath = browser.url.toLocalFile();
+        QByteArray pageBytes;
+        {
+            QFile page(pagePath);
+            QVERIFY(page.open(QIODevice::ReadOnly));
+            pageBytes = page.readAll();
+        }
+        QCOMPARE(pageBytes.count("</script>"), 2);
+        const QByteArray marker("id=\"graph-data\">");
+        const auto offset = pageBytes.indexOf(marker) + marker.size();
+        QVERIFY(offset >= marker.size());
+        const auto data = QByteArray::fromBase64(pageBytes.mid(offset, pageBytes.indexOf("</script>", offset) - offset));
+        QVERIFY(!data.contains(input.toUtf8()));
+        QVERIFY(data.contains("</script>"));
+        QCOMPARE(QJsonDocument::fromJson(data).object(), graph);
+
+        const std::pair<const char*, int> fixtures[] = {{"DanglingDataSet.scd", 1}, {"DuplicateDataSet.scd", 3}};
+        for (const auto& fixture : fixtures)
+        {
+            service->Open(QStringLiteral(SCL_FIXTURE_DIR "/") + QString::fromLatin1(fixture.first));
+            QTRY_COMPARE(service->state(), Service::State::Ready);
+            const auto next = service->snapshot();
+            const auto nextGraph = BuildSclTopology(*next, next->analysis.reports.front().source);
+            const auto nextView = nextGraph.value("views").toObject().value(QString::number(nextGraph.value("focus").toInt())).toArray();
+            QVERIFY(!nextView.isEmpty());
+            const auto relation = edges(nextView.at(0).toObject());
+            QCOMPARE(relation.at(0).toObject().value("kind").toString(), QStringLiteral("status"));
+            QCOMPARE(relation.size(), fixture.second);
+        }
+        QFile stillOpen(pagePath);
+        QVERIFY(stillOpen.open(QIODevice::ReadOnly));
+        QCOMPARE(stillOpen.readAll(), pageBytes);
+    }
+    QVERIFY(!QFile::exists(pagePath));
 }
 
 void MainWindowBaselineTest::SclSearchFlow()
@@ -589,6 +970,7 @@ void MainWindowBaselineTest::SclSearchFlow()
     const auto node = hit.data(Qt::UserRole).toInt();
     QVERIFY(QMetaObject::invokeMethod(results, "activated", Q_ARG(QModelIndex, hit)));
     QCOMPARE(tree->currentIndex().data(Qt::UserRole).toInt(), node);
+    QVERIFY(tabs->currentWidget() != results);
     QVERIFY(tree->isExpanded(device));
     QVERIFY(back->isEnabled());
     back->click();
@@ -602,6 +984,9 @@ void MainWindowBaselineTest::SclSearchFlow()
     QTest::keyClick(query, Qt::Key_Return);
     QTRY_COMPARE(results->model()->rowCount(), 1);
     QCOMPARE(results->model()->index(0, 1).data().toString(), QStringLiteral("报告映射"));
+    query->setText("TEST_EVENTS");
+    QTest::keyClick(query, Qt::Key_Return);
+    QTRY_VERIFY(results->model()->rowCount() > 0);
     query->setText("[no+matches]$");
     QTRY_VERIFY(status->text().contains(QStringLiteral("没有匹配")));
     QCOMPARE(results->model()->rowCount(), 0);
@@ -625,6 +1010,28 @@ void MainWindowBaselineTest::SclSearchFlow()
     ied->setText("IED_TEST");
     QTRY_VERIFY(status->text() == QStringLiteral("筛选后 2 行"));
     QCOMPARE(reports->model()->rowCount(), 2);
+    reports->setCurrentIndex(reports->model()->index(0, 0));
+    const auto firstReport = tree->currentIndex();
+    reports->setCurrentIndex(reports->model()->index(1, 0));
+    const auto secondReport = tree->currentIndex();
+    QVERIFY(firstReport != secondReport);
+    auto* clearFilter = window.findChild<QPushButton*>("SclClearNavigationFilter");
+    QVERIFY(clearFilter);
+    ied->setText("no-such-ied");
+    QTRY_COMPARE(reports->model()->rowCount(), 0);
+    tree->setCurrentIndex(firstReport);
+    QCOMPARE(tabs->currentWidget(), reports);
+    QVERIFY(!reports->currentIndex().isValid());
+    QVERIFY(clearFilter->isVisible());
+    back->click();
+    QCOMPARE(tree->currentIndex(), secondReport);
+    QVERIFY(!reports->currentIndex().isValid());
+    forward->click();
+    QCOMPARE(tree->currentIndex(), firstReport);
+    clearFilter->click();
+    QCOMPARE(reports->model()->rowCount(), 2);
+    QCOMPARE(reports->currentIndex().row(), 0);
+    QVERIFY(!clearFilter->isVisible());
     const auto replacement = temp.filePath("replacement.scd");
     QVERIFY(WriteFile(replacement, SclXml("replacement")));
     mode->setCurrentIndex(0);
