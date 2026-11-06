@@ -26,3 +26,9 @@
 加载和峰值工作集增量低于 10%，导航低于 100 ms。T2.4 导航包含中央表格跟随。首个真实报告的局部图在验收中耗时 37 ms，达到了 768 节点和 160 视图的装载上限。十轮数据采集于最后一处选中行配色调整前。最终配色版本重新通过 Debug 构建、全量 CTest 和缩放回归。
 
 日志位于 `build/windows-debug/T2.4LocalAcceptance.txt`，复现环境和样本用法见 [P6](Task1P6.md)。缩放回归可对两个比例分别运行 `MainWindowBaselineTest.exe SclWorkspaceFlow SclSearchFlow LayoutAcrossProcesses ResetLayoutAndHelp`。页面交互复现命令为 `node tests/integration/SclTopologyPageTest.cjs`。
+
+## 卡顿反馈后的调整
+
+树表使用 Qt 原生绘制，选中颜色通过工作台调色板设置。空表提示仅响应当前表格的变化。原文页打开时才生成所选节点的高亮预览，收起详情期间也延迟生成。问题定位直接预览诊断行。
+
+表格复用最近一行的格式化结果，在快照或成员范围变更时清空缓存。使用同一 SCD 各测 40 次离屏滚动与选中，最终树滚动、报告表滚动和树选中 P95 分别为 7.20、12.54 和 32.95 ms。加入行缓存前，报告表滚动 P95 为 14.47 ms。CTest 7/7，真实文件回归通过。日志位于 `build/windows-ucrt64-debug/T2.4ScrollBefore.txt` 和 `T2.4ScrollAfter.txt`。离屏路径未复现反馈中的异常卡顿。

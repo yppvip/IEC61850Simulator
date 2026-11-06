@@ -94,12 +94,12 @@ public:
     int total() const { return int(m_hits.size()); }
     const SclHit& Hit(int row) const { return m_hits[row]; }
     int rowCount(const QModelIndex& parent = {}) const override { return parent.isValid() ? 0 : m_visible; }
-    int columnCount(const QModelIndex& = {}) const override { return 5; }
+    int columnCount(const QModelIndex& = {}) const override { return 6; }
 
     QVariant headerData(int column, Qt::Orientation orientation, int role) const override
     {
         static const QStringList headings{QStringLiteral("对象"), QStringLiteral("匹配字段"),
-                                          QStringLiteral("片段"), QStringLiteral("行"), QStringLiteral("对象路径")};
+                                          QStringLiteral("片段"), QStringLiteral("行"), QStringLiteral("对象路径"), QStringLiteral("对象描述")};
         return orientation == Qt::Horizontal && role == Qt::DisplayRole ? headings.value(column) : QVariant{};
     }
 
@@ -110,6 +110,13 @@ public:
         const auto& hit = m_hits[index.row()];
         if (role == Qt::UserRole)
             return hit.node;
+        if (index.column() == 5 && (role == Qt::DisplayRole || role == Qt::ToolTipRole))
+        {
+            const auto desc = hit.node < 0 ? QString()
+                : m_snapshot->analysis.document->attribute(hit.node, QStringLiteral("desc"));
+            return role == Qt::ToolTipRole && !desc.isEmpty()
+                ? QStringLiteral("<qt>%1</qt>").arg(desc.toHtmlEscaped().replace('\n', QStringLiteral("<br>"))) : desc;
+        }
         if (role == Qt::ToolTipRole)
             return QStringLiteral("<qt>%1<br>%2</qt>").arg(NodePath(*m_snapshot, hit.node).toHtmlEscaped(),
                 SearchSnippet(*m_snapshot, hit, m_needle).toHtmlEscaped());

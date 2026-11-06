@@ -123,6 +123,7 @@ private:
     Match serverFor(NodeId ap) const;
     Match sourceLn(NodeId ied, const QString &ld, const QString &ln) const;
     Match hasFc(NodeId type, const QString &fc, FcdaTrace *trace) const;
+    NodeId instanceChild(NodeId parent, const char *element, const QString &name, int index = -1) const;
     Match object(NodeId ln, const QString &doName, const QString &daName, const QString &fc,
                  const QString &ix, Reference &ref, QString &detail, FcdaTrace *trace = nullptr) const;
     void fcda(NodeId id, int ordinal);
@@ -493,6 +494,26 @@ Match Analysis::hasFc(NodeId type, const QString &fc, FcdaTrace *trace) const
     return {blocked ? LinkState::Blocked : LinkState::Missing};
 }
 
+NodeId Analysis::instanceChild(NodeId parent, const char *element, const QString &name, int index) const
+{
+    if (parent == NoNode)
+        return NoNode;
+    NodeId match = NoNode;
+    for (auto child = node(parent).firstChild; child != NoNode; child = node(child).nextSibling) {
+        checkpoint(m_task);
+        if (!kind(child, element) || attr(child, "name") != name)
+            continue;
+        const auto ix = attr(child, "ix");
+        int actual = -1;
+        if (index < 0 ? !ix.isNull() : !unsignedNumber(ix, actual) || actual != index)
+            continue;
+        if (match != NoNode)
+            return NoNode;
+        match = child;
+    }
+    return match;
+}
+
 Match Analysis::object(NodeId ln, const QString &doName, const QString &daName, const QString &fc,
                        const QString &ix, Reference &ref, QString &detail, FcdaTrace *trace) const
 {
@@ -634,6 +655,28 @@ Match Analysis::object(NodeId ln, const QString &doName, const QString &daName, 
 
     ref.logicalNode = ln;
     ref.arrayIndex = index;
+    if (trace) {
+        auto instance = ln;
+        for (int i = 0; i < parts.size() && instance != NoNode; ++i) {
+            // An entire array does not identify a particular instance.
+            const bool wholeArray = i != selected && std::any_of(arrays.begin(), arrays.end(),
+                [i](const auto &entry) { return entry.first == i; });
+            const auto *element = i == 0 ? "DOI"
+                : i < doParts.size() || attr(path[i], "bType") == "Struct" ? "SDI" : "DAI";
+            instance = wholeArray ? NoNode : instanceChild(instance, element, parts[i], i == selected ? index : -1);
+            if (i + 1 == doParts.size() && instance != NoNode) {
+                const auto type = typeTargets.value(path[i], {LinkState::Blocked}).target();
+                if (type != NoNode && lookup(type, QStringLiteral("DA:DC"), QStringLiteral("dU")).target() != NoNode) {
+                    const auto description = instanceChild(instance, "DAI", QStringLiteral("dU"));
+                    // The unnamed Val is the direct value of dU. Multiple Val nodes are ambiguous.
+                    const auto value = instanceChild(description, "Val", {});
+                    if (value != NoNode && attr(value, "sGroup").isNull() && !node(value).text.isEmpty())
+                        ref.instanceDescription = value;
+                }
+            }
+        }
+        ref.instanceNode = instance;
+    }
     const auto ldDomain = domain(node(ln).parent);
     if (!ldDomain.isEmpty()) {
         auto objectParts = parts;

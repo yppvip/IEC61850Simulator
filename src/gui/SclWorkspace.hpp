@@ -52,6 +52,7 @@ private:
     void Navigate(int direction);
     void UpdateHistoryButtons();
     void Preview(const Scl::SourceIndex* source, Scl::SourceLocation location, const QString& path);
+    void RefreshSourcePreview();
     void UpdatePath();
     void UpdateReferencePath(const QModelIndex& index);
     void UpdateDetails();
@@ -74,6 +75,7 @@ private:
     Scl::NodeId m_selected = Scl::NoNode;
     int m_finding = -1;
     bool m_showingFailure = false;
+    bool m_sourceDirty = true;
     Scl::NodeId m_dataSet = Scl::NoNode;
     std::vector<Location> m_history;
     int m_historyIndex = -1;

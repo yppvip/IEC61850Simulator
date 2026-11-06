@@ -24,6 +24,7 @@
 #include <QPushButton>
 #include <QProcess>
 #include <QSettings>
+#include <QScrollBar>
 #include <QStatusBar>
 #include <QTabWidget>
 #include <QTableView>
@@ -570,6 +571,25 @@ void MainWindowBaselineTest::SclLocalAcceptance()
     }
     std::sort(samples.begin(), samples.end());
     qInfo() << "Tree navigation P95 ms (40 offscreen frames):" << samples[37] / 1e6;
+    for (auto* view : {static_cast<QAbstractItemView*>(tree), static_cast<QAbstractItemView*>(reports)})
+    {
+        auto* scroll = view->verticalScrollBar();
+        const int previous = scroll->value();
+        QVERIFY(scroll->maximum() > scroll->minimum());
+        samples.clear();
+        for (int i = 0; i < 40; ++i)
+        {
+            elapsed.start();
+            scroll->setValue(scroll->minimum() + (i + 1) * (scroll->maximum() - scroll->minimum()) / 40);
+            QApplication::processEvents();
+            const auto frame = view->viewport()->grab();
+            samples.push_back(elapsed.nsecsElapsed());
+            QVERIFY(!frame.isNull());
+        }
+        std::sort(samples.begin(), samples.end());
+        qInfo() << view->objectName() << "scroll P95 ms (40 offscreen frames):" << samples[37] / 1e6;
+        scroll->setValue(previous);
+    }
     auto* query = window.findChild<QLineEdit*>("SclQuery");
     auto* exact = window.findChild<QCheckBox*>("SclExact");
     auto* results = window.findChild<QTableView*>("SclSearchResults");
@@ -637,6 +657,8 @@ void MainWindowBaselineTest::SclWorkspaceFlow()
     QVERIFY(service);
     service->Open(QStringLiteral(SCL_FIXTURE_DIR "/NamespaceCollision.scd"));
     QTRY_VERIFY(service->state() == Service::State::Ready);
+    auto* source = window.findChild<QPlainTextEdit*>("SclSource");
+    QVERIFY(source && source->toPlainText().isEmpty());
     CheckWorkspaceFlow(window);
     QDir().mkpath(QString::fromUtf8(BASELINE_ARTIFACT_DIR));
     QVERIFY(window.grab().save(QString::fromUtf8(BASELINE_ARTIFACT_DIR) + QStringLiteral("/SclWorkspace.png")));
@@ -698,6 +720,15 @@ void MainWindowBaselineTest::SclReferenceDetails()
     reports->setCurrentIndex(reports->model()->index(0, 0));
     inspector->setCurrentIndex(1);
     QVERIFY(reference->text().contains(QStringLiteral("已解析")));
+    const auto* links = window.findChild<QTableView*>("SclLinks");
+    const auto* dataSets = window.findChild<QTableView*>("SclDataSets");
+    QVERIFY(links && dataSets);
+    const auto lastColumn = [](const QTableView* view) {
+        return view->model()->index(0, view->model()->columnCount() - 1);
+    };
+    const auto description = QStringLiteral("有序成员，含 DO 引用及重复成员");
+    QCOMPARE(lastColumn(dataSets).data().toString(), description);
+    QCOMPARE(lastColumn(links).data().toString(), description);
     copy->click();
     QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("dsEvents"));
     QVERIFY(copyDerived->isEnabled());
@@ -718,6 +749,7 @@ void MainWindowBaselineTest::SclReferenceDetails()
     inspector->setCurrentIndex(1);
     QVERIFY(reference->text().contains(QStringLiteral("有歧义")));
     QCOMPARE(candidates->model()->rowCount(), 2);
+    QVERIFY(lastColumn(links).data().toString().isEmpty());
     QVERIFY(candidates->isVisible());
 
     const auto retained = service->snapshot();
@@ -966,6 +998,8 @@ void MainWindowBaselineTest::SclSearchFlow()
     query->setText(QStringLiteral("合成遥信"));
     QTRY_COMPARE(results->model()->rowCount(), 1);
     QCOMPARE(tabs->currentWidget(), results);
+    QCOMPARE(results->model()->index(0, results->model()->columnCount() - 1).data().toString(),
+             QStringLiteral("合成遥信"));
     const auto hit = results->model()->index(0, 0);
     const auto node = hit.data(Qt::UserRole).toInt();
     QVERIFY(QMetaObject::invokeMethod(results, "activated", Q_ARG(QModelIndex, hit)));

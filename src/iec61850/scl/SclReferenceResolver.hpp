@@ -35,6 +35,8 @@ struct Reference {
     QString mmsItem;
     int arrayIndex = -1;
     QString mmsComponent; // Alternate access component following the indexed member.
+    NodeId instanceNode = NoNode;
+    NodeId instanceDescription = NoNode; // Val of the owning DO instance's dU.
 };
 
 struct ReportMapping {

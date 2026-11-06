@@ -34,7 +34,8 @@ constexpr auto Templates = R"(
 <DataTypeTemplates>
 <LNodeType id="L" lnClass="LLN0"><DO name="Obj" type="D"/></LNodeType>
 <DOType id="D" cdc="SPS"><SDO name="Sub" type="SubType"/></DOType>
-<DOType id="SubType" cdc="SPS"><DA name="values" fc="ST" bType="Struct" type="A" count="3"/></DOType>
+<DOType id="SubType" cdc="SPS"><DA name="values" fc="ST" bType="Struct" type="A" count="3"/>
+<DA name="dU" fc="DC" bType="Unicode255"/></DOType>
 <DAType id="A"><BDA name="leaf" bType="Enum" type="E"/></DAType>
 <EnumType id="E"><EnumVal ord="1">on</EnumVal></EnumType>
 </DataTypeTemplates>)";
@@ -114,7 +115,10 @@ private slots:
 <FCDA ldInst="Target" lnClass="LLN0" doName="Obj" fc="ST"/>
 <FCDA ldInst="Target" lnClass="LLN0" doName="Obj.Sub" daName="values.leaf" fc="MX" ix="1"/>
 </DataSet><ReportControl name="r" datSet="d"/></LN0></LDevice>
-<LDevice inst="Target"><LN0 lnType="L"><DataSet name="d"/><ReportControl name="r" datSet="d"/></LN0></LDevice>
+<LDevice inst="Target"><LN0 lnType="L"><DataSet name="d"/><ReportControl name="r" datSet="d"/>
+<DOI name="Obj"><SDI name="Sub"><DAI name="dU"><Val>Target description</Val></DAI>
+<SDI name="values" ix="2"><DAI name="leaf"><Val>on</Val></DAI></SDI>
+</SDI></DOI></LN0></LDevice>
 </Server></AccessPoint>
 <AccessPoint name="B"><Server><LDevice inst="Target"><LN0 lnType="L"/></LDevice></Server></AccessPoint></IED>
 )") + Templates);
@@ -128,9 +132,16 @@ private slots:
         QCOMPARE(members[0].objectReference, QStringLiteral("ITarget/LLN0.Obj.Sub.values(2).leaf"));
         QCOMPARE(members[1].state, LinkState::Resolved);
         QCOMPARE(members[1].arrayIndex, 1);
+        QVERIFY(members[0].instanceNode != NoNode && members[0].instanceDescription != NoNode);
+        QCOMPARE(model.document->attribute(members[0].instanceNode, QStringLiteral("name")), QStringLiteral("leaf"));
+        QCOMPARE(model.document->nodes[members[0].instanceDescription].text, QStringLiteral("Target description"));
+        QCOMPARE(members[1].instanceNode, NoNode);
+        QCOMPARE(members[1].instanceDescription, members[0].instanceDescription);
         QCOMPARE(members[2].state, LinkState::Missing);
+        QCOMPARE(members[2].instanceDescription, NoNode);
         QCOMPARE(members[3].state, LinkState::Missing);
         QCOMPARE(members[4].state, LinkState::Resolved);
+        QCOMPARE(members[4].instanceDescription, NoNode);
         QCOMPARE(members[5].state, LinkState::Missing);
         const auto sets = links(model, LinkKind::ControlDataSet);
         QCOMPARE(sets[0].state, LinkState::Resolved);
