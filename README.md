@@ -10,19 +10,19 @@ IEC61850Simulator 是一个基于 C++、Qt/QML 和 CMake 开发的 IEC 61850 仿
 
 主程序 UI 骨架已完成：使用 `QMainWindow` 与 Qt Advanced Docking System（ADS）提供可自由停靠的服务器、客户端和详情工作区。当前已落地的功能包括：
 
-- 文件菜单可选择并校验 ICD、SCD、CID、CCD 文件；尚未解析 SCL 内容。
+- 文件菜单支持打开和重新加载 ICD、SCD、CID、CCD 文件，并可取消后台分析。状态栏显示处理阶段、结果或失败原因。
 - 工具栏可创建服务器和客户端占位实体，并在侧栏和详情 Dock 中显示状态。
 - Redis 通过 hiredis 在后台线程执行 `PING` 检查；不可用时不阻止 UI 启动并给出提示。
-- ADS 静态布局在退出时保存、下次启动时恢复；动态详情 Dock 暂不跨会话恢复。
+- ADS 静态布局在退出时保存，启动时校验版本与内容后恢复。「视图 → 恢复默认布局」可重新排列停靠区。
 - 日志输出到可执行文件同级的 `logs/IEC61850Simulator.log`。
 
 Redis 连接配置位于 `config/Redis.json`。应用以其中的 `host:port` 执行 Redis `PING` 检查；Redis 不可用不会阻止 UI 启动，但会显示“Redis 数据库不可用”。详细的调用边界和实施顺序见 [AGENTS.md](AGENTS.md)。
 
-### 下一阶段：SCL 离线分析（P0 已通过）
+### SCL 离线分析（P6 已通过）
 
-设计与执行方案见 [docs/Tasks/Task1.md](docs/Tasks/Task1.md)。计划增加只读 SCL 解析、分层校验、数据集/报告/对象浏览、搜索、引用跳转与原文预览；沿用 Qt Widgets + ADS，离线分析不依赖 Redis。当前尚未实现这些功能，XML 解析、内部一致性检查和完整 XSD 校验会分别标明覆盖范围。“MMS 对象标识”和“报告 ID”分别展示；运行时 MMS Invoke ID 不属于静态 SCL 文件分析范围。
+打开文件后，ADS 工作区显示 SCL 概览、导航树、报告、数据集及成员、对象、通信、模板和问题。选中对象即可查看属性与原文，通过引用及使用方可双向跳转。「视图」菜单可切回仿真工作区。设计与执行方案见 [Task1](docs/Tasks/Task1.md)。
 
-P0 已完成 Debug 构建及五组测试，新增 12 份自建 SCL 样本、规则目录和真实文件统计基线，并修复创建详情 Dock 后正常退出的崩溃。验收证据、复现命令和覆盖限制见 [P0 记录](docs/Tasks/Task1P0.md)，规则规格见 [SclRules.md](docs/Tasks/SclRules.md)。P1 尚未开始。
+分析工作台支持全局搜索、当前表格筛选、前后退和 JSON/CSV 问题导出。按 F1 查看应用内帮助，或在「文件」菜单关闭当前 SCL 文档。本机 MSYS2 UCRT64 的 Debug 构建和 7 组 CTest 均通过。十次真实 SCD 加载与关闭及复现命令见 [P6 验收记录](docs/Tasks/Task1P6.md)。
 
 ## 技术栈
 

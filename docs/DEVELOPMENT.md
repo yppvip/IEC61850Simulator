@@ -297,13 +297,13 @@ Redis 不可用时，UI 仍须启动，并弹窗提示“Redis 数据库不可�
 3. `RedisStartupTest` 在 Windows/offscreen 环境运行真实应用：隔离配置和随机端口，在真实 Redis 与无响应端口两种场景各启动两次，检查日志及应用保持运行。真实 Redis 仅为测试子进程，关闭持久化并由测试清理；应用退出后验证 Redis 仍运行。
 4. 原有 `RedisConfigurationTest` 保留。统一执行 `ctest --preset windows-debug`。启动测试不自动操作弹窗，也不验证视觉布局；autoStart 分支沿用原实现，本轮不重新启动 RedisService。
 
-当前验证工具链为 Windows / MSYS2 MinGW64 / Qt 6；其他编译器、UCRT64 和 Linux 尚未在本轮验证。上游对 Windows 的支持为尽力维护，升级 hiredis 前需重复连接、超时和构建验证。
+本节原始验收使用 Windows / MSYS2 MinGW64 / Qt 6；P1 已在 Windows / MSYS2 UCRT64 / Qt 6 复测。上游对 Windows 的支持为尽力维护，升级 hiredis 前需重复连接、超时和构建验证。
 
 验证结果：`windows-debug` 与全新目录 `build/hiredis-clean-debug/` 均完成 Debug 配置、构建及三组测试（3/3 通过）。确认全部 74 个 hiredis 上游文件可被 Git 跟踪，除 `hiredis.targets` 的 BOM/行尾规范化外与下载归档一致；新增及修改文本通过 UTF-8/无 BOM/LF 检查，`git diff --check` 通过。构建仍有上游 hiredis 的旧 CMake 兼容警告和 QtADS 的既有编译警告，不影响本次通过。
 
-## 14. SCL 离线分析方案（2026-11-06，P0 已通过）
+## 14. SCL 离线分析（2026-11-06，P6 已通过）
 
-完整方案见 [Tasks/Task1.md](Tasks/Task1.md)，P0 验收记录见 [Tasks/Task1P0.md](Tasks/Task1P0.md)。本轮完成基线、规则与样本准备，尚未实现产品 SCL 解析或新 UI；上文第 13 节为此前 hiredis 实现记录。
+主程序通过应用服务运行独立解析库。文件菜单提供打开、重载、取消和关闭，ADS 工作区支持浏览、搜索、筛选和校验摘要导出。完整方案及验收记录见 [Task1](Tasks/Task1.md) 和 [P6](Tasks/Task1P6.md)。
 
 - 产品范围：只读打开、分层校验、IED/数据集/报告/对象/通信配置浏览、搜索、双向引用与原文预览；不包含编辑修复、设备通信、抓包或自动生成仿真实例。
 - 架构：`src/iec61850/scl/` 共享领域模型与解析规则，经 `src/core/` 应用服务在后台分析，再向 GUI ViewModel 交付不可变快照；沿用 Widgets + ADS。
@@ -312,4 +312,9 @@ Redis 不可用时，UI 仍须启动，并弹窗提示“Redis 数据库不可�
 - 本地真实 SCD 只读扫描约 48.08 MiB，P0 已按 namespace URI + localName 复核：104 个 IED、1,036 个数据集和 687 个 ReportControl；文件指纹未变。标准 P 元素为 1,405 个，扩展 P 为 2 个。统计不是合规结论，原始工程文件不纳入仓库。
 - P0 已完成 windows-debug 配置/构建，五组测试通过；原有三组测试保留，新增 MainWindowBaselineTest 与 SclFixtureBaselineTest。前者验证列表/详情、正常退出、跨进程 ADS 布局；后者检查 12 份自建样本的 XML 和计数，不执行语义规则。
 - P0 修复了详情 Dock 销毁回调访问已析构成员的问题；主窗先析构 ADS 管理器，并显式采用 QSettings 默认格式以支持测试隔离，保存失败输出警告。产品默认仍使用原 NativeFormat。
-- 首批规则目录见 [Tasks/SclRules.md](Tasks/SclRules.md)，统计工具为 `scripts/MeasureSclBaseline.ps1`。没有新增依赖或更改 tools/Redis；P1 尚未开始。
+- `SclAnalysis` 位于 `src/iec61850/scl/`，只依赖 Qt Core。Reader 以 QXmlStreamReader 扫描原始快照，按文档顺序存储节点、属性、父子及兄弟关系；SourceIndex 独立映射起始标签的原始字节和行号，支持 UTF-8/UTF-16，预览单行最多读取 8 KiB。
+- `ReferenceResolver` 消费 P1 的只读快照。先建立带作用域的定义索引，再解析类型、控制块到数据集、FCDA、通信和 ExtRef。结果包含引用的正反向索引、报告定义映射、诊断、快照 SHA-256 和规则覆盖状态。规则范围见 [SclRules](Tasks/SclRules.md)。
+- `SclAnalysisService` 用 Qt Concurrent 执行读取和分析，QFutureWatcher 在拥有服务的线程交付结果。单个运行任务配合一个待处理路径，切换时取消旧任务并只保留最新请求。服务监视当前文档的磁盘变化，重载前可继续读取已发布的内存快照。
+- `SclBrowseIndex` 在发布快照前构建父子行与分类索引。`SclWorkspace` 通过 Qt Item Model 按需读取视图数据，按 NodeId 联动导航、属性、关系及原文。原文预览从快照读取选中行前后各 15 行，长行显示截断标识。
+- `SclSearchSession` 管理独立于加载会话的搜索取消标记和分批交付。全局匹配从 P2 映射、诊断和结构化字段取值，当前表格筛选使用行映射。`SclIssueExport` 后台写出完整校验摘要，通过 QSaveFile 原子提交。
+- P6 按版本和 SHA-256 校验 ADS 静态布局，兼容版本 0 的旧布局。默认布局由 ADS 在创建静态 Dock 后捕获。退出保存前恢复仿真列表并移除动态详情 Dock。文档关闭会取消加载和搜索、清除快照及视图状态。

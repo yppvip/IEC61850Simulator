@@ -28,6 +28,25 @@ function(AddHiredis)
 endfunction()
 AddHiredis()
 
+add_library(SclAnalysis STATIC
+    src/iec61850/scl/SclDocument.hpp
+    src/iec61850/scl/SclReader.cpp
+    src/iec61850/scl/SclReader.hpp
+    src/iec61850/scl/SclReferenceResolver.cpp
+    src/iec61850/scl/SclReferenceResolver.hpp
+    src/iec61850/scl/SclSourceIndex.cpp
+    src/iec61850/scl/SclSourceIndex.hpp
+    src/iec61850/scl/SclTaskControl.hpp)
+target_include_directories(SclAnalysis PUBLIC src/iec61850/scl)
+target_link_libraries(SclAnalysis PUBLIC Qt${QT_VERSION_MAJOR}::Core)
+
+add_library(SclApplication STATIC src/core/SclAnalysisService.cpp src/core/SclAnalysisService.hpp
+    src/core/SclBrowseIndex.cpp src/core/SclBrowseIndex.hpp
+    src/core/SclSearch.cpp src/core/SclSearch.hpp
+    src/core/SclIssueExport.cpp src/core/SclIssueExport.hpp)
+target_include_directories(SclApplication PUBLIC src/core)
+target_link_libraries(SclApplication PUBLIC SclAnalysis PRIVATE Qt${QT_VERSION_MAJOR}::Concurrent)
+
 add_library(RedisClient STATIC src/core/RedisClient.cpp src/core/RedisClient.hpp)
 target_include_directories(RedisClient PUBLIC src/core)
 target_link_libraries(RedisClient PUBLIC Qt${QT_VERSION_MAJOR}::Core
@@ -50,6 +69,11 @@ add_executable(${AppTarget}
     src/core/RedisConfiguration.hpp
     src/gui/MainWindow.cpp
     src/gui/MainWindow.hpp
+    src/gui/SclWorkspace.cpp
+    src/gui/SclWorkspace.hpp
+    src/gui/SclSearchSession.cpp
+    src/gui/SclSearchSession.hpp
+    src/gui/SclWorkspaceSearch.cpp
 )
 
 target_include_directories(${AppTarget}
@@ -64,7 +88,9 @@ target_link_libraries(${AppTarget}
         Qt${QT_VERSION_MAJOR}::Gui
         Qt${QT_VERSION_MAJOR}::Network
         Qt${QT_VERSION_MAJOR}::Widgets
+        Qt${QT_VERSION_MAJOR}::Concurrent
         RedisClient
+        SclApplication
         ads::qtadvanceddocking-qt${QT_VERSION_MAJOR}
 )
 
@@ -106,6 +132,23 @@ install(FILES third_party/hiredis-1.3.0/COPYING DESTINATION ${CMAKE_INSTALL_DATA
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(SclReaderTest tests/unit/SclReaderTest.cpp)
+    target_link_libraries(SclReaderTest PRIVATE SclAnalysis Qt${QT_VERSION_MAJOR}::Test)
+    target_compile_definitions(SclReaderTest PRIVATE SCL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/scl")
+    add_test(NAME SclReaderTest COMMAND SclReaderTest)
+
+    add_executable(SclReferenceResolverTest tests/unit/SclReferenceResolverTest.cpp)
+    target_link_libraries(SclReferenceResolverTest PRIVATE SclAnalysis Qt${QT_VERSION_MAJOR}::Test)
+    target_compile_definitions(SclReferenceResolverTest PRIVATE SCL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/scl")
+    add_test(NAME SclReferenceResolverTest COMMAND SclReferenceResolverTest)
+
+    # Local performance/scale probe; CTest does not require an external SCD.
+    add_executable(SclAnalysisProbe tests/integration/SclAnalysisProbe.cpp)
+    target_link_libraries(SclAnalysisProbe PRIVATE SclAnalysis)
+    if(WIN32)
+        target_link_libraries(SclAnalysisProbe PRIVATE psapi)
+    endif()
+
     add_executable(SclFixtureBaselineTest tests/unit/SclFixtureBaselineTest.cpp)
     target_link_libraries(SclFixtureBaselineTest PRIVATE Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Test)
     target_compile_definitions(SclFixtureBaselineTest PRIVATE SCL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/scl")
@@ -114,13 +157,17 @@ if(BUILD_TESTING)
     if(TARGET Qt${QT_VERSION_MAJOR}::QOffscreenIntegrationPlugin)
         add_executable(MainWindowBaselineTest
             tests/integration/MainWindowBaselineTest.cpp
-            src/gui/MainWindow.cpp src/gui/MainWindow.hpp)
+            src/gui/MainWindow.cpp src/gui/MainWindow.hpp src/gui/SclWorkspace.cpp src/gui/SclWorkspace.hpp
+            src/gui/SclSearchSession.cpp src/gui/SclSearchSession.hpp src/gui/SclWorkspaceSearch.cpp)
         target_include_directories(MainWindowBaselineTest PRIVATE src/gui)
         target_link_libraries(MainWindowBaselineTest PRIVATE Qt${QT_VERSION_MAJOR}::Widgets
-            Qt${QT_VERSION_MAJOR}::Test ads::qtadvanceddocking-qt${QT_VERSION_MAJOR})
+            Qt${QT_VERSION_MAJOR}::Test Qt${QT_VERSION_MAJOR}::Concurrent SclApplication ads::qtadvanceddocking-qt${QT_VERSION_MAJOR})
         set_target_properties(MainWindowBaselineTest PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-        target_compile_definitions(MainWindowBaselineTest PRIVATE BASELINE_ARTIFACT_DIR="${CMAKE_BINARY_DIR}/p0-artifacts")
+        target_compile_definitions(MainWindowBaselineTest PRIVATE
+            BASELINE_ARTIFACT_DIR="${CMAKE_BINARY_DIR}/p0-artifacts"
+            SCL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/scl")
         if(WIN32)
+            target_link_libraries(MainWindowBaselineTest PRIVATE psapi)
             add_custom_command(TARGET MainWindowBaselineTest POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_RUNTIME_DLLS:MainWindowBaselineTest>
                     $<TARGET_FILE_DIR:MainWindowBaselineTest>
