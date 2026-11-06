@@ -4,12 +4,12 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QProcess>
+#include <QDebug>
 
 namespace
 {
 constexpr int PingTimeoutMs = 1000;
 constexpr int RetryIntervalMs = 250;
-constexpr auto PingCommand = "*1\r\n$4\r\nPING\r\n";
 } // namespace
 
 namespace iec61850sim
@@ -17,35 +17,26 @@ namespace iec61850sim
 RedisAvailabilityChecker::RedisAvailabilityChecker(QObject* parent)
     : QObject(parent)
 {
-    m_connectTimeout.setSingleShot(true);
-
-    connect(&m_socket, &QTcpSocket::connected, this, [this]() {
-        m_socket.write(PingCommand);
-    });
-    connect(&m_socket, &QTcpSocket::readyRead, this, [this]() {
-        m_response.append(m_socket.readAll());
-        if (m_response.startsWith("+PONG\r\n"))
+    connect(&m_client, &RedisClient::PingFinished, this, [this](bool available, const QString& detail) {
+        if (available)
         {
-            m_connectTimeout.stop();
-            m_socket.disconnectFromHost();
-            SetState(RedisConnectionState::Available,
-                QStringLiteral("Redis 已连接：%1:%2。").arg(m_configuration.host).arg(m_configuration.port));
+            SetState(RedisConnectionState::Available, detail);
         }
-        else if (m_response.startsWith('-'))
+        else
         {
-            HandleFailure(QStringLiteral("Redis PING 被拒绝：%1").arg(QString::fromUtf8(m_response).trimmed()));
+            HandleFailure(detail);
         }
-    });
-    connect(&m_socket, &QTcpSocket::errorOccurred, this, [this](QTcpSocket::SocketError) {
-        HandleFailure(m_socket.errorString());
-    });
-    connect(&m_connectTimeout, &QTimer::timeout, this, [this]() {
-        HandleFailure(QStringLiteral("连接 Redis 超时。"));
     });
 }
 
 void RedisAvailabilityChecker::Start()
 {
+    // A startup cycle includes both the worker operation and delayed retries.
+    if (m_checking)
+    {
+        return;
+    }
+    m_checking = true;
     QString configurationError;
     m_configuration = RedisConfiguration::Load(&configurationError);
     m_startAttempted = false;
@@ -62,20 +53,13 @@ void RedisAvailabilityChecker::Start()
 
 void RedisAvailabilityChecker::BeginPing()
 {
-    m_response.clear();
-    m_connectTimeout.stop();
-    m_socket.abort();
     SetState(RedisConnectionState::Checking,
         QStringLiteral("正在检查 Redis 服务：%1:%2…").arg(m_configuration.host).arg(m_configuration.port));
-    m_socket.connectToHost(m_configuration.host, m_configuration.port);
-    m_connectTimeout.start(PingTimeoutMs);
+    m_client.Ping(m_configuration.host, m_configuration.port, PingTimeoutMs);
 }
 
 void RedisAvailabilityChecker::HandleFailure(const QString& detail)
 {
-    m_connectTimeout.stop();
-    m_socket.abort();
-
     if (!m_startAttempted && CanStartLocalRedis())
     {
         m_startAttempted = true;
@@ -126,6 +110,18 @@ void RedisAvailabilityChecker::HandleFailure(const QString& detail)
 
 void RedisAvailabilityChecker::SetState(RedisConnectionState state, const QString& detail)
 {
+    if (state == RedisConnectionState::Available || state == RedisConnectionState::Unavailable)
+    {
+        m_checking = false;
+    }
+    if (state == RedisConnectionState::Unavailable)
+    {
+        qWarning().noquote() << detail;
+    }
+    else
+    {
+        qInfo().noquote() << detail;
+    }
     emit StateChanged(state, detail);
 }
 

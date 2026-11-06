@@ -14,6 +14,14 @@
 - UI 只调用 ViewModel 或应用服务，不直接访问 IEC 61850 协议实现或 Redis 客户端。
 - 后续 Redis 订阅回调不得直接修改 GUI 对象，必须使用 queued signal/slot 投递给 GUI 线程。
 
+## 依赖与说明文件维护
+
+- 库源码、许可证及来源信息保存在 `third_party/`，固定版本并由 CMake 构建；本机构建产物不提交。独立运行的依赖程序及必要配套文件在 `tools/` 管理。
+- Redis 客户端使用 `third_party/hiredis-1.3.0`，静态链接；命令与响应通过 hiredis 处理，不继续手写 RESP。封装位于 `src/core/RedisClient.*`，UI 不直接调用 hiredis。
+- 当前 PING 在 Qt Concurrent 后台任务执行，每次独占 context；不得跨线程共享 context，不得在 GUI 线程执行阻塞 Redis I/O。订阅另行接入。
+- 开发时同步维护 `README.md`、`AGENTS.md`、`docs/DEVELOPMENT.md` 及适用的第三方依赖记录。
+- `.gitignore` 区分库构建产物与 `tools/` 中需要分发的 EXE/DLL，不得全局忽略 EXE/DLL。历史已跟踪的 Redis PID 本轮保留用户修改及跟踪状态。
+
 ## QtADS 构建与部署
 
 - QtADS 源码固定在 `third_party/Qt-Advanced-Docking-System-5.0.0`，由根 CMake 通过 `add_subdirectory()` 构建并链接。

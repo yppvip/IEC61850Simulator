@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(IEC61850Simulator VERSION 0.1.0 LANGUAGES CXX)
+project(IEC61850Simulator VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,8 +12,26 @@ if(MSVC)
     add_compile_options(/utf-8)
 endif()
 
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Gui Network Test Widgets)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Gui Network Test Widgets)
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Concurrent Core Gui Network Test Widgets)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Concurrent Core Gui Network Test Widgets)
+
+# Scope upstream's generic options to this dependency; ADS remains a DLL.
+function(AddHiredis)
+    set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
+    set(BUILD_SHARED_LIBS OFF)
+    set(DISABLE_TESTS ON)
+    set(ENABLE_EXAMPLES OFF)
+    set(ENABLE_SSL OFF)
+    set(ENABLE_NUGET OFF)
+    set(CMAKE_AUTOMOC OFF)
+    add_subdirectory(third_party/hiredis-1.3.0)
+endfunction()
+AddHiredis()
+
+add_library(RedisClient STATIC src/core/RedisClient.cpp src/core/RedisClient.hpp)
+target_include_directories(RedisClient PUBLIC src/core)
+target_link_libraries(RedisClient PUBLIC Qt${QT_VERSION_MAJOR}::Core
+    PRIVATE Qt${QT_VERSION_MAJOR}::Concurrent hiredis::hiredis)
 
 # Keep ADS version discovery independent of the vendored source directory's Git state.
 set(ADS_VERSION "5.0.0" CACHE STRING "Qt Advanced Docking System version" FORCE)
@@ -46,6 +64,7 @@ target_link_libraries(${AppTarget}
         Qt${QT_VERSION_MAJOR}::Gui
         Qt${QT_VERSION_MAJOR}::Network
         Qt${QT_VERSION_MAJOR}::Widgets
+        RedisClient
         ads::qtadvanceddocking-qt${QT_VERSION_MAJOR}
 )
 
@@ -83,9 +102,30 @@ install(FILES $<TARGET_FILE:qtadvanceddocking-qt${QT_VERSION_MAJOR}>
     OPTIONAL
 )
 install(FILES config/Redis.json DESTINATION ${CMAKE_INSTALL_BINDIR}/config)
+install(FILES third_party/hiredis-1.3.0/COPYING DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/hiredis)
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(RedisClientTest tests/unit/RedisClientTest.cpp)
+    target_link_libraries(RedisClientTest PRIVATE RedisClient Qt${QT_VERSION_MAJOR}::Network Qt${QT_VERSION_MAJOR}::Test)
+    add_test(NAME RedisClientTest COMMAND RedisClientTest)
+    set_tests_properties(RedisClientTest PROPERTIES TIMEOUT 20)
+
+    if(WIN32 AND TARGET Qt${QT_VERSION_MAJOR}::QOffscreenIntegrationPlugin)
+        add_executable(RedisStartupTest tests/integration/RedisStartupTest.cpp)
+        target_link_libraries(RedisStartupTest PRIVATE RedisClient Qt${QT_VERSION_MAJOR}::Network Qt${QT_VERSION_MAJOR}::Test)
+        add_dependencies(RedisStartupTest ${AppTarget})
+        add_custom_command(TARGET RedisStartupTest POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${AppTarget}>/platforms"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:Qt${QT_VERSION_MAJOR}::QOffscreenIntegrationPlugin>"
+                "$<TARGET_FILE_DIR:${AppTarget}>/platforms/"
+        )
+        add_test(NAME RedisStartupTest COMMAND RedisStartupTest
+            "$<TARGET_FILE:${AppTarget}>" "${CMAKE_CURRENT_SOURCE_DIR}/tools/Redis/redis-server.exe")
+        set_tests_properties(RedisStartupTest PROPERTIES TIMEOUT 40)
+    endif()
+
     add_executable(RedisConfigurationTest
         tests/unit/RedisConfigurationTest.cpp
         src/core/RedisConfiguration.cpp

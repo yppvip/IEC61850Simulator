@@ -1,10 +1,10 @@
 #pragma once
 
 #include "RedisConfiguration.hpp"
+#include "RedisClient.hpp"
 
 #include <QElapsedTimer>
 #include <QObject>
-#include <QTcpSocket>
 #include <QTimer>
 
 namespace iec61850sim
@@ -37,10 +37,9 @@ private:
     [[nodiscard]] QString FindRedisServiceExecutable() const;
 
     RedisConfiguration m_configuration;
-    QTcpSocket m_socket;
-    QTimer m_connectTimeout;
+    RedisClient m_client;
     QElapsedTimer m_startupElapsed;
-    QByteArray m_response;
     bool m_startAttempted = false;
+    bool m_checking = false;
 };
 } // namespace iec61850sim

@@ -12,11 +12,24 @@ compile_commands.json
 # Build products
 *.obj
 *.o
+*.a
+*.lib
+*.so
+*.so.*
 *.dylib
 *.pdb
 *.ilk
 
 # Local QtADS compatibility cache; runtime artifacts are deployed from build trees.
+/tools/QtADS/
+
+# Redis runtime output. Keep the distributable executables, DLLs and configs.
+/tools/Redis/*.pid
+/tools/Redis/*.log
+/tools/Redis/*.rdb
+/tools/Redis/*.aof
+/tools/Redis/appendonlydir/
+/logs/
 
 # Qt generated files
 *_autogen/

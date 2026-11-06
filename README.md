@@ -12,7 +12,7 @@ IEC61850Simulator 是一个基于 C++、Qt/QML 和 CMake 开发的 IEC 61850 仿
 
 - 文件菜单可选择并校验 ICD、SCD、CID、CCD 文件；尚未解析 SCL 内容。
 - 工具栏可创建服务器和客户端占位实体，并在侧栏和详情 Dock 中显示状态。
-- Redis 通过异步 `PING` 检查可用性；不可用时不阻止 UI 启动并给出提示。
+- Redis 通过 hiredis 在后台线程执行 `PING` 检查；不可用时不阻止 UI 启动并给出提示。
 - ADS 静态布局在退出时保存、下次启动时恢复；动态详情 Dock 暂不跨会话恢复。
 - 日志输出到可执行文件同级的 `logs/IEC61850Simulator.log`。
 
@@ -195,7 +195,7 @@ cmake --build --preset windows-debug
 
 若在 VSCode 中使用 CMake Tools，需从 MSYS2 MinGW64 终端启动 VSCode，或显式为 CMake Tools 配置同一套 MinGW64 环境，使其能找到 `/mingw64` 下的编译器、Ninja 和 Qt。
 
-当前 Redis 配置单元测试通过 `CMakePresets.json` 统一执行：
+Redis 配置、hiredis 客户端和 Windows 应用启动测试通过 `CMakePresets.json` 统一执行：
 
 ```bash
 ctest --preset windows-debug
@@ -203,3 +203,13 @@ ctest --preset windows-debug
 
 也可在对应的 MSYS2 终端直接运行 `./scripts/BuildMinGW64.sh` 或
 `./scripts/BuildUcrt64.sh`。脚本使用相互独立的构建目录，避免两种工具链的产物混用。
+
+## 第三方依赖与版本管理
+
+- 库源码保存在 `third_party/` 并随仓库管理。hiredis 固定为 1.3.0，由根 CMake 静态构建，不需要额外部署 hiredis DLL，也不需要构建时联网下载。
+- 独立运行的依赖程序保存在 `tools/`。当前 Redis 的 EXE、配套 DLL 和默认配置继续纳入版本控制；本机生成的库、构建目录和 Redis PID、日志、数据文件应忽略。
+- `tools/QtADS/` 仅为本机缓存，整体忽略；QtADS 运行时由 CMake 构建并部署。
+- hiredis 的来源、校验值与许可证见 [third_party/DEPENDENCIES.md](third_party/DEPENDENCIES.md)，架构及验证边界见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
+- `tools/Redis/redis_6379.pid` 是历史已跟踪的运行文件。本轮保留其用户修改及跟踪状态，避免干扰正在进行的迁移；新增忽略规则只作用于未跟踪文件。
+
+Windows 启动测试在临时目录运行实际应用，通过日志及进程存活检查验证 Redis 正常与超时场景各连续启动两次。测试使用关闭持久化的独立 Redis 子进程，不启动 RedisService、不修改 `tools/Redis/`，仅清理测试自己创建的进程。缺少 Redis 可执行文件时跳过真实 Redis 场景；Qt offscreen 插件可用时，CMake 自动部署该测试插件。弹窗文字与状态栏的视觉效果仍需人工检查。

@@ -207,7 +207,7 @@ IEC61850Simulator/
 - 首期 IEC 61850 范围：MMS、报告、控制、GOOSE、采样值分别支持到什么程度。
 - SCL 类型、校验规则、模型版本与迁移策略。
 - Qt、CMake、编译器、libiec61850、ADS、Redis 客户端及 Python 的固定版本与许可记录。
-- C++ Redis 客户端选择、RedisJSON 是否作为部署依赖、消息序列化格式。
+- RedisJSON 是否作为部署依赖、消息序列化格式；当前 C++ Redis 客户端已选定 hiredis 1.3.0。
 - UI/服务的启动顺序、健康检查、服务发现、断线重连和优雅关闭。
 - 配置、证书、密钥及用户设置的保存与权限策略。
 - 日志、指标、报文记录、诊断包和敏感信息脱敏。
@@ -260,7 +260,7 @@ Redis 不可用时，UI 仍须启动，并弹窗提示“Redis 数据库不可�
 
 ### 12.2 Redis 与日志
 
-- `RedisAvailabilityChecker` 通过 Qt Network 异步发送 Redis RESP `PING`；连接、启动等待、可用与不可用状态均回传给 UI。
+- `RedisAvailabilityChecker` 调用 `RedisClient`，通过 hiredis 发送 `PING` 并解析响应；Qt Concurrent 在后台执行连接与命令，完成后由 GUI 线程的 `QFutureWatcher` 回传状态。
 - 本机 Redis 不可达且 `autoStart` 启用时，调用 `RedisService.exe run --config <redis.conf> --port <port>`，不停止任何 Redis 实例。
 - 全局 Qt 消息处理器将运行日志写入 `bin/logs/IEC61850Simulator.log`。
 
@@ -270,3 +270,31 @@ Redis 不可用时，UI 仍须启动，并弹窗提示“Redis 数据库不可�
 - 文件选择仅校验 SCL 扩展名，不解析文件内容。
 - ADS 静态 Dock 布局通过 `QSettings` 保存与恢复；需要先持久化服务器/客户端实体，才能安全恢复动态详情 Dock。
 - 已新增 `RedisConfigurationTest`，覆盖 Redis 配置的有效读取、相对工作目录解析和非法端口拒绝。
+
+## 13. hiredis 集成与 Git 忽略规则（2026-11-06）
+
+### 13.1 已实现边界
+
+- hiredis 1.3.0 完整上游源码保存在 `third_party/hiredis-1.3.0`，来源、归档 SHA-256 与许可证记录于 `third_party/DEPENDENCIES.md`。源码无需在线下载即可构建。
+- 根项目启用 C 与 C++，通过 `add_subdirectory()` 构建 hiredis 静态库；禁用其上游测试、示例、SSL 和 NuGet 打包，选项限定在依赖作用域，QtADS 保持动态链接。安装规则附带 hiredis 许可证。
+- `RedisClient` 使用 hiredis 的连接和命令 API、RAII 释放 context/reply，每次 PING 独占连接，不维护持久业务连接。仅 `REDIS_REPLY_STATUS` 的 `PONG` 视为成功；错误、错误类型、格式异常、断线和超时均返回失败。
+- 连接和命令分别设置 1000 ms 超时；该值不是整个操作的总截止时间，系统域名解析也可能超出此时间。后台任务不捕获 GUI 对象，销毁客户端不会等待正在进行的网络操作；应用退出时全局线程池可能等待任务结束。
+- `RedisAvailabilityChecker` 保留配置、autoStart、本机地址限制、显式 RedisService 参数与工作目录、启动重试及状态信号。检查周期内重复 `Start()` 会忽略，结束后可再次检查。状态同时写入应用日志。
+- UI 的“Redis 数据库不可用”弹窗和状态栏行为保持；不新增 SCL 解析、业务读写、订阅、认证或停止 Redis 的功能。
+
+### 13.2 版本控制策略
+
+- 忽略 `build/`、静态库/共享库构建产物、`tools/QtADS/` 本机缓存，以及 `tools/Redis/` 下的 PID、日志、RDB、AOF 与 `appendonlydir/`。
+- 不全局忽略 EXE/DLL，保留 `tools/Redis/` 中可分发程序、配套 DLL 和配置；QtADS 与 hiredis 源码、构建脚本和许可证必须可被 Git 跟踪。
+- `tools/Redis/redis_6379.pid` 已被历史提交跟踪且存在用户修改。本轮仅增加未来运行产物的忽略规则，未修改该文件、未取消跟踪，也未改动用户的 Redis 迁移。
+
+### 13.3 分阶段验证
+
+1. hiredis 独立 MinGW64 Debug 静态编译通过，再接入根 CMake。
+2. `RedisClientTest` 覆盖分段 PONG、Redis 错误、非预期状态/类型、非法协议、连接拒绝、超时期间事件循环响应及操作中销毁。
+3. `RedisStartupTest` 在 Windows/offscreen 环境运行真实应用：隔离配置和随机端口，在真实 Redis 与无响应端口两种场景各启动两次，检查日志及应用保持运行。真实 Redis 仅为测试子进程，关闭持久化并由测试清理；应用退出后验证 Redis 仍运行。
+4. 原有 `RedisConfigurationTest` 保留。统一执行 `ctest --preset windows-debug`。启动测试不自动操作弹窗，也不验证视觉布局；autoStart 分支沿用原实现，本轮不重新启动 RedisService。
+
+当前验证工具链为 Windows / MSYS2 MinGW64 / Qt 6；其他编译器、UCRT64 和 Linux 尚未在本轮验证。上游对 Windows 的支持为尽力维护，升级 hiredis 前需重复连接、超时和构建验证。
+
+验证结果：`windows-debug` 与全新目录 `build/hiredis-clean-debug/` 均完成 Debug 配置、构建及三组测试（3/3 通过）。确认全部 74 个 hiredis 上游文件可被 Git 跟踪，除 `hiredis.targets` 的 BOM/行尾规范化外与下载归档一致；新增及修改文本通过 UTF-8/无 BOM/LF 检查，`git diff --check` 通过。构建仍有上游 hiredis 的旧 CMake 兼容警告和 QtADS 的既有编译警告，不影响本次通过。
