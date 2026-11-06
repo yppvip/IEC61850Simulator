@@ -18,9 +18,11 @@ IEC61850Simulator 是一个基于 C++、Qt/QML 和 CMake 开发的 IEC 61850 仿
 
 Redis 连接配置位于 `config/Redis.json`。应用以其中的 `host:port` 执行 Redis `PING` 检查；Redis 不可用不会阻止 UI 启动，但会显示“Redis 数据库不可用”。详细的调用边界和实施顺序见 [AGENTS.md](AGENTS.md)。
 
-### 下一阶段：SCL 离线分析（设计中）
+### 下一阶段：SCL 离线分析（P0 已通过）
 
 设计与执行方案见 [docs/Tasks/Task1.md](docs/Tasks/Task1.md)。计划增加只读 SCL 解析、分层校验、数据集/报告/对象浏览、搜索、引用跳转与原文预览；沿用 Qt Widgets + ADS，离线分析不依赖 Redis。当前尚未实现这些功能，XML 解析、内部一致性检查和完整 XSD 校验会分别标明覆盖范围。“MMS 对象标识”和“报告 ID”分别展示；运行时 MMS Invoke ID 不属于静态 SCL 文件分析范围。
+
+P0 已完成 Debug 构建及五组测试，新增 12 份自建 SCL 样本、规则目录和真实文件统计基线，并修复创建详情 Dock 后正常退出的崩溃。验收证据、复现命令和覆盖限制见 [P0 记录](docs/Tasks/Task1P0.md)，规则规格见 [SclRules.md](docs/Tasks/SclRules.md)。P1 尚未开始。
 
 ## 技术栈
 

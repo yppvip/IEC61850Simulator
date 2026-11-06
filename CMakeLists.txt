@@ -106,6 +106,33 @@ install(FILES third_party/hiredis-1.3.0/COPYING DESTINATION ${CMAKE_INSTALL_DATA
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(SclFixtureBaselineTest tests/unit/SclFixtureBaselineTest.cpp)
+    target_link_libraries(SclFixtureBaselineTest PRIVATE Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Test)
+    target_compile_definitions(SclFixtureBaselineTest PRIVATE SCL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/scl")
+    add_test(NAME SclFixtureBaselineTest COMMAND SclFixtureBaselineTest)
+
+    if(TARGET Qt${QT_VERSION_MAJOR}::QOffscreenIntegrationPlugin)
+        add_executable(MainWindowBaselineTest
+            tests/integration/MainWindowBaselineTest.cpp
+            src/gui/MainWindow.cpp src/gui/MainWindow.hpp)
+        target_include_directories(MainWindowBaselineTest PRIVATE src/gui)
+        target_link_libraries(MainWindowBaselineTest PRIVATE Qt${QT_VERSION_MAJOR}::Widgets
+            Qt${QT_VERSION_MAJOR}::Test ads::qtadvanceddocking-qt${QT_VERSION_MAJOR})
+        set_target_properties(MainWindowBaselineTest PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+        target_compile_definitions(MainWindowBaselineTest PRIVATE BASELINE_ARTIFACT_DIR="${CMAKE_BINARY_DIR}/p0-artifacts")
+        if(WIN32)
+            add_custom_command(TARGET MainWindowBaselineTest POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_RUNTIME_DLLS:MainWindowBaselineTest>
+                    $<TARGET_FILE_DIR:MainWindowBaselineTest>
+                COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:MainWindowBaselineTest>/platforms"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:Qt${QT_VERSION_MAJOR}::QOffscreenIntegrationPlugin>"
+                    "$<TARGET_FILE_DIR:MainWindowBaselineTest>/platforms/"
+                COMMAND_EXPAND_LISTS)
+        endif()
+        add_test(NAME MainWindowBaselineTest COMMAND MainWindowBaselineTest)
+        set_tests_properties(MainWindowBaselineTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+    endif()
+
     add_executable(RedisClientTest tests/unit/RedisClientTest.cpp)
     target_link_libraries(RedisClientTest PRIVATE RedisClient Qt${QT_VERSION_MAJOR}::Network Qt${QT_VERSION_MAJOR}::Test)
     add_test(NAME RedisClientTest COMMAND RedisClientTest)

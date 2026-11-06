@@ -1,0 +1,258 @@
+{
+  "manifestVersion": 1,
+  "origin": "Self-authored synthetic fixtures; no content copied from engineering SCD",
+  "schemaValidated": false,
+  "fixtures": [
+    {
+      "file": "Minimal.scd",
+      "wellFormed": true,
+      "root": "SCL",
+      "namespace": "http://www.iec.ch/61850/2003/SCL",
+      "counts": {
+        "FCDA": 3,
+        "SampledValueControl": 1,
+        "AccessPoint": 1,
+        "IED": 1,
+        "GSEControl": 1,
+        "LN0": 1,
+        "LNodeType": 2,
+        "LDevice": 1,
+        "LN": 1,
+        "DOType": 2,
+        "ReportControl": 2,
+        "DataSet": 1,
+        "EnumType": 1
+      },
+      "plannedRules": [],
+      "validationStatus": "P0 inventory only; product rules not implemented"
+    },
+    {
+      "file": "Minimal.cid",
+      "wellFormed": true,
+      "root": "SCL",
+      "namespace": "http://www.iec.ch/61850/2003/SCL",
+      "counts": {
+        "FCDA": 3,
+        "SampledValueControl": 1,
+        "AccessPoint": 1,
+        "IED": 1,
+        "GSEControl": 1,
+        "LN0": 1,
+        "LNodeType": 2,
+        "LDevice": 1,
+        "LN": 1,
+        "DOType": 2,
+        "ReportControl": 2,
+        "DataSet": 1,
+        "EnumType": 1
+      },
+      "plannedRules": [],
+      "validationStatus": "P0 inventory only; product rules not implemented"
+    },
+    {
+      "file": "Minimal.icd",
+      "wellFormed": true,
+      "root": "SCL",
+      "namespace": "http://www.iec.ch/61850/2003/SCL",
+      "counts": {
+        "FCDA": 3,
+        "SampledValueControl": 1,
+        "AccessPoint": 1,
+        "IED": 1,
+        "GSEControl": 1,
+        "LN0": 1,
+        "LNodeType": 2,
+        "LDevice": 1,
+        "LN": 1,
+        "DOType": 2,
+        "ReportControl": 2,
+        "DataSet": 1,
+        "EnumType": 1
+      },
+      "plannedRules": [],
+      "validationStatus": "P0 inventory only; product rules not implemented"
+    },
+    {
+      "file": "MissingType.scd",
+      "wellFormed": true,
+      "root": "SCL",
+      "namespace": "http://www.iec.ch/61850/2003/SCL",
+      "counts": {
+        "FCDA": 3,
+        "SampledValueControl": 1,
+        "AccessPoint": 1,
+        "IED": 1,
+        "GSEControl": 1,
+        "LN0": 1,
+        "LNodeType": 2,
+        "LDevice": 1,
+        "LN": 1,
+        "DOType": 2,
+        "ReportControl": 2,
+        "DataSet": 1,
+        "EnumType": 1
+      },
+      "plannedRules": [
+        "TYP001"
+      ],
+      "validationStatus": "P0 inventory only; product rules not implemented"
+    },
+    {
+      "file": "DanglingDataSet.scd",
+      "wellFormed": true,
+      "root": "SCL",
+      "namespace": "http://www.iec.ch/61850/2003/SCL",
+      "counts": {
+        "FCDA": 3,
+        "SampledValueControl": 1,
+        "AccessPoint": 1,
+        "IED": 1,
+        "GSEControl": 1,
+        "LN0": 1,
+        "LNodeType": 2,
+        "LDevice": 1,
+        "LN": 1,
+        "DOType": 2,
+        "ReportControl": 2,
+        "DataSet": 1,
+        "EnumType": 1
+      },
+      "plannedRules": [
+        "REF001"
+      ],
+      "validationStatus": "P0 inventory only; product rules not implemented"
+    },
+    {
+      "file": "DuplicateDataSet.scd",
+      "wellFormed": true,
+      "root": "SCL",
+      "namespace": "http://www.iec.ch/61850/2003/SCL",
+      "counts": {
+        "FCDA": 3,
+        "AccessPoint": 1,
+        "IED": 1,
+        "GSEControl": 1,
+        "LN0": 1,
+        "LNodeType": 2,
+        "LDevice": 1,
+        "LN": 1,
+        "DOType": 2,
+        "ReportControl": 2,
+        "DataSet": 2,
+        "SampledValueControl": 1,
+        "EnumType": 1
+      },
+      "plannedRules": [
+        "KEY001",
+        "ENG001"
+      ],
+      "validationStatus": "P0 inventory only; product rules not implemented"
+    },
+    {
+      "file": "NamespaceCollision.scd",
+      "wellFormed": true,
+      "root": "SCL",
+      "namespace": "http://www.iec.ch/61850/2003/SCL",
+      "counts": {
+        "FCDA": 3,
+        "SampledValueControl": 1,
+        "AccessPoint": 1,
+        "IED": 1,
+        "GSEControl": 1,
+        "LN0": 1,
+        "LNodeType": 2,
+        "LDevice": 1,
+        "LN": 1,
+        "DOType": 2,
+        "ReportControl": 2,
+        "DataSet": 1,
+        "EnumType": 1
+      },
+      "plannedRules": [
+        "EXT001"
+      ],
+      "validationStatus": "P0 inventory only; product rules not implemented"
+    },
+    {
+      "file": "NamespaceAlias.scd",
+      "wellFormed": true,
+      "root": "SCL",
+      "namespace": "http://www.iec.ch/61850/2003/SCL",
+      "counts": {
+        "FCDA": 3,
+        "SampledValueControl": 1,
+        "AccessPoint": 1,
+        "IED": 1,
+        "GSEControl": 1,
+        "LN0": 1,
+        "LNodeType": 2,
+        "LDevice": 1,
+        "LN": 1,
+        "DOType": 2,
+        "ReportControl": 2,
+        "DataSet": 1,
+        "EnumType": 1
+      },
+      "plannedRules": [],
+      "validationStatus": "P0 inventory only; product rules not implemented"
+    },
+    {
+      "file": "Truncated.scd",
+      "wellFormed": false,
+      "root": "SCL",
+      "namespace": "http://www.iec.ch/61850/2003/SCL",
+      "counts": {},
+      "plannedRules": [
+        "XML002"
+      ],
+      "validationStatus": "P0 inventory only; product rules not implemented"
+    },
+    {
+      "file": "Empty.scd",
+      "wellFormed": false,
+      "root": "SCL",
+      "namespace": "http://www.iec.ch/61850/2003/SCL",
+      "counts": {},
+      "plannedRules": [
+        "XML001"
+      ],
+      "validationStatus": "P0 inventory only; product rules not implemented"
+    },
+    {
+      "file": "UnknownDialect.ccd",
+      "wellFormed": true,
+      "root": "DeviceConfiguration",
+      "namespace": "urn:synthetic:unknown",
+      "counts": {},
+      "plannedRules": [
+        "XML003"
+      ],
+      "validationStatus": "P0 inventory only; product rules not implemented"
+    },
+    {
+      "file": "UnknownVersion.scd",
+      "wellFormed": true,
+      "root": "SCL",
+      "namespace": "http://www.iec.ch/61850/2003/SCL",
+      "counts": {
+        "FCDA": 3,
+        "SampledValueControl": 1,
+        "AccessPoint": 1,
+        "IED": 1,
+        "GSEControl": 1,
+        "LN0": 1,
+        "LNodeType": 2,
+        "LDevice": 1,
+        "LN": 1,
+        "DOType": 2,
+        "ReportControl": 2,
+        "DataSet": 1,
+        "EnumType": 1
+      },
+      "plannedRules": [
+        "VER001"
+      ],
+      "validationStatus": "P0 inventory only; product rules not implemented"
+    }
+  ]
+}

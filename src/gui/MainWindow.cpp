@@ -47,6 +47,13 @@ MainWindow::MainWindow(QWidget* parent)
     statusBar()->showMessage(QStringLiteral("就绪"));
 }
 
+MainWindow::~MainWindow()
+{
+    // Dock destruction callbacks use m_detailDocks. Destroy the manager while
+    // derived-class members are still alive, before QObject deletes children.
+    delete m_dockManager;
+}
+
 void MainWindow::CreateMenus()
 {
     QMenu* fileMenu = menuBar()->addMenu(QStringLiteral("文件"));
@@ -103,7 +110,8 @@ void MainWindow::CreateDockLayout()
 
 void MainWindow::RestoreDockLayout()
 {
-    QSettings settings(QStringLiteral("IEC61850Simulator"), QStringLiteral("IEC61850Simulator"));
+    QSettings settings(QSettings::defaultFormat(), QSettings::UserScope,
+        QStringLiteral("IEC61850Simulator"), QStringLiteral("IEC61850Simulator"));
     const QByteArray layout = settings.value(QStringLiteral("MainWindow/DockLayout")).toByteArray();
     if (!layout.isEmpty() && !m_dockManager->restoreState(layout))
     {
@@ -113,10 +121,18 @@ void MainWindow::RestoreDockLayout()
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
-    QSettings settings(QStringLiteral("IEC61850Simulator"), QStringLiteral("IEC61850Simulator"));
+    QSettings settings(QSettings::defaultFormat(), QSettings::UserScope,
+        QStringLiteral("IEC61850Simulator"), QStringLiteral("IEC61850Simulator"));
     settings.setValue(QStringLiteral("MainWindow/DockLayout"), m_dockManager->saveState());
     settings.sync();
-    qInfo(UiLog) << "已保存 ADS 停靠布局。";
+    if (settings.status() == QSettings::NoError)
+    {
+        qInfo(UiLog) << "已保存 ADS 停靠布局。";
+    }
+    else
+    {
+        qWarning(UiLog) << "无法保存 ADS 停靠布局。";
+    }
     QMainWindow::closeEvent(event);
 }
 

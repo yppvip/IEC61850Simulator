@@ -301,13 +301,15 @@ Redis 不可用时，UI 仍须启动，并弹窗提示“Redis 数据库不可�
 
 验证结果：`windows-debug` 与全新目录 `build/hiredis-clean-debug/` 均完成 Debug 配置、构建及三组测试（3/3 通过）。确认全部 74 个 hiredis 上游文件可被 Git 跟踪，除 `hiredis.targets` 的 BOM/行尾规范化外与下载归档一致；新增及修改文本通过 UTF-8/无 BOM/LF 检查，`git diff --check` 通过。构建仍有上游 hiredis 的旧 CMake 兼容警告和 QtADS 的既有编译警告，不影响本次通过。
 
-## 14. SCL 离线分析方案（2026-11-06，尚未实施）
+## 14. SCL 离线分析方案（2026-11-06，P0 已通过）
 
-完整方案与阶段验收见 [Tasks/Task1.md](Tasks/Task1.md)。本次新增设计文档，未修改解析代码、UI 业务、第三方依赖或 Redis 工具，未重新运行原有构建和测试；上文验证结果属于此前实现记录。
+完整方案见 [Tasks/Task1.md](Tasks/Task1.md)，P0 验收记录见 [Tasks/Task1P0.md](Tasks/Task1P0.md)。本轮完成基线、规则与样本准备，尚未实现产品 SCL 解析或新 UI；上文第 13 节为此前 hiredis 实现记录。
 
 - 产品范围：只读打开、分层校验、IED/数据集/报告/对象/通信配置浏览、搜索、双向引用与原文预览；不包含编辑修复、设备通信、抓包或自动生成仿真实例。
 - 架构：`src/iec61850/scl/` 共享领域模型与解析规则，经 `src/core/` 应用服务在后台分析，再向 GUI ViewModel 交付不可变快照；沿用 Widgets + ADS。
 - 大文件策略：流式 XML、类型共享、按需展开、后台搜索和分窗口原文；行列/字符偏移需与原始字节编码正确映射，不能直接作文件 seek 偏移。
 - 校验边界：先实现文件/XML、基础结构和引用一致性的明确子集，公开适用版本与未执行项；完整 XSD 引擎和 schema 获取/分发单列后续阶段。
-- 本地真实 SCD 只读扫描约 48.08 MiB，按 localName 初步统计有 104 个 IED、1,036 个数据集和 687 个 ReportControl。统计不是合规结论，正式实现需按命名空间复核；原始工程文件不纳入仓库。
-- 实施按 P0～P6 顺序通过基线、解析、引用校验、任务生命周期、工作台、搜索/视觉与收尾门槛；当前尚未开始 P0 复验。
+- 本地真实 SCD 只读扫描约 48.08 MiB，P0 已按 namespace URI + localName 复核：104 个 IED、1,036 个数据集和 687 个 ReportControl；文件指纹未变。标准 P 元素为 1,405 个，扩展 P 为 2 个。统计不是合规结论，原始工程文件不纳入仓库。
+- P0 已完成 windows-debug 配置/构建，五组测试通过；原有三组测试保留，新增 MainWindowBaselineTest 与 SclFixtureBaselineTest。前者验证列表/详情、正常退出、跨进程 ADS 布局；后者检查 12 份自建样本的 XML 和计数，不执行语义规则。
+- P0 修复了详情 Dock 销毁回调访问已析构成员的问题；主窗先析构 ADS 管理器，并显式采用 QSettings 默认格式以支持测试隔离，保存失败输出警告。产品默认仍使用原 NativeFormat。
+- 首批规则目录见 [Tasks/SclRules.md](Tasks/SclRules.md)，统计工具为 `scripts/MeasureSclBaseline.ps1`。没有新增依赖或更改 tools/Redis；P1 尚未开始。
