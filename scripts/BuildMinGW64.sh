@@ -23,12 +23,4 @@ cmake -S "${source_dir}" -B "${build_dir}" -G Ninja \
     -DCMAKE_PREFIX_PATH=/mingw64
 cmake --build "${build_dir}"
 
-application_path="${build_dir}/bin/IEC61850Simulator.exe"
-windeployqt_path="$(command -v windeployqt6.exe || command -v windeployqt.exe || true)"
-if [[ -z "${windeployqt_path}" ]]; then
-    echo "Qt deployment tool was not found. Reinstall mingw-w64-x86_64-qt6-base." >&2
-    exit 1
-fi
-
-"${windeployqt_path}" --no-translations "${application_path}"
-echo "Build and Qt runtime deployment completed: ${application_path}"
+echo "Build and Qt runtime deployment completed: ${build_dir}/bin/IEC61850Simulator.exe"

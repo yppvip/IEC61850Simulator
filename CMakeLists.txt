@@ -121,6 +121,29 @@ if(WIN32)
         COMMAND_EXPAND_LISTS
         COMMENT "Deploying runtime DLLs next to ${AppTarget}"
     )
+
+    # TARGET_RUNTIME_DLLS does not include Qt plugins or third-party DLLs
+    # imported by prebuilt Qt/MinGW binaries. Use the selected Qt installation
+    # and compiler, never another toolchain found on PATH.
+    get_target_property(QtCoreLocation Qt${QT_VERSION_MAJOR}::Core IMPORTED_LOCATION_RELEASE)
+    if(NOT QtCoreLocation)
+        get_target_property(QtCoreLocation Qt${QT_VERSION_MAJOR}::Core IMPORTED_LOCATION)
+    endif()
+    get_filename_component(QtRuntimeDirectory "${QtCoreLocation}" DIRECTORY)
+    get_filename_component(CompilerRuntimeDirectory "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    find_program(QtDeployTool NAMES windeployqt6.exe windeployqt.exe
+        HINTS "${QtRuntimeDirectory}" NO_DEFAULT_PATH REQUIRED)
+    add_custom_target(DeployRuntime ALL
+        COMMAND "${CMAKE_COMMAND}"
+            "-DApplicationPath=$<TARGET_FILE:${AppTarget}>"
+            "-DQtDeployTool=${QtDeployTool}"
+            "-DQtRuntimeDirectory=${QtRuntimeDirectory}"
+            "-DCompilerRuntimeDirectory=${CompilerRuntimeDirectory}"
+            "-DCMAKE_OBJDUMP=${CMAKE_OBJDUMP}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/DeployWindowsRuntime.cmake"
+        DEPENDS ${AppTarget}
+        COMMENT "Deploying Qt plugins and transitive Windows runtime dependencies"
+        VERBATIM)
 endif()
 
 include(GNUInstallDirs)

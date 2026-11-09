@@ -51,3 +51,4 @@ third_party/Qt-Advanced-Docking-System-5.0.0/demo
 third_party/Qt-Advanced-Docking-System-5.0.0/doc
 third_party/Qt-Advanced-Docking-System-5.0.0/examples
 third_party/Redis-8.8.0-Windows-x64-msys2-with-Service.zip
+tools/Redis/redis_6379.pid

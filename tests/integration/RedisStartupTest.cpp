@@ -101,7 +101,8 @@ void RedisStartupTest::Startup()
         environment.insert(QStringLiteral("QT_QPA_PLATFORM"), QStringLiteral("offscreen"));
         environment.insert(QStringLiteral("QT_QPA_PLATFORM_PLUGIN_PATH"), runtimeDirectory.filePath(QStringLiteral("platforms")));
         environment.insert(QStringLiteral("PATH"), QFileInfo(ApplicationPath).absolutePath()
-            + QDir::listSeparator() + environment.value(QStringLiteral("PATH")));
+            + QDir::listSeparator() + environment.value(QStringLiteral("SystemRoot")) + QStringLiteral("/System32")
+            + QDir::listSeparator() + environment.value(QStringLiteral("SystemRoot")));
         application.setProcessEnvironment(environment);
         application.setWorkingDirectory(directory.path());
         application.start(executable, {});

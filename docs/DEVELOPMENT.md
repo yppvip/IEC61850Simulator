@@ -246,6 +246,10 @@ IEC61850Simulator/
 
 QtADS 源码保存在 `third_party/Qt-Advanced-Docking-System-5.0.0`，由项目 CMake 构建并链接。其 DLL 作为运行时依赖部署到 `build/<preset>/bin/` 或安装目录的 `bin/`；不提交构建产物。若需要 `tools/QtADS/`，该目录仅为本机兼容缓存并由 Git 忽略。
 
+Windows 默认构建通过 `DeployRuntime` 调用 `cmake/DeployWindowsRuntime.cmake`，从当前 Qt 安装运行 `windeployqt`，再使用 `file(GET_RUNTIME_DEPENDENCIES)` 扫描主程序及已部署插件/DLL，递归补齐当前 Qt/编译器目录的第三方依赖，排除 Windows 系统库及 API set。未解析依赖使构建失败。同名本地副本优先以所选工具链原件更新。该目标每次默认构建执行，即使主程序未重新链接也能修复缺失文件；单独构建主程序目标后应显式构建 `DeployRuntime`。此流程面向构建目录，`cmake --install` 尚不等同于完整分发包。
+
+命令行正常而资源管理器双击缺库时，先检查是否依赖了 MSYS2 的 PATH；`windeployqt` 本身不保证补齐 MSYS2 的 ICU、字体与压缩库。`RedisStartupTest` 的子程序 PATH 仅包含部署目录和 Windows 系统目录，用于回归无开发环境 PATH 的启动场景。
+
 ### 11.3 Redis 启动与连接边界
 
 `config/Redis.json` 首期包含 `host`、`port`、`startupTimeoutMs`、`autoStart` 和 `redisWorkingDirectory`。健康检查以连接目标并成功执行 Redis `PING` 为准，不依赖 Windows 服务名；若已有实例在该端口正常响应，直接连接。运行时仅读取可执行文件同级的 `bin/config/Redis.json`；该文件仅在缺失时由默认配置创建，后续构建不会覆盖用户修改。

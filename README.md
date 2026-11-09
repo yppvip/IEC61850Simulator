@@ -193,15 +193,9 @@ cmake --preset windows-debug -DCMAKE_PREFIX_PATH=/mingw64
 cmake --build --preset windows-debug
 ```
 
-可执行文件输出到 `build/windows-debug/bin/`。CMake 会部署 QtADS 动态库；首次本机运行或准备分发时，还需要部署 Qt 的平台插件：
+可执行文件输出到 `build/windows-debug/bin/`。Windows 默认构建会执行 `DeployRuntime`：使用当前 Qt 安装的 `windeployqt` 部署平台插件，再递归复制 Qt、插件和编译器所需的第三方 DLL（包括 ICU、字体、图片和压缩库）。部署完成后可直接双击 EXE，无需依赖 MSYS2 的 PATH。分发时需要保留整个 `bin/` 目录。
 
-```bash
-/mingw64/bin/windeployqt.exe \
-/e/Code/IEC61850Simulator/build/windows-debug/bin/IEC61850Simulator.exe
-```
-
-`scripts/BuildMinGW64.sh` 和 `scripts/BuildUcrt64.sh` 会在构建完成后自动执行
-`windeployqt`，因此使用脚本构建时无需再手动执行上述命令。
+`scripts/BuildMinGW64.sh` 和 `scripts/BuildUcrt64.sh` 共用该 CMake 部署流程。若只构建了特定目标或需要补齐已存在的输出目录，请执行 `cmake --build <构建目录> --target DeployRuntime`；UCRT64 示例为 `cmake --build build/windows-ucrt64-debug --target DeployRuntime`。仅运行 `windeployqt` 可能遗漏 MSYS2 提供的递归第三方依赖。
 
 运行时 Redis 配置固定从可执行文件同级的 `config/Redis.json` 读取，例如 `build/windows-debug/bin/config/Redis.json`。该文件只会在首次构建时由仓库中的默认配置创建；之后可直接修改它，后续构建不会覆盖本地修改。修改后重启程序使新连接参数生效。
 

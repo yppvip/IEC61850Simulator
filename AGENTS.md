@@ -26,6 +26,7 @@
 
 - QtADS 源码固定在 `third_party/Qt-Advanced-Docking-System-5.0.0`，由根 CMake 通过 `add_subdirectory()` 构建并链接。
 - 运行时 DLL 随可执行文件部署到 `build/<preset>/bin/`，由 CMake 的构建后步骤或 `install()` 规则完成。
+- Windows 默认构建的 `DeployRuntime` 目标必须部署 Qt 插件及递归第三方 DLL；启动回归不得继承 MSYS2 的 PATH，以验证双击启动所需依赖完整。
 - `tools/QtADS/` 仅可作为本机兼容缓存；其中的二进制文件不提交到版本库。
 
 ## Redis 生命周期
