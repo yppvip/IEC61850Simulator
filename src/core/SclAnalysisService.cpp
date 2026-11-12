@@ -131,6 +131,7 @@ SclAnalysisService::Completion SclAnalysisService::Run(const QString& path, Scl:
         auto analysis = Scl::ReferenceResolver::analyze(input, task);
         Scl::enterStage(task, Scl::TaskStage::BrowseIndex);
         SclBrowseIndex browse(*analysis.document, task);
+        browse.BuildScopes(analysis, task);
         Scl::checkpoint(task);
         const QFileInfo after(path);
         if (!after.isFile() || after.size() != size || after.lastModified() != modified)

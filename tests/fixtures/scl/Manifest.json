@@ -253,6 +253,39 @@
         "VER001"
       ],
       "validationStatus": "P0 inventory only; product rules not implemented"
+    },
+    {
+      "file": "IedBrowsing.scd",
+      "wellFormed": true,
+      "root": "SCL",
+      "namespace": "http://www.iec.ch/61850/2003/SCL",
+      "counts": {
+        "AccessPoint": 2,
+        "Address": 2,
+        "Communication": 1,
+        "ConnectedAP": 3,
+        "DA": 1,
+        "DO": 1,
+        "DOType": 1,
+        "DataSet": 3,
+        "DataTypeTemplates": 1,
+        "ExtRef": 1,
+        "FCDA": 2,
+        "Header": 1,
+        "IED": 3,
+        "Inputs": 1,
+        "LDevice": 2,
+        "LN": 2,
+        "LN0": 2,
+        "LNodeType": 3,
+        "P": 2,
+        "ReportControl": 3,
+        "SCL": 1,
+        "Server": 2,
+        "SubNetwork": 1
+      },
+      "plannedRules": [],
+      "validationStatus": "Synthetic multi-IED navigation; not XSD validated"
     }
   ]
 }

@@ -4,6 +4,8 @@
 #include <QAbstractItemModel>
 #include <QApplication>
 #include <QClipboard>
+#include <QCheckBox>
+#include <QCryptographicHash>
 #include <QComboBox>
 #include <QFileInfo>
 #include <QHeaderView>
@@ -14,7 +16,7 @@
 #include <QScopedValueRollback>
 #include <QShortcut>
 #include <QSignalBlocker>
-#include <QSplitter>
+#include <QSettings>
 #include <QStyle>
 #include <QTabWidget>
 #include <QTableView>
@@ -24,6 +26,9 @@
 #include <QUrl>
 #include <QVBoxLayout>
 #include <algorithm>
+#include <DockManager.h>
+#include <DockWidget.h>
+#include <DockAreaWidget.h>
 
 namespace iec61850sim
 {
@@ -225,6 +230,7 @@ public:
         m_snapshot = std::move(snapshot);
         m_context = context;
         m_filter.reset();
+        m_scopeRows = nullptr;
         m_links.clear();
         m_candidates = std::move(candidates);
         m_displayRow = -1;
@@ -256,12 +262,52 @@ public:
         endResetModel();
     }
 
+    void SetIed(NodeId ied)
+    {
+        const std::vector<int>* rows = nullptr;
+        if (m_snapshot && ied != NoNode)
+        {
+            const auto scope = m_snapshot->browse.scopedRows.constFind(ied);
+            if (scope != m_snapshot->browse.scopedRows.cend())
+            {
+                int view = -1;
+                switch (m_table)
+                {
+                case Table::Reports: view = int(SclView::Reports); break;
+                case Table::DataSets: view = int(SclView::DataSets); break;
+                case Table::Objects: view = int(SclView::Objects); break;
+                case Table::Communication: view = int(SclView::Communication); break;
+                case Table::Templates: view = int(SclView::Templates); break;
+                case Table::Findings: view = int(SclView::Findings); break;
+                default: break;
+                }
+                if (view >= 0)
+                    rows = &(*scope)[size_t(view)];
+            }
+        }
+        if (rows == m_scopeRows)
+            return;
+        beginResetModel();
+        m_scopeRows = rows;
+        m_filter.reset();
+        endResetModel();
+    }
+
     int rowCount(const QModelIndex& parent = {}) const override
     {
         if (parent.isValid() || !m_snapshot)
             return 0;
         if (m_filter)
             return int(m_filter->size());
+        return ContentRowCount();
+    }
+
+    int ContentRowCount() const
+    {
+        if (!m_snapshot)
+            return 0;
+        if (m_scopeRows)
+            return int(m_scopeRows->size());
         switch (m_table)
         {
         case Table::Reports: return int(m_snapshot->analysis.reports.size());
@@ -341,13 +387,14 @@ public:
 
     int VisibleRow(int row) const
     {
-        if (row < 0 || !m_filter)
+        const auto* rows = m_filter ? &*m_filter : m_scopeRows;
+        if (row < 0 || !rows)
             return row;
-        const auto found = std::lower_bound(m_filter->begin(), m_filter->end(), row);
-        return found != m_filter->end() && *found == row ? int(found - m_filter->begin()) : -1;
+        const auto found = std::lower_bound(rows->begin(), rows->end(), row);
+        return found != rows->end() && *found == row ? int(found - rows->begin()) : -1;
     }
 
-    int OriginalRow(int row) const { return m_filter ? (*m_filter)[row] : row; }
+    int OriginalRow(int row) const { return m_filter ? (*m_filter)[row] : m_scopeRows ? (*m_scopeRows)[row] : row; }
 
     // Browse lists and report mappings are emitted in document order.
     int FirstAtOrAfter(NodeId id) const
@@ -370,6 +417,8 @@ public:
 
     NodeId UnfilteredNode(int row) const
     {
+        if (row < 0)
+            return NoNode;
         if (m_table == Table::Reports)
         {
             const auto& reports = m_snapshot->analysis.reports;
@@ -418,6 +467,14 @@ private:
             auto target = id == NoNode ? QString::number(ref.candidates.size()) + QStringLiteral(" 个候选") : Title(snapshot, id);
             if (ref.candidates.isEmpty() && !link.incoming)
                 target = QStringLiteral("—");
+            if (id != NoNode)
+            {
+                const auto owner = snapshot.browse.iedOwners[id];
+                const auto sourceOwner = snapshot.browse.iedOwners[m_context];
+                if (owner != NoNode)
+                    target = (sourceOwner != NoNode && owner != sourceOwner ? QStringLiteral("跨 IED · ") : QString())
+                        + Attribute(snapshot, owner, "name") + QStringLiteral(" · ") + target;
+            }
             return {link.incoming ? QStringLiteral("使用方") : QStringLiteral("引用"), ref.declared,
                     LinkState(ref.state), target, ref.detail,
                     link.incoming || ref.state == Scl::LinkState::Resolved ? description(id) : QString()};
@@ -485,7 +542,9 @@ private:
                     ref.instanceDescription == NoNode ? QString() : analysis.document->nodes[ref.instanceDescription].text};
         }
         case Table::Candidates:
-            return {Title(snapshot, id), Path(snapshot, id, true), QString::number(node.source.line), description(id)};
+            return {snapshot.browse.iedOwners[id] == NoNode ? Title(snapshot, id)
+                    : Attribute(snapshot, snapshot.browse.iedOwners[id], "name") + QStringLiteral(" · ") + Title(snapshot, id),
+                    Path(snapshot, id, true), QString::number(node.source.line), description(id)};
         default: return {};
         }
     }
@@ -497,6 +556,7 @@ private:
     std::vector<Link> m_links;
     QList<NodeId> m_candidates;
     std::optional<std::vector<int>> m_filter;
+    const std::vector<int>* m_scopeRows = nullptr; // Owned by immutable m_snapshot.
     mutable int m_displayRow = -1;
     mutable QStringList m_displayCells;
 };
@@ -584,15 +644,57 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     navigation->addWidget(m_failedSource);
     outer->addLayout(navigation);
     CreateSearchBar(outer);
+    auto* browseRow = new QHBoxLayout;
+    browseRow->addWidget(new QLabel(QStringLiteral("浏览范围"), this));
+    m_browseScope = new QComboBox(this);
+    m_browseScope->setObjectName("SclBrowseScope");
+    m_browseScope->setMinimumContentsLength(20);
+    m_browseScope->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_browseScope->addItem(QStringLiteral("整个工程"), NoNode);
+    browseRow->addWidget(m_browseScope);
+    m_allTemplates = new QCheckBox(QStringLiteral("显示全部模板"), this);
+    m_allTemplates->setObjectName("SclAllTemplates");
+    m_allTemplates->setToolTip(QStringLiteral("默认仅显示当前 IED 经唯一解析引用使用的模板；工程范围显示全部。"));
+    browseRow->addWidget(m_allTemplates);
+    browseRow->addStretch();
+    outer->addLayout(browseRow);
+    connect(m_browseScope, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] {
+        if (!m_snapshot || m_restoring)
+            return;
+        const auto ied = m_browseScope->currentData().toInt();
+        SetIedScope(ied);
+        Select(ied == NoNode ? 0 : ied, true);
+    });
+    connect(m_allTemplates, &QCheckBox::toggled, this, [this] {
+        if (!m_snapshot)
+            return;
+        const QScopedValueRollback<bool> guard(m_restoring, true);
+        if (m_searchMode->currentIndex() == 1)
+            ResetSearch();
+        static_cast<SclTableModel*>(m_routeTables.back()->model())->SetIed(m_allTemplates->isChecked() ? NoNode : m_ied);
+        LocateTableRow();
+        if (m_searchMode->currentIndex() == 1)
+            ScheduleSearch();
+    });
     m_clearNavigationFilter = new QPushButton(QStringLiteral("目标被当前筛选隐藏 · 清除筛选"), this);
     m_clearNavigationFilter->setObjectName("SclClearNavigationFilter");
     m_clearNavigationFilter->hide();
     outer->addWidget(m_clearNavigationFilter, 0, Qt::AlignLeft);
-    connect(m_clearNavigationFilter, &QPushButton::clicked, this, [this] { ResetSearch(true); });
+    connect(m_clearNavigationFilter, &QPushButton::clicked, this, [this] {
+        const bool outside = m_clearNavigationFilter->property("OutsideIed").toBool();
+        const auto target = m_selected;
+        ResetSearch(true);
+        if (outside)
+        {
+            m_browseScope->setCurrentIndex(0);
+            Select(target, true);
+        }
+    });
 
-    auto* splitter = new QSplitter(Qt::Horizontal, this);
-    outer->addWidget(splitter, 1);
-    m_tree = new QTreeView(splitter);
+    m_docks = new ads::CDockManager(this);
+    m_docks->setObjectName("SclDockManager");
+    outer->addWidget(m_docks, 1);
+    m_tree = new QTreeView(this);
     m_tree->setObjectName("SclTree");
     m_tree->setHeaderHidden(true);
     m_tree->setUniformRowHeights(true);
@@ -600,7 +702,7 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     m_tree->setAccessibleName(QStringLiteral("SCL 对象树"));
     m_treeModel = new SclTreeModel(m_tree);
     m_tree->setModel(m_treeModel);
-    auto* tablePane = new QWidget(splitter);
+    auto* tablePane = new QWidget(this);
     auto* tableLayout = new QVBoxLayout(tablePane);
     tableLayout->setContentsMargins(0, 0, 0, 0);
     m_tables = new QTabWidget(tablePane);
@@ -615,26 +717,44 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     empty->hide();
     m_tables->setObjectName("SclTables");
     m_tables->setUsesScrollButtons(true);
-    m_inspector = new QTabWidget(splitter);
+    m_inspector = new QTabWidget(this);
     m_inspector->setObjectName("SclInspector");
-    splitter->setSizes({253, 517, 380});
-    splitter->setCollapsible(0, false);
-    splitter->setCollapsible(1, false);
-    splitter->setCollapsible(2, false);
+    const auto dock = [this](const QString& title, const char* name, QWidget* widget) {
+        auto* result = new ads::CDockWidget(m_docks, title);
+        result->setObjectName(QString::fromLatin1(name));
+        result->setWidget(widget);
+        return result;
+    };
+    m_tableDock = dock(QStringLiteral("概览与数据"), "SclTableDock", tablePane);
+    m_tableDock->setFeature(ads::CDockWidget::DockWidgetClosable, false);
+    auto* tableArea = m_docks->addDockWidget(ads::CenterDockWidgetArea, m_tableDock);
+    m_inspectorDock = dock(QStringLiteral("属性与依据"), "SclInspectorDock", m_inspector);
+    m_docks->addDockWidget(ads::BottomDockWidgetArea, m_inspectorDock, tableArea);
+    m_treeDock = dock(QStringLiteral("工程导航"), "SclTreeDock", m_tree);
+    m_treeDock->setFeature(ads::CDockWidget::DockWidgetClosable, false);
+    m_docks->addDockWidget(ads::LeftDockWidgetArea, m_treeDock);
+    m_docks->setSplitterSizes(m_tableDock->dockAreaWidget(), {360, 230});
+    m_docks->setSplitterSizes(m_treeDock->dockAreaWidget(), {250, 900});
+    m_defaultLayout = m_docks->saveState(1);
     auto* details = new QToolButton(this);
     details->setObjectName("SclToggleDetails");
     details->setCheckable(true);
     details->setChecked(true);
     details->setText(QStringLiteral("详情"));
     details->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    details->setIcon(style()->standardIcon(QStyle::SP_ArrowRight));
+    details->setIcon(style()->standardIcon(QStyle::SP_ArrowDown));
     details->setToolTip(QStringLiteral("显示或收起详情"));
     navigation->addWidget(details);
     connect(details, &QToolButton::toggled, m_inspector, [this, details](bool visible) {
-        m_inspector->setVisible(visible);
-        details->setIcon(style()->standardIcon(visible ? QStyle::SP_ArrowRight : QStyle::SP_ArrowLeft));
+        m_inspectorDock->toggleView(visible);
+        details->setIcon(style()->standardIcon(visible ? QStyle::SP_ArrowDown : QStyle::SP_ArrowUp));
         RefreshSourcePreview();
     });
+    connect(m_inspectorDock, &ads::CDockWidget::viewToggled, details, &QToolButton::setChecked);
+    auto* resetLayout = new QPushButton(QStringLiteral("重置工作台布局"), this);
+    resetLayout->setObjectName("SclResetLayout");
+    navigation->addWidget(resetLayout);
+    connect(resetLayout, &QPushButton::clicked, this, &SclWorkspace::ResetWorkspaceLayout);
 
     auto* overview = new QWidget(m_tables);
     auto* overviewLayout = new QVBoxLayout(overview);
@@ -725,9 +845,13 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
         m_scopeButtons.push_back(button);
         connect(button, &QPushButton::clicked, this, [this, view] {
             auto* model = static_cast<SclTableModel*>(view->model());
-            const auto id = model->UnfilteredNode(model->FirstAtOrAfter(m_selected + 1));
-            Select(id);
-            m_tables->setCurrentWidget(view);
+            const auto id = m_selected == m_ied && model->rowCount() > 0
+                ? model->index(0, 0).data(Qt::UserRole).toInt()
+                : model->UnfilteredNode(model->FirstAtOrAfter(m_selected + 1));
+            Select(id, true);
+            const QScopedValueRollback<bool> guard(m_restoring, true);
+            m_tables->setCurrentWidget(m_tables->isTabVisible(m_tables->indexOf(view)) ? view : m_tables->widget(0));
+            LocateTableRow();
         });
     }
     m_findings = addTable(Table::Findings, QStringLiteral("问题"), "SclFindings");
@@ -745,6 +869,8 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
         }
         const auto message = !m_snapshot ? QStringLiteral("打开 SCL 文件后查看数据。")
             : table == m_results ? QStringLiteral("此处显示匹配结果，请查看搜索状态。")
+            : table == m_members && m_dataSet == NoNode ? QStringLiteral("请先选择数据集以查看其成员。")
+            : m_ied != NoNode ? QStringLiteral("当前 IED 无可显示的行，或被筛选隐藏。工程级内容请切回「整个工程」。")
             : QStringLiteral("此视图没有可显示的行，请检查当前对象或筛选条件。");
         if (empty->text() != message)
             empty->setText(message);
@@ -756,6 +882,7 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
         if (const auto* table = qobject_cast<QTableView*>(m_tables->widget(i)))
         {
             const auto updateCurrent = [this, table, updateEmpty] {
+                UpdateTabVisibility();
                 if (m_tables->currentWidget() == table)
                     updateEmpty();
             };
@@ -779,7 +906,7 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     auto* relations = new QWidget(m_inspector);
     auto* relationsLayout = new QVBoxLayout(relations);
     relationsLayout->setContentsMargins(4, 4, 4, 4);
-    relationsLayout->addWidget(new QLabel(QStringLiteral("双击引用、使用方或候选目标即可跳转"), relations));
+    relationsLayout->addWidget(new QLabel(QStringLiteral("双击目标跳转；跨 IED 目标显示所属设备，跳转后可返回。"), relations));
     m_referencePath = new QLabel(relations);
     m_referencePath->setObjectName("SclReferencePath");
     m_referencePath->setTextFormat(Qt::RichText);
@@ -859,19 +986,69 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     connect(forwardShortcut, &QShortcut::activated, m_forward, &QPushButton::click);
     connect(m_tables, &QTabWidget::currentChanged, this, [this] {
         if (!m_restoring)
-            LocateTableRow();
+            ChangeTable();
         RememberView();
     });
     connect(m_inspector, &QTabWidget::currentChanged, this, [this] {
         RefreshSourcePreview();
         RememberView();
     });
+    RestoreWorkspaceLayout();
+    UpdateTabVisibility();
     connect(m_failedSource, &QPushButton::clicked, this, [this] {
         m_showingFailure = true;
         m_sourceDirty = true;
         m_inspector->setCurrentIndex(2);
         RefreshSourcePreview();
     });
+}
+
+SclWorkspace::~SclWorkspace()
+{
+    QSettings settings(QSettings::defaultFormat(), QSettings::UserScope,
+        QStringLiteral("IEC61850Simulator"), QStringLiteral("IEC61850Simulator"));
+    const auto state = m_docks->saveState(1);
+    settings.setValue("SclWorkspace/Layout", state);
+    settings.setValue("SclWorkspace/LayoutSha256", QCryptographicHash::hash(state, QCryptographicHash::Sha256));
+    settings.sync();
+    if (settings.status() != QSettings::NoError)
+        qWarning("Cannot save SCL workspace layout");
+    delete m_docks;
+}
+
+void SclWorkspace::hideEvent(QHideEvent* event)
+{
+    m_docks->hideManagerAndFloatingWidgets();
+    QWidget::hideEvent(event);
+}
+
+void SclWorkspace::showEvent(QShowEvent* event)
+{
+    QWidget::showEvent(event);
+    m_docks->show();
+    RefreshSourcePreview();
+}
+
+void SclWorkspace::ResetWorkspaceLayout()
+{
+    m_docks->restoreState(m_defaultLayout, 1);
+    m_treeDock->toggleView(true);
+    m_tableDock->toggleView(true);
+    m_inspectorDock->toggleView(true);
+}
+
+void SclWorkspace::RestoreWorkspaceLayout()
+{
+    QSettings settings(QSettings::defaultFormat(), QSettings::UserScope,
+        QStringLiteral("IEC61850Simulator"), QStringLiteral("IEC61850Simulator"));
+    const auto state = settings.value("SclWorkspace/Layout").toByteArray();
+    if (state.isEmpty())
+        return;
+    if (settings.value("SclWorkspace/LayoutSha256").toByteArray()
+            != QCryptographicHash::hash(state, QCryptographicHash::Sha256)
+        || !m_docks->restoreState(state, 1) || !m_treeDock->dockAreaWidget()
+        || !m_tableDock->dockAreaWidget() || m_treeDock->isClosed() || m_tableDock->isClosed())
+        ResetWorkspaceLayout();
 }
 
 bool SclWorkspace::UpdateSession(Snapshot snapshot, const Scl::Result& failure)
@@ -897,9 +1074,21 @@ bool SclWorkspace::UpdateSession(Snapshot snapshot, const Scl::Result& failure)
     m_history.clear();
     m_historyIndex = -1;
     m_dataSet = NoNode;
+    m_ied = NoNode;
+    m_tabNodes.clear();
+    m_tabFinding = -1;
     UpdateHistoryButtons();
     ResetSearch(true);
     m_snapshot = std::move(snapshot);
+    {
+        const QSignalBlocker guard(m_browseScope);
+        m_browseScope->clear();
+        m_browseScope->addItem(QStringLiteral("整个工程"), NoNode);
+        if (m_snapshot)
+            for (auto ied : m_snapshot->browse.ieds)
+                m_browseScope->addItem(Attribute(*m_snapshot, ied, "name"), ied);
+        m_browseScope->setEnabled(bool(m_snapshot));
+    }
     m_topologyPath.clear();
     m_topologyStatus->clear();
     UpdateTopologyControls();
@@ -987,8 +1176,15 @@ void SclWorkspace::Select(NodeId id, bool route, int finding, bool openSource)
     {
         const QScopedValueRollback<bool> guard(m_restoring, true);
         m_showingFailure = false;
+        const auto owner = m_snapshot->browse.iedOwners[id];
+        if (id == 0 || owner != NoNode)
+            SetIedScope(id == 0 ? NoNode : owner);
         m_selected = id;
         m_finding = finding;
+        const auto& selectedNode = m_snapshot->analysis.document->nodes[id];
+        const auto dataSet = selectedNode.isScl() && selectedNode.name == "DataSet" ? id
+            : selectedNode.isScl() && selectedNode.name == "FCDA" ? selectedNode.parent : NoNode;
+        SetMemberScope(m_snapshot->browse.dataSetMembers.contains(dataSet) ? dataSet : NoNode);
         const auto index = m_treeModel->ForNode(id);
         if (m_tree->currentIndex() != index)
         {
@@ -1000,6 +1196,8 @@ void SclWorkspace::Select(NodeId id, bool route, int finding, bool openSource)
             m_sourceDirty = true;
             UpdateDetails();
         }
+        else
+            UpdateOverview();
         if (openSource)
             m_inspector->setCurrentIndex(2);
         RefreshSourcePreview();
@@ -1023,7 +1221,7 @@ void SclWorkspace::Select(NodeId id, bool route, int finding, bool openSource)
                     }
                 }
             }
-            m_tables->setCurrentWidget(page);
+            m_tables->setCurrentWidget(m_tables->isTabVisible(m_tables->indexOf(page)) ? page : m_tables->widget(0));
         }
     }
     if (restoring)
@@ -1067,14 +1265,93 @@ void SclWorkspace::LocateTableRow()
         const auto index = model->index(visible, current.isValid() ? current.column() : 0);
         table->setCurrentIndex(index);
         table->scrollTo(index);
+        m_tabNodes[m_tables->currentIndex()] = m_selected;
+        if (table == m_findings)
+            m_tabFinding = m_finding;
     }
     m_clearNavigationFilter->setVisible(original >= 0 && visible < 0);
+    const bool outside = original >= 0 && visible < 0 && !m_snapshot->browse.InScope(m_selected, m_ied);
+    m_clearNavigationFilter->setProperty("OutsideIed", outside);
+    m_clearNavigationFilter->setText(outside ? QStringLiteral("目标不在当前 IED 范围 · 查看整个工程")
+        : QStringLiteral("目标被当前筛选隐藏 · 清除筛选"));
+}
+
+void SclWorkspace::SetIedScope(NodeId ied)
+{
+    if (m_ied == ied)
+        return;
+    const QScopedValueRollback<bool> guard(m_restoring, true);
+    if (m_searchMode->currentIndex() == 1)
+        ResetSearch();
+    m_ied = ied;
+    m_tabNodes.clear();
+    m_tabFinding = -1;
+    SetMemberScope(NoNode);
+    for (auto* table : m_routeTables)
+        static_cast<SclTableModel*>(table->model())->SetIed(
+            table == m_routeTables.back() && m_allTemplates->isChecked() ? NoNode : ied);
+    static_cast<SclTableModel*>(m_findings->model())->SetIed(ied);
+    const QSignalBlocker blocked(m_browseScope);
+    m_browseScope->setCurrentIndex(m_browseScope->findData(ied));
+    if (m_searchMode->currentIndex() == 1)
+        ScheduleSearch();
+}
+
+void SclWorkspace::ChangeTable()
+{
+    auto* table = qobject_cast<QTableView*>(m_tables->currentWidget());
+    if (!m_snapshot || !table || table == m_results)
+        return;
+    auto* model = static_cast<SclTableModel*>(table->model());
+    const auto remembered = m_tabNodes.value(m_tables->currentIndex(), NoNode);
+    const int row = table == m_findings ? m_tabFinding : remembered == NoNode ? -1 : model->RowForNode(remembered);
+    if (model->VisibleRow(row) >= 0)
+    {
+        if (table == m_findings)
+            SelectFinding(row, false);
+        else
+            Select(remembered);
+    }
+    else if (remembered != NoNode)
+    {
+        // Filtering hides the previous target: keep its tree and details and
+        // show the existing clear-filter affordance rather than choosing a peer.
+        if (table == m_findings && row >= 0)
+            SelectFinding(row, false);
+        else
+            Select(remembered);
+    }
+    else if (model->rowCount() > 0)
+    {
+        if (table == m_findings)
+            SelectFinding(model->OriginalRow(0), false);
+        else
+            Select(model->index(0, 0).data(Qt::UserRole).toInt());
+    }
+    LocateTableRow();
+}
+
+void SclWorkspace::UpdateTabVisibility()
+{
+    // Hiding the current tab must not select a row in Qt's fallback tab.
+    const QScopedValueRollback<bool> guard(m_restoring, true);
+    for (int tab = 1; tab < m_tables->count(); ++tab)
+    {
+        auto* table = qobject_cast<QTableView*>(m_tables->widget(tab));
+        if (!table || table == m_results)
+            continue;
+        // A text filter with no hits keeps its tab so it can be cleared.
+        const bool visible = static_cast<SclTableModel*>(table->model())->ContentRowCount() > 0;
+        if (!visible && m_tables->currentWidget() == table)
+            m_tables->setCurrentIndex(0);
+        m_tables->setTabVisible(tab, visible);
+    }
 }
 
 void SclWorkspace::RememberView()
 {
     if (!m_restoring && m_historyIndex >= 0)
-        m_history[m_historyIndex] = {m_selected, m_dataSet, m_tables->currentIndex(), m_inspector->currentIndex(), m_finding};
+        m_history[m_historyIndex] = {m_selected, m_dataSet, m_tables->currentIndex(), m_inspector->currentIndex(), m_finding, m_ied};
 }
 
 void SclWorkspace::UpdateHistoryButtons()
@@ -1094,9 +1371,11 @@ void SclWorkspace::Navigate(int direction)
     {
         const QScopedValueRollback<bool> restoring(m_restoring, true);
         m_historyIndex = next;
+        SetIedScope(location.ied);
         Select(location.node, false, location.finding);
         SetMemberScope(location.dataSet);
         m_tables->setCurrentIndex(location.table);
+        UpdateTabVisibility();
         m_inspector->setCurrentIndex(location.inspector);
         if (m_tables->currentWidget() == m_results)
             m_results->selectionModel()->clear();
@@ -1111,6 +1390,12 @@ void SclWorkspace::Navigate(int direction)
 
 void SclWorkspace::SetMemberScope(NodeId dataSet)
 {
+    if (m_dataSet != dataSet)
+    {
+        if (m_filteredTable == m_members)
+            ResetSearch();
+        m_tabNodes.remove(m_tables->indexOf(m_members));
+    }
     m_dataSet = dataSet;
     static_cast<SclTableModel*>(m_members->model())->SetMembers(m_snapshot, dataSet);
 }
@@ -1124,8 +1409,9 @@ void SclWorkspace::UpdateOverview()
     m_scopeActions->setVisible(id != 0);
     if (id == 0)
         return;
-    m_scope->setText(QStringLiteral("当前节点\n%1\n直接子节点：%2")
-        .arg(Path(*m_snapshot, id)).arg(m_snapshot->browse.branches[id].count));
+    m_scope->setText(QStringLiteral("浏览范围：%1\n当前节点\n%2\n直接子节点：%3")
+        .arg(m_ied == NoNode ? QStringLiteral("整个工程") : Attribute(*m_snapshot, m_ied, "name"),
+            Path(*m_snapshot, id)).arg(m_snapshot->browse.branches[id].count));
     auto end = NodeId(nodes.size());
     for (auto ancestor = id; ancestor != NoNode; ancestor = nodes[ancestor].parent)
     {
@@ -1139,7 +1425,8 @@ void SclWorkspace::UpdateOverview()
     {
         const auto* table = m_routeTables[i];
         const auto* model = static_cast<SclTableModel*>(table->model());
-        const int count = model->FirstAtOrAfter(end) - model->FirstAtOrAfter(id + 1);
+        const int count = id == m_ied ? model->rowCount()
+            : model->FirstAtOrAfter(end) - model->FirstAtOrAfter(id + 1);
         m_scopeButtons[i]->setVisible(count > 0);
         m_scopeButtons[i]->setText(QStringLiteral("%1 · %2 项 · 定位首项")
             .arg(m_tables->tabText(m_tables->indexOf(table))).arg(count));
@@ -1237,9 +1524,6 @@ void SclWorkspace::UpdateDetails()
     else
         UpdateReferencePath({});
 
-    const auto dataSet = node.name == "DataSet" ? id : node.name == "FCDA" ? node.parent : NoNode;
-    if (m_snapshot->browse.dataSetMembers.contains(dataSet))
-        SetMemberScope(dataSet);
 }
 
 void SclWorkspace::UpdatePath()
@@ -1307,7 +1591,14 @@ void SclWorkspace::UpdateReferencePath(const QModelIndex& index)
         else if (!ref.declared.isEmpty())
             segments << QStringLiteral("声明 %1").arg(ref.declared.left(160).toHtmlEscaped());
         if (ref.state == Scl::LinkState::Resolved && ref.candidates.size() == 1)
-            segments << NodeLink(snapshot, ref.candidates.front(), palette());
+        {
+            const auto target = ref.candidates.front();
+            const auto owner = snapshot.browse.iedOwners[target];
+            const auto sourceOwner = snapshot.browse.iedOwners[ref.source];
+            if (owner != NoNode && owner != sourceOwner)
+                segments << QStringLiteral("跨 IED：%1").arg(Attribute(snapshot, owner, "name").left(100).toHtmlEscaped());
+            segments << NodeLink(snapshot, target, palette());
+        }
         if (ref.kind == Scl::LinkKind::ControlDataSet && nodes[ref.source].name == "ReportControl")
         {
             const auto& reports = snapshot.analysis.reports;

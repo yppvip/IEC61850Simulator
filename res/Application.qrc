@@ -1,0 +1,5 @@
+<RCC>
+  <qresource prefix="/app">
+    <file alias="icon.png">pic/函数发生器.png</file>
+  </qresource>
+</RCC>

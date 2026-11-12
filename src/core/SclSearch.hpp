@@ -18,6 +18,7 @@ struct SclQuery
     bool exact = false;
     SearchScope scope = SearchScope::All;
     Scl::NodeId dataSet = Scl::NoNode;
+    Scl::NodeId browseIed = Scl::NoNode;
 
     bool empty() const { return text.isEmpty() && ied.isEmpty() && type.isEmpty() && fc.isEmpty() && severity < 0; }
 };

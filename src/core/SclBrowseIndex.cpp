@@ -1,4 +1,6 @@
 #include "SclBrowseIndex.hpp"
+#include <QSet>
+#include <algorithm>
 
 namespace iec61850sim
 {
@@ -29,7 +31,10 @@ SclBrowseIndex::SclBrowseIndex(const Scl::Document& document, Scl::TaskControl* 
             continue;
         const auto& name = node.name;
         if (name == "IED" && parent == 0)
+        {
             iedOwners[id] = id;
+            ieds.push_back(id);
+        }
         if (name == "P" && parent != Scl::NoNode && document.nodes[parent].name == "Address")
             addressRows.push_back(id);
         if (name == "DataSet")
@@ -58,5 +63,120 @@ SclBrowseIndex::SclBrowseIndex(const Scl::Document& document, Scl::TaskControl* 
         else if (name == "LNodeType" || name == "DOType" || name == "DAType" || name == "EnumType")
             categories[size_t(SclCategory::Templates)].push_back(id);
     }
+}
+
+void SclBrowseIndex::BuildScopes(const Scl::ReferenceAnalysis& analysis, Scl::TaskControl* task)
+{
+    const auto& doc = *analysis.document;
+    // Communication is outside the IED subtree. Only a unique declaration is
+    // accepted as ownership evidence; duplicate names remain engineering scope.
+    QHash<QString, std::vector<Scl::NodeId>> names;
+    for (auto ied : ieds)
+    {
+        const auto name = doc.attribute(ied, QStringLiteral("name"));
+        if (!name.isEmpty())
+            names[name].push_back(ied);
+    }
+    for (Scl::NodeId id = 0; id < int(doc.nodes.size()); ++id)
+    {
+        Scl::checkpoint(task);
+        const auto& node = doc.nodes[id];
+        const auto parent = node.parent;
+        const auto grandparent = parent == Scl::NoNode ? Scl::NoNode : doc.nodes[parent].parent;
+        if (node.isScl() && node.name == "ConnectedAP" && grandparent != Scl::NoNode
+            && doc.nodes[parent].isScl() && doc.nodes[parent].name == "SubNetwork"
+            && doc.nodes[grandparent].isScl() && doc.nodes[grandparent].name == "Communication"
+            && doc.nodes[grandparent].parent == 0)
+        {
+            const auto found = names.constFind(doc.attribute(id, QStringLiteral("iedName")));
+            if (found != names.cend() && found->size() == 1)
+                iedOwners[id] = found->front();
+        }
+        else if (iedOwners[id] == Scl::NoNode && node.parent != Scl::NoNode)
+            iedOwners[id] = iedOwners[node.parent];
+    }
+
+    templateOwners.assign(doc.nodes.size(), Scl::NoNode);
+    const auto& templates = categories[size_t(SclCategory::Templates)];
+    for (auto root : templates)
+        templateOwners[root] = root;
+    for (Scl::NodeId id = 0; id < int(doc.nodes.size()); ++id)
+    {
+        Scl::checkpoint(task);
+        if (templateOwners[id] == Scl::NoNode && doc.nodes[id].parent != Scl::NoNode)
+            templateOwners[id] = templateOwners[doc.nodes[id].parent];
+    }
+    QHash<Scl::NodeId, std::vector<Scl::NodeId>> edges, seeds;
+    for (const auto& ref : analysis.references)
+    {
+        Scl::checkpoint(task);
+        if (ref.state != Scl::LinkState::Resolved || ref.candidates.size() != 1
+            || (ref.kind != Scl::LinkKind::LogicalNodeType && ref.kind != Scl::LinkKind::MemberType))
+            continue;
+        const auto target = templateOwners[ref.candidates.front()];
+        if (target == Scl::NoNode)
+            continue;
+        const auto owner = iedOwners[ref.source];
+        if (owner != Scl::NoNode)
+            seeds[owner].push_back(target);
+        else if (templateOwners[ref.source] != Scl::NoNode)
+            edges[templateOwners[ref.source]].push_back(target);
+    }
+    for (auto ied : ieds)
+    {
+        auto pending = seeds.value(ied);
+        QSet<Scl::NodeId> seen;
+        while (!pending.empty())
+        {
+            Scl::checkpoint(task);
+            const auto id = pending.back();
+            pending.pop_back();
+            if (seen.contains(id))
+                continue;
+            seen.insert(id);
+            const auto next = edges.constFind(id);
+            if (next != edges.cend())
+                pending.insert(pending.end(), next->begin(), next->end());
+        }
+        auto& used = usedTemplates[ied];
+        used.assign(seen.begin(), seen.end());
+        std::sort(used.begin(), used.end());
+        scopedRows.insert(ied, {});
+    }
+    const auto add = [&](SclView view, int row, Scl::NodeId node) {
+        Scl::checkpoint(task);
+        if (node < 0)
+            return;
+        const auto owner = iedOwners[node];
+        if (owner != Scl::NoNode)
+            scopedRows[owner][size_t(view)].push_back(row);
+        else if (templateOwners[node] != Scl::NoNode)
+        {
+            for (auto ied : ieds)
+                if (InScope(node, ied))
+                    scopedRows[ied][size_t(view)].push_back(row);
+        }
+    };
+    for (int row = 0; row < int(analysis.reports.size()); ++row)
+        add(SclView::Reports, row, analysis.reports[row].source);
+    for (int row = 0; row < int(analysis.findings.size()); ++row)
+        add(SclView::Findings, row, analysis.findings[row].node);
+    for (size_t category = 0; category < size_t(SclCategory::Count); ++category)
+        for (int row = 0; row < int(categories[category].size()); ++row)
+            add(SclView(int(category) + 1), row, categories[category][row]);
+}
+
+bool SclBrowseIndex::InScope(Scl::NodeId node, Scl::NodeId ied) const
+{
+    if (ied == Scl::NoNode)
+        return true;
+    if (node < 0 || size_t(node) >= iedOwners.size())
+        return false;
+    if (iedOwners[node] == ied)
+        return true;
+    if (templateOwners.empty() || templateOwners[node] == Scl::NoNode)
+        return false;
+    const auto used = usedTemplates.constFind(ied);
+    return used != usedTemplates.cend() && std::binary_search(used->begin(), used->end(), templateOwners[node]);
 }
 } // namespace iec61850sim

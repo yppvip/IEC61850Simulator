@@ -154,7 +154,7 @@ void SclWorkspace::CreateSearchBar(QVBoxLayout* layout)
     auto* row = new QHBoxLayout;
     m_searchMode = new QComboBox(this);
     m_searchMode->setObjectName("SclSearchMode");
-    m_searchMode->addItems({QStringLiteral("全局搜索"), QStringLiteral("筛选当前表格")});
+    m_searchMode->addItems({QStringLiteral("全局搜索（整个工程）"), QStringLiteral("筛选当前表格")});
     m_query = new QLineEdit(this);
     m_query->setObjectName("SclQuery");
     m_query->setAccessibleName(QStringLiteral("SCL 搜索关键词"));
@@ -354,6 +354,8 @@ void SclWorkspace::BeginSearch()
     }
     if (m_searchMode->currentIndex() == 1)
     {
+        query.browseIed = m_allTemplates->isChecked() && m_tables->currentWidget()->objectName() == "SclTemplates"
+            ? Scl::NoNode : m_ied;
         query.scope = TableScope(m_tables->currentWidget());
         if (query.scope == SearchScope::All)
         {

@@ -8,6 +8,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QLabel>
+#include <QIcon>
 #include <QListWidget>
 #include <QMenu>
 #include <QMenuBar>
@@ -56,6 +57,7 @@ MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
 {
     setWindowTitle(QStringLiteral("IEC61850Simulator"));
+    setWindowIcon(QIcon(QStringLiteral(":/app/icon.png")));
     resize(1280, 800);
 
     m_sclService = new SclAnalysisService(this);
@@ -216,7 +218,9 @@ void MainWindow::ShowSclHelp()
 {
     QMessageBox help(QMessageBox::Information, QStringLiteral("SCL 使用帮助"),
         QStringLiteral("在「文件」中打开 ICD、SCD、CID 或 CCD。分析完成后进入工作台。\n\n"
-            "用方向键在树或表格中选择对象，另一侧会跟随定位。面包屑可返回祖先，窄窗时可点「详情」收起右栏。\n"
+            "选择 IED 后，业务表按该 IED 浏览；「浏览范围」可切回整个工程。全局搜索始终搜索整个工程。\n"
+            "切换业务页会恢复该页选择或定位首项；共享模板默认只显示当前 IED 使用的定义。\n"
+            "默认左侧树、右上业务页、右下详情，可拖动标题栏调整或浮动。点「详情」收起详情，点「重置工作台布局」恢复。\n"
             "Ctrl+F 聚焦搜索，Enter 立即查询或打开选中的结果，Esc 取消搜索，Alt+左右方向键浏览历史。\n\n"
             "在「引用与使用方」中沿报告、数据集和 FCDA 追查对象。点「打开引用拓扑」在默认浏览器查看本地快照。\n"
             "浏览器中可用 Tab 和 Enter 操作关系列表及「以此为焦点」。重载后请从工作台重新打开拓扑。\n"

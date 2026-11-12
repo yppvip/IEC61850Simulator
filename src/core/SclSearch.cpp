@@ -61,7 +61,8 @@ bool Matches(const QString& value, const SclQuery& query)
 bool MatchesScope(const SclSnapshot& snapshot, Scl::NodeId node, const SclQuery& query)
 {
     const auto& doc = *snapshot.analysis.document;
-    return (query.ied.isEmpty() || (node >= 0 && (Attribute(snapshot, snapshot.browse.iedOwners[node], "name")
+    return snapshot.browse.InScope(node, query.browseIed)
+        && (query.ied.isEmpty() || (node >= 0 && (Attribute(snapshot, snapshot.browse.iedOwners[node], "name")
                                       .compare(query.ied, Qt::CaseInsensitive) == 0
                                    || Attribute(snapshot, node, "iedName").compare(query.ied, Qt::CaseInsensitive) == 0)))
         && (query.type.isEmpty() || (node >= 0 && doc.nodes[node].name.compare(query.type, Qt::CaseInsensitive) == 0))

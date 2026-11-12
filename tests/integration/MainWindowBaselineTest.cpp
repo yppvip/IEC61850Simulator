@@ -41,6 +41,7 @@
 #include <DockManager.h>
 #include <DockAreaWidget.h>
 #include <DockWidget.h>
+#include <FloatingDockContainer.h>
 #include <algorithm>
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -181,6 +182,8 @@ void CheckWorkspaceFlow(iec61850sim::MainWindow& window)
     QCOMPARE(tabs->currentWidget(), members);
     QCOMPARE(members->currentIndex().data(Qt::UserRole).toInt(), member);
 
+    // Namespace-collision issues are engineering scope, outside this IED.
+    window.findChild<QComboBox*>("SclBrowseScope")->setCurrentIndex(0);
     QVERIFY(findings->model()->rowCount() > 0);
     tabs->setCurrentWidget(findings);
     const auto issue = findings->model()->index(0, 0);
@@ -213,6 +216,36 @@ int LayoutProbe(const QString& mode)
     iec61850sim::MainWindow window;
     window.show();
     QApplication::processEvents();
+    if (mode.contains("workspace"))
+    {
+        auto* service = window.findChild<iec61850sim::SclAnalysisService*>();
+        service->Open(QStringLiteral(SCL_FIXTURE_DIR "/Minimal.scd"));
+        QElapsedTimer timer;
+        timer.start();
+        while (!service->snapshot() && timer.elapsed() < 4000)
+            QTest::qWait(10);
+        if (!service->snapshot())
+            return 30;
+        auto* docks = window.findChild<ads::CDockManager*>("SclDockManager");
+        auto* tree = docks->findDockWidget("SclTreeDock");
+        auto* table = docks->findDockWidget("SclTableDock");
+        auto* inspector = docks->findDockWidget("SclInspectorDock");
+        if (!tree || !table || !inspector)
+            return 31;
+        if (mode == "--write-workspace-layout")
+        {
+            docks->addDockWidget(ads::CenterDockWidgetArea, tree, table->dockAreaWidget());
+            inspector->toggleView(false);
+        }
+        else if (mode == "--read-workspace-layout")
+        {
+            if (tree->dockAreaWidget() != table->dockAreaWidget() || !inspector->isClosed())
+                return 32;
+        }
+        else if (tree->dockAreaWidget() == table->dockAreaWidget() || inspector->isClosed())
+            return 33;
+        return 0; // Destructor persists the separate workspace layout.
+    }
     auto* manager = window.findChild<ads::CDockManager*>();
     if (!manager)
         return 10;
@@ -308,6 +341,10 @@ private slots:
     void SclLifecycle();
     void SclResponsiveAndClose();
     void SclWorkspaceFlow();
+    void SclWorkspaceLayout();
+    void SclIedBrowsing();
+    void SclIedAmbiguity();
+    void SclMemberScopeClearing();
     void SclReferenceDetails();
     void SclSourceHighlighting();
     void SclTopologyFlow();
@@ -645,6 +682,320 @@ void MainWindowBaselineTest::SclLocalAcceptance()
     QCOMPARE(results->model()->rowCount(), 0);
 }
 
+void MainWindowBaselineTest::SclWorkspaceLayout()
+{
+    QTemporaryDir settings;
+    QVERIFY(settings.isValid());
+    const auto run = [&](const QString& mode) {
+        QProcess process;
+        process.start(QCoreApplication::applicationFilePath(), {mode, settings.path()});
+        if (!process.waitForStarted() || !process.waitForFinished(10000))
+            return -1;
+        return process.exitStatus() == QProcess::NormalExit ? process.exitCode() : -2;
+    };
+    QCOMPARE(run("--default-workspace-layout"), 0);
+    QCOMPARE(run("--write-workspace-layout"), 0);
+    QCOMPARE(run("--read-workspace-layout"), 0);
+    IsolateSettings(settings.path());
+    QSettings stored(QSettings::defaultFormat(), QSettings::UserScope,
+        QStringLiteral("IEC61850Simulator"), QStringLiteral("IEC61850Simulator"));
+    auto state = stored.value("SclWorkspace/Layout").toByteArray();
+    QVERIFY(!state.isEmpty());
+    QCOMPARE(stored.value("SclWorkspace/LayoutSha256").toByteArray(),
+        QCryptographicHash::hash(state, QCryptographicHash::Sha256));
+    stored.setValue("SclWorkspace/Layout", "corrupt");
+    stored.sync();
+    QCOMPARE(run("--default-workspace-layout"), 0);
+    stored.setValue("SclWorkspace/Layout", "invalid-but-hashed");
+    stored.setValue("SclWorkspace/LayoutSha256", QCryptographicHash::hash("invalid-but-hashed", QCryptographicHash::Sha256));
+    stored.sync();
+    QCOMPARE(run("--default-workspace-layout"), 0);
+}
+
+void MainWindowBaselineTest::SclIedBrowsing()
+{
+    using Service = iec61850sim::SclAnalysisService;
+    using Scl::NoNode;
+    QTemporaryDir settings;
+    QVERIFY(settings.isValid());
+    IsolateSettings(settings.path());
+    iec61850sim::MainWindow window;
+    window.show();
+    auto* service = window.findChild<Service*>();
+    service->Open(QStringLiteral(SCL_FIXTURE_DIR "/IedBrowsing.scd"));
+    QTRY_COMPARE(service->state(), Service::State::Ready);
+    auto* scope = window.findChild<QComboBox*>("SclBrowseScope");
+    auto* allTemplates = window.findChild<QCheckBox*>("SclAllTemplates");
+    auto* tabs = window.findChild<QTabWidget*>("SclTables");
+    auto* tree = window.findChild<QTreeView*>("SclTree");
+    auto* reports = window.findChild<QTableView*>("SclReports");
+    auto* sets = window.findChild<QTableView*>("SclDataSets");
+    auto* templates = window.findChild<QTableView*>("SclTemplates");
+    auto* communication = window.findChild<QTableView*>("SclCommunication");
+    auto* findings = window.findChild<QTableView*>("SclFindings");
+    auto* mode = window.findChild<QComboBox*>("SclSearchMode");
+    auto* query = window.findChild<QLineEdit*>("SclQuery");
+    auto* links = window.findChild<QTableView*>("SclLinks");
+    auto* back = window.findChild<QPushButton*>("SclBack");
+    QVERIFY(scope && allTemplates && tabs && tree && reports && sets && templates && communication && findings && mode && query && links && back);
+    const auto snapshot = service->snapshot();
+    const auto& nodes = snapshot->analysis.document->nodes;
+    const auto& browse = snapshot->browse;
+    QCOMPARE(scope->count(), 4);
+    const auto a = scope->itemData(1).toInt();
+    const auto b = scope->itemData(2).toInt();
+    QCOMPARE(reports->model()->rowCount(), 3);
+    QCOMPARE(templates->model()->rowCount(), 4);
+    scope->setCurrentIndex(1);
+    QCOMPARE(reports->model()->rowCount(), 2);
+    QCOMPARE(sets->model()->rowCount(), 2);
+    QCOMPARE(templates->model()->rowCount(), 3); // Transitive DOType, plus two LN types.
+    QCOMPARE(communication->model()->rowCount(), 2); // ConnectedAP and ExtRef.
+    const auto selected = [&] { return tree->currentIndex().data(Qt::UserRole).toInt(); };
+    for (auto* button : window.findChildren<QPushButton*>())
+        if (button->text().startsWith(QStringLiteral("报告 ·")))
+            button->click();
+    QCOMPARE(tabs->currentWidget(), reports);
+    QCOMPARE(browse.iedOwners[selected()], a);
+    reports->setCurrentIndex(reports->model()->index(1, 0));
+    const auto reportA2 = selected();
+    tabs->setCurrentWidget(sets);
+    QCOMPARE(browse.iedOwners[selected()], a);
+    QVERIFY(sets->currentIndex().isValid());
+    sets->setCurrentIndex(sets->model()->index(1, 0));
+    const auto setA2 = selected();
+    tabs->setCurrentWidget(reports);
+    QCOMPARE(selected(), reportA2);
+    tabs->setCurrentWidget(sets);
+    QCOMPARE(selected(), setA2);
+    auto* members = window.findChild<QTableView*>("SclMembers");
+    tabs->setCurrentWidget(members);
+    QCOMPARE(members->model()->rowCount(), 0);
+    QCOMPARE(selected(), setA2);
+    tabs->setCurrentWidget(sets);
+    sets->setCurrentIndex(sets->model()->index(0, 0));
+    tabs->setCurrentWidget(members);
+    QCOMPARE(members->model()->rowCount(), 1);
+    QCOMPARE(nodes[selected()].name, QStringLiteral("FCDA"));
+    tabs->setCurrentWidget(sets);
+    sets->setCurrentIndex(sets->model()->index(1, 0));
+    tabs->setCurrentWidget(members);
+    QCOMPARE(members->model()->rowCount(), 0);
+    QCOMPARE(selected(), setA2); // Do not restore a member from the previous dataset.
+    tabs->setCurrentWidget(templates);
+    QCOMPARE(scope->currentData().toInt(), a);
+    auto* docks = window.findChild<ads::CDockManager*>("SclDockManager");
+    auto* inspectorDock = docks->findDockWidget("SclInspectorDock");
+    auto* tableDock = docks->findDockWidget("SclTableDock");
+    QVERIFY(inspectorDock->mapToGlobal(QPoint()).y() > tableDock->mapToGlobal(QPoint()).y());
+    inspectorDock->setFloating();
+    QTRY_VERIFY(inspectorDock->floatingDockContainer() && inspectorDock->floatingDockContainer()->isVisible());
+    auto* floating = inspectorDock->floatingDockContainer();
+    window.findChild<QAction*>("ShowSimulation")->trigger();
+    QTRY_VERIFY(!floating->isVisible());
+    window.findChild<QAction*>("ShowSclWorkspace")->trigger();
+    QTRY_VERIFY(floating->isVisible());
+    window.findChild<QPushButton*>("SclResetLayout")->click();
+    QVERIFY(!inspectorDock->isFloating());
+    allTemplates->setChecked(true);
+    QCOMPARE(templates->model()->rowCount(), 4);
+    templates->setCurrentIndex(templates->model()->index(3, 0));
+    const auto unusedTemplate = selected();
+    QCOMPARE(snapshot->analysis.document->attribute(unusedTemplate, "id"), QStringLiteral("T_UNUSED"));
+    allTemplates->setChecked(false);
+    QCOMPARE(templates->model()->rowCount(), 3);
+    QVERIFY(!templates->currentIndex().isValid());
+    auto* reveal = window.findChild<QPushButton*>("SclClearNavigationFilter");
+    QVERIFY(reveal->isVisible() && reveal->text().contains(QStringLiteral("整个工程")));
+    reveal->click();
+    QCOMPARE(scope->currentData().toInt(), NoNode);
+    QCOMPARE(selected(), unusedTemplate);
+    QCOMPARE(templates->model()->rowCount(), 4);
+    scope->setCurrentIndex(1);
+    tabs->setCurrentWidget(findings);
+    for (int row = 0; row < findings->model()->rowCount(); ++row)
+        QVERIFY(browse.InScope(findings->model()->index(row, 0).data(Qt::UserRole).toInt(), a));
+    tabs->setCurrentWidget(reports);
+    mode->setCurrentIndex(1);
+    query->setText("B_FIRST");
+    QTRY_COMPARE(reports->model()->rowCount(), 0);
+    QVERIFY(!reports->currentIndex().isValid());
+    // Change scope while a query is queued/running; original rows must not leak.
+    scope->setCurrentIndex(2);
+    tabs->setCurrentWidget(reports);
+    QTRY_COMPARE(window.findChild<QLabel*>("SclSearchStatus")->text(), QStringLiteral("筛选后 1 行"));
+    QTRY_COMPARE(reports->model()->rowCount(), 1);
+    QTRY_COMPARE(reports->model()->index(0, 2).data().toString(), QStringLiteral("B_FIRST"));
+    query->clear();
+    mode->setCurrentIndex(0);
+    scope->setCurrentIndex(1);
+    Scl::NodeId ext = NoNode;
+    for (Scl::NodeId id = 0; id < int(nodes.size()); ++id)
+        if (nodes[id].name == "ExtRef") ext = id;
+    QVERIFY(ext != NoNode);
+    std::vector<Scl::NodeId> ancestors;
+    for (auto id = ext; id != NoNode; id = nodes[id].parent)
+        ancestors.push_back(id);
+    QModelIndex treeIndex;
+    for (auto it = ancestors.rbegin(); it != ancestors.rend(); ++it)
+        treeIndex = tree->model()->index(*it == 0 ? 0 : browse.branches[*it].row, 0, treeIndex);
+    tree->setCurrentIndex(treeIndex);
+    QCOMPARE(selected(), ext);
+    int cross = -1;
+    for (int row = 0; row < links->model()->rowCount(); ++row)
+        if (links->model()->index(row, 3).data().toString().contains(QStringLiteral("跨 IED · IED_B"))) cross = row;
+    QVERIFY(cross >= 0);
+    const auto target = links->model()->index(cross, 0);
+    QVERIFY(QMetaObject::invokeMethod(links, "activated", Q_ARG(QModelIndex, target)));
+    QCOMPARE(scope->currentData().toInt(), b);
+    QCOMPARE(browse.iedOwners[selected()], b);
+    back->click();
+    QCOMPARE(selected(), ext);
+    QCOMPARE(scope->currentData().toInt(), a);
+    scope->setCurrentIndex(3);
+    const auto emptyIed = selected();
+    tabs->setCurrentWidget(reports);
+    QCOMPARE(reports->model()->rowCount(), 0);
+    QCOMPARE(selected(), emptyIed);
+    QVERIFY(!tabs->isTabVisible(tabs->indexOf(reports)));
+    tabs->setCurrentWidget(templates);
+    QCOMPARE(templates->model()->rowCount(), 0);
+    QCOMPARE(selected(), emptyIed);
+    QVERIFY(!tabs->isTabVisible(tabs->indexOf(templates)));
+    QVERIFY(tabs->isTabVisible(0));
+    scope->setCurrentIndex(0);
+    QCOMPARE(reports->model()->rowCount(), 3);
+    QCOMPARE(templates->model()->rowCount(), 4);
+    QVERIFY(tabs->isTabVisible(tabs->indexOf(reports)));
+    QVERIFY(tabs->isTabVisible(tabs->indexOf(templates)));
+    scope->setCurrentIndex(1);
+    tabs->setCurrentWidget(reports);
+    QDir().mkpath(QString::fromUtf8(BASELINE_ARTIFACT_DIR));
+    QVERIFY(window.grab().save(QString::fromUtf8(BASELINE_ARTIFACT_DIR) + "/IedBrowsing.png"));
+    window.findChild<QPushButton*>("SclResetLayout")->click();
+    QCOMPARE(service->snapshot(), snapshot);
+    QCOMPARE(scope->currentData().toInt(), a);
+}
+
+void MainWindowBaselineTest::SclMemberScopeClearing()
+{
+    using Service = iec61850sim::SclAnalysisService;
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    IsolateSettings(temp.path());
+    iec61850sim::MainWindow window;
+    window.show();
+    auto* service = window.findChild<Service*>();
+    const auto localPath = qEnvironmentVariable("IEC61850_MEMBER_TEST_SCL");
+    service->Open(localPath.isEmpty() ? QStringLiteral(SCL_FIXTURE_DIR "/IedBrowsing.scd") : localPath);
+    QTRY_COMPARE_WITH_TIMEOUT(service->state(), Service::State::Ready, 25000);
+    const auto snapshot = service->snapshot();
+    const auto& nodes = snapshot->analysis.document->nodes;
+    auto* tree = window.findChild<QTreeView*>("SclTree");
+    auto* tabs = window.findChild<QTabWidget*>("SclTables");
+    auto* members = window.findChild<QTableView*>("SclMembers");
+    auto* mode = window.findChild<QComboBox*>("SclSearchMode");
+    auto* query = window.findChild<QLineEdit*>("SclQuery");
+    auto* back = window.findChild<QPushButton*>("SclBack");
+    auto* forward = window.findChild<QPushButton*>("SclForward");
+    const int memberTab = tabs->indexOf(members);
+    const auto select = [&](Scl::NodeId id) {
+        std::vector<Scl::NodeId> ancestors;
+        for (auto at = id; at != Scl::NoNode; at = nodes[at].parent)
+            ancestors.push_back(at);
+        QModelIndex index;
+        for (auto it = ancestors.rbegin(); it != ancestors.rend(); ++it)
+            index = tree->model()->index(*it == 0 ? 0 : snapshot->browse.branches[*it].row, 0, index);
+        tree->setCurrentIndex(index);
+    };
+    Scl::NodeId populated = Scl::NoNode, empty = Scl::NoNode;
+    for (auto id : snapshot->browse.categories[size_t(iec61850sim::SclCategory::DataSets)])
+    {
+        if (snapshot->browse.dataSetMembers.value(id).count > 0 && populated == Scl::NoNode) populated = id;
+        if (snapshot->browse.dataSetMembers.value(id).count == 0) empty = id;
+    }
+    QVERIFY(populated != Scl::NoNode);
+    select(populated);
+    QVERIFY(tabs->isTabVisible(memberTab));
+    tabs->setCurrentWidget(members);
+    QVERIFY(members->model()->rowCount() > 0);
+    const auto member = tree->currentIndex().data(Qt::UserRole).toInt();
+    QCOMPARE(nodes[member].name, QStringLiteral("FCDA"));
+    const auto unrelated = nodes[populated].parent; // LN has no member scope.
+    select(unrelated);
+    QCOMPARE(members->model()->rowCount(), 0);
+    QVERIFY(!tabs->isTabVisible(memberTab));
+    QCOMPARE(tabs->currentIndex(), 0);
+    QCOMPARE(tree->currentIndex().data(Qt::UserRole).toInt(), unrelated);
+    QVERIFY(!members->currentIndex().isValid());
+    back->click();
+    QCOMPARE(tree->currentIndex().data(Qt::UserRole).toInt(), member);
+    QVERIFY(tabs->isTabVisible(memberTab));
+    QVERIFY(members->model()->rowCount() > 0);
+    forward->click();
+    QCOMPARE(tree->currentIndex().data(Qt::UserRole).toInt(), unrelated);
+    QCOMPARE(members->model()->rowCount(), 0);
+    QVERIFY(!tabs->isTabVisible(memberTab));
+    if (empty != Scl::NoNode)
+    {
+        select(empty);
+        QCOMPARE(members->model()->rowCount(), 0);
+        QVERIFY(!tabs->isTabVisible(memberTab));
+    }
+    // An in-flight member filter must not repopulate the cleared table.
+    select(populated);
+    tabs->setCurrentWidget(members);
+    mode->setCurrentIndex(1);
+    query->setText("definitely-no-member-match");
+    QTest::keyClick(query, Qt::Key_Return);
+    QTRY_COMPARE(members->model()->rowCount(), 0);
+    QVERIFY(tabs->isTabVisible(memberTab)); // Empty filter remains recoverable.
+    query->setText("ST");
+    QTest::keyClick(query, Qt::Key_Return);
+    select(unrelated);
+    QTest::qWait(350);
+    QCOMPARE(members->model()->rowCount(), 0);
+    QVERIFY(!tabs->isTabVisible(memberTab));
+    QCOMPARE(tree->currentIndex().data(Qt::UserRole).toInt(), unrelated);
+    qInfo() << "Member scope clearing verified, bytes" << snapshot->analysis.source->bytes().size()
+            << "nodes" << nodes.size() << "IEDs" << snapshot->browse.ieds.size();
+}
+
+void MainWindowBaselineTest::SclIedAmbiguity()
+{
+    using namespace iec61850sim;
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    QFile input(QStringLiteral(SCL_FIXTURE_DIR "/IedBrowsing.scd"));
+    QVERIFY(input.open(QIODevice::ReadOnly));
+    auto xml = input.readAll();
+    xml.replace("name=\"IED_B\"", "name=\"IED_A\"");
+    xml.replace("<LNodeType id=\"T_UNUSED\" lnClass=\"GGIO\"/>",
+        "<LNodeType id=\"T_GGIO\" lnClass=\"GGIO\"/>");
+    const auto path = temp.filePath("ambiguous.scd");
+    QVERIFY(WriteFile(path, xml));
+    SclAnalysisService service;
+    service.Open(path);
+    QTRY_COMPARE(service.state(), SclAnalysisService::State::Ready);
+    const auto snapshot = service.snapshot();
+    QVERIFY(snapshot);
+    const auto& browse = snapshot->browse;
+    const auto& doc = *snapshot->analysis.document;
+    for (auto id : browse.categories[size_t(SclCategory::Communication)])
+        if (doc.nodes[id].name == "ConnectedAP")
+            QCOMPARE(browse.iedOwners[id], Scl::NoNode); // No arbitrary binding for duplicate/unknown names.
+    for (auto ied : browse.ieds)
+        for (auto type : browse.usedTemplates.value(ied))
+            QVERIFY(doc.attribute(type, "id") != "T_GGIO"); // Ambiguous templates are not proven use.
+    Scl::TaskControl cancelled;
+    cancelled.cancelled.store(true);
+    auto index = browse;
+    bool interrupted = false;
+    try { index.BuildScopes(snapshot->analysis, &cancelled); }
+    catch (const Scl::TaskCancelled&) { interrupted = true; }
+    QVERIFY(interrupted);
+}
+
 void MainWindowBaselineTest::SclWorkspaceFlow()
 {
     using Service = iec61850sim::SclAnalysisService;
@@ -668,11 +1019,11 @@ void MainWindowBaselineTest::SclWorkspaceFlow()
     QVERIFY(details && inspector && tables && inspector->isVisible());
     window.resize(760, 640);
     QCoreApplication::processEvents();
-    const int width = tables->width();
+    const int height = tables->height();
     const int page = inspector->currentIndex();
     details->setFocus();
     QTest::keyClick(details, Qt::Key_Space);
-    QTRY_VERIFY(!inspector->isVisible() && tables->width() > width);
+    QTRY_VERIFY(!inspector->isVisible() && tables->height() > height);
     QTest::keyClick(details, Qt::Key_Space);
     QTRY_VERIFY(inspector->isVisible());
     QCOMPARE(inspector->currentIndex(), page);
@@ -1129,6 +1480,7 @@ void MainWindowBaselineTest::ListsAndDetails()
     QVERIFY(settings.isValid());
     IsolateSettings(settings.path());
     iec61850sim::MainWindow window;
+    QVERIFY(!window.windowIcon().pixmap(32, 32).isNull());
     window.show();
     QApplication::processEvents();
     auto* manager = window.findChild<ads::CDockManager*>();

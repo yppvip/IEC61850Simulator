@@ -63,6 +63,7 @@ add_subdirectory(third_party/Qt-Advanced-Docking-System-5.0.0)
 set(AppTarget IEC61850Simulator)
 add_executable(${AppTarget}
     app/ui/Main.cpp
+    res/Application.qrc
     src/core/RedisAvailabilityChecker.cpp
     src/core/RedisAvailabilityChecker.hpp
     src/core/ApplicationLogger.cpp
@@ -80,6 +81,12 @@ add_executable(${AppTarget}
     src/gui/SclSearchSession.hpp
     src/gui/SclWorkspaceSearch.cpp
 )
+
+set_target_properties(${AppTarget} PROPERTIES AUTORCC ON)
+if(WIN32)
+    enable_language(RC)
+    target_sources(${AppTarget} PRIVATE res/Application.rc)
+endif()
 
 target_include_directories(${AppTarget}
     PRIVATE
@@ -184,6 +191,7 @@ if(BUILD_TESTING)
 
     if(TARGET Qt${QT_VERSION_MAJOR}::QOffscreenIntegrationPlugin)
         add_executable(MainWindowBaselineTest
+            res/Application.qrc
             tests/integration/MainWindowBaselineTest.cpp
             src/gui/MainWindow.cpp src/gui/MainWindow.hpp src/gui/SclWorkspace.cpp src/gui/SclWorkspace.hpp
             src/gui/SclSearchSession.cpp src/gui/SclSearchSession.hpp src/gui/SclWorkspaceSearch.cpp
@@ -191,7 +199,7 @@ if(BUILD_TESTING)
         target_include_directories(MainWindowBaselineTest PRIVATE src/gui)
         target_link_libraries(MainWindowBaselineTest PRIVATE Qt${QT_VERSION_MAJOR}::Widgets
             Qt${QT_VERSION_MAJOR}::Test Qt${QT_VERSION_MAJOR}::Concurrent SclApplication ads::qtadvanceddocking-qt${QT_VERSION_MAJOR})
-        set_target_properties(MainWindowBaselineTest PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+        set_target_properties(MainWindowBaselineTest PROPERTIES AUTORCC ON RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
         target_compile_definitions(MainWindowBaselineTest PRIVATE
             BASELINE_ARTIFACT_DIR="${CMAKE_BINARY_DIR}/p0-artifacts"
             SCL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/scl")

@@ -18,6 +18,7 @@ class QPushButton;
 class QTabWidget;
 class QTableView;
 class QTreeView;
+namespace ads { class CDockManager; class CDockWidget; }
 
 namespace iec61850sim
 {
@@ -32,7 +33,12 @@ class SclWorkspace final : public QWidget
 {
 public:
     explicit SclWorkspace(QWidget* parent = nullptr);
+    ~SclWorkspace() override;
     bool UpdateSession(std::shared_ptr<const SclSnapshot> snapshot, const Scl::Result& failure);
+
+protected:
+    void hideEvent(QHideEvent* event) override;
+    void showEvent(QShowEvent* event) override;
 
 private:
     struct Location
@@ -42,10 +48,16 @@ private:
         int table;
         int inspector;
         int finding;
+        Scl::NodeId ied;
     };
     void Select(Scl::NodeId id, bool route = false, int finding = -1, bool openSource = false);
     void SelectFinding(int finding, bool openSource, bool route = false);
+    void RestoreWorkspaceLayout();
+    void ResetWorkspaceLayout();
     void LocateTableRow();
+    void ChangeTable();
+    void UpdateTabVisibility();
+    void SetIedScope(Scl::NodeId ied);
     void UpdateOverview();
     void SetMemberScope(Scl::NodeId dataSet);
     void RememberView();
@@ -77,9 +89,19 @@ private:
     bool m_showingFailure = false;
     bool m_sourceDirty = true;
     Scl::NodeId m_dataSet = Scl::NoNode;
+    Scl::NodeId m_ied = Scl::NoNode;
+    QComboBox* m_browseScope;
+    QCheckBox* m_allTemplates;
+    QHash<int, Scl::NodeId> m_tabNodes;
+    int m_tabFinding = -1;
     std::vector<Location> m_history;
     int m_historyIndex = -1;
     bool m_restoring = false;
+    ads::CDockManager* m_docks;
+    ads::CDockWidget* m_treeDock;
+    ads::CDockWidget* m_tableDock;
+    ads::CDockWidget* m_inspectorDock;
+    QByteArray m_defaultLayout;
     SclTreeModel* m_treeModel;
     QTreeView* m_tree;
     QTabWidget* m_tables;
