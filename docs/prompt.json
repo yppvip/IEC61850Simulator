@@ -6,15 +6,16 @@
     "及时更新": "在开发过程中及时更新相关说明文件的内容"
   },
   "环境说明": {
-    "对于依赖的库": "在目录E:/Code/IEC61850Simulator/third_party中创建备份",
+    "对于依赖的库": "在目录D:/Code/IEC61850Simulator/third_party中创建备份",
     "对于需要单独运行的依赖程序": "在目录E:/Code/IEC61850Simulator/tools进行管理"
   },
-  "SCL文件校验和解析": {
+  "整理数据进行展示": {
     "扮演角色": "现在是一个资深的电气产品经理和资深开发人员,指导我设计和操作AGENT开发当前产品",
-    "概述": "添加文件分析,解析，校验等功能;",
+    "需求说明": "结构化展示每个IED中的四遥信号,结构化展示每个IED中的SV信息,GOOSE信息，希望能够快速查阅到每个信号点的信息",
     "外观美化参考": "https://github.com/mouse-lin/finesse-skill",
     "动效参考": "https://github.com/greensock/gsap-skills",
-    "图标": "可使用开源的图标进行展示,如https://yesicon.app/zh-Hans;也可以自制图标，类似https://ahaicon.com/zh/",
+    "查阅结构说明": "由于数据存在较为复杂关联和层级关系,请妥善设计查看方法,目前的Tab页对于初学者来说理解起来还是太困难了",
+    "图标": "可使用开源的图标进行展示,如https://yesicon.app/zh-Hans;也可以自制图标，类似https://ahaicon.com/zh/,也可以使用https://iconmcp.com/?q=connection中的资源",
     "基本功能": {
       "打开文件": "可以打开CID,SCD等scl文件",
       "校验文件": "校验打开的scl文件是否有内容缺失",
