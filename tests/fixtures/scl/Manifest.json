@@ -4,6 +4,23 @@
   "schemaValidated": false,
   "fixtures": [
     {
+      "file": "Task4Signals.scd",
+      "wellFormed": true,
+      "root": "SCL",
+      "namespace": "http://www.iec.ch/61850/2003/SCL",
+      "counts": {
+        "IED": 2,
+        "AccessPoint": 3,
+        "LN": 5,
+        "FCDA": 2,
+        "ExtRef": 2,
+        "SDO": 1,
+        "DOI": 0
+      },
+      "plannedRules": [],
+      "validationStatus": "T4.0 synthetic semantic contract; no Task4 catalog or XSD validation"
+    },
+    {
       "file": "Minimal.scd",
       "wellFormed": true,
       "root": "SCL",

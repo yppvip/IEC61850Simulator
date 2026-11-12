@@ -1,6 +1,8 @@
 # Task4 · 面向初学者的 IED 信号与通信查阅工作台
 
-日期：2026-11-12。状态：设计与执行方案，尚未实施。本文以现有 Qt Widgets + ADS、只读 SCL 分析能力为基础；不将建议、统计或历史验收写成已完成功能。
+日期：2026-11-12。本文记录 Qt Widgets + ADS 离线 IED 查阅工作台的设计与验收门槛。
+
+执行记录：[T4.0 基线](Task4T4.0.md)、[T4.1 原型](Task4T4.1.md)、[T4.2 后台索引](Task4T4.2.md)、[T4.3 工作台](Task4T4.3.md)、[T4.4 检查与解释](Task4T4.4.md)、[T4.5 最终候选与验收范围](Task4T4.5.md)。
 
 ## 1. 需求判断与推荐决策
 
@@ -255,4 +257,4 @@ T4.1 可在明确规则草案后先展示原型供评审；T4.2 不在原型验�
 - [libIEC61850 FC 文档](https://support.mz-automation.de/doc/libiec61850/c/latest/group__FUNCTIONAL__CONSTRAINTS.html)、[报告 API](https://support.mz-automation.de/doc/libiec61850/c/latest/group__IEC61850__CLIENT__REPORTS.html)、[SV API](https://support.mz-automation.de/doc/libiec61850/c/latest/group__sv__publisher__api__group.html)：帮助区分 FC、报告引用/rptID、svID 与通信参数。API 文档不替代规范，也不作为四遥业务分类标准；本文分类表为待验证的产品规则设计。
 - [finesse-skill](https://github.com/mouse-lin/finesse-skill)、[GSAP skills](https://github.com/greensock/gsap-skills)：设计与动效参考。相关技能已在本机全局目录可用，本轮未安装或更新技能，未新增运行库。
 
-本轮仅交付 Task4 并同步 README、AGENTS、DEVELOPMENT 的方案状态，完成源码/文档核对和样本 XML 只读统计。没有修改运行代码、引入图标/库、执行产品构建或功能验收。下一步为 T4.0，随后用可操作原型验证初学者是否更容易找到和理解信号。
+最初方案以本地 XML 统计为依据，实施与复测结果以各阶段记录为准。

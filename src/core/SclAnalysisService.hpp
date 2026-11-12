@@ -2,6 +2,7 @@
 
 #include "SclReferenceResolver.hpp"
 #include "SclBrowseIndex.hpp"
+#include "SclTaskIndex.hpp"
 
 #include <QFileSystemWatcher>
 #include <QFutureWatcher>
@@ -16,6 +17,7 @@ struct SclSnapshot
     QString path;
     Scl::ReferenceAnalysis analysis;
     SclBrowseIndex browse;
+    SclTaskIndex tasks;
 };
 
 // Call from the owning event-loop thread. Each successful request publishes a

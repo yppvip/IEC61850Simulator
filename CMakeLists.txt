@@ -34,6 +34,8 @@ add_library(SclAnalysis STATIC
     src/iec61850/scl/SclReader.hpp
     src/iec61850/scl/SclReferenceResolver.cpp
     src/iec61850/scl/SclReferenceResolver.hpp
+    src/iec61850/scl/SclSignalCatalog.cpp
+    src/iec61850/scl/SclSignalCatalog.hpp
     src/iec61850/scl/SclSourceIndex.cpp
     src/iec61850/scl/SclSourceIndex.hpp
     src/iec61850/scl/SclTaskControl.hpp)
@@ -41,6 +43,7 @@ target_include_directories(SclAnalysis PUBLIC src/iec61850/scl)
 target_link_libraries(SclAnalysis PUBLIC Qt${QT_VERSION_MAJOR}::Core)
 
 add_library(SclApplication STATIC src/core/SclAnalysisService.cpp src/core/SclAnalysisService.hpp
+    src/core/SclTaskIndex.cpp src/core/SclTaskIndex.hpp src/core/SclTaskQuery.cpp src/core/SclTaskDetails.cpp
     src/core/SclBrowseIndex.cpp src/core/SclBrowseIndex.hpp
     src/core/SclSearch.cpp src/core/SclSearch.hpp
     src/core/SclIssueExport.cpp src/core/SclIssueExport.hpp
@@ -74,6 +77,8 @@ add_executable(${AppTarget}
     src/gui/MainWindow.hpp
     src/gui/SclWorkspace.cpp
     src/gui/SclWorkspace.hpp
+    src/gui/SclTaskPages.cpp src/gui/SclTaskPages.hpp
+    src/gui/SclTaskBrowser.cpp src/gui/SclTaskBrowser.hpp
     src/gui/SclSourcePreview.cpp
     src/gui/SclSourcePreview.hpp
     src/gui/SclWorkspaceTopology.cpp
@@ -177,6 +182,11 @@ if(BUILD_TESTING)
     target_compile_definitions(SclReferenceResolverTest PRIVATE SCL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/scl")
     add_test(NAME SclReferenceResolverTest COMMAND SclReferenceResolverTest)
 
+    add_executable(SclTaskIndexTest tests/unit/SclTaskIndexTest.cpp)
+    target_link_libraries(SclTaskIndexTest PRIVATE SclApplication Qt${QT_VERSION_MAJOR}::Test)
+    target_compile_definitions(SclTaskIndexTest PRIVATE SCL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/scl")
+    add_test(NAME SclTaskIndexTest COMMAND SclTaskIndexTest)
+
     # Local performance/scale probe; CTest does not require an external SCD.
     add_executable(SclAnalysisProbe tests/integration/SclAnalysisProbe.cpp)
     target_link_libraries(SclAnalysisProbe PRIVATE SclAnalysis)
@@ -190,9 +200,17 @@ if(BUILD_TESTING)
     add_test(NAME SclFixtureBaselineTest COMMAND SclFixtureBaselineTest)
 
     if(TARGET Qt${QT_VERSION_MAJOR}::QOffscreenIntegrationPlugin)
+        add_executable(SclTaskPagesTest tests/integration/SclTaskPagesTest.cpp
+            src/gui/SclTaskPages.cpp src/gui/SclTaskPages.hpp)
+        target_include_directories(SclTaskPagesTest PRIVATE src/gui)
+        target_link_libraries(SclTaskPagesTest PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Test)
+        add_test(NAME SclTaskPagesTest COMMAND SclTaskPagesTest)
+        set_tests_properties(SclTaskPagesTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
         add_executable(MainWindowBaselineTest
             res/Application.qrc
             tests/integration/MainWindowBaselineTest.cpp
+            src/gui/SclTaskPages.cpp src/gui/SclTaskPages.hpp
+            src/gui/SclTaskBrowser.cpp src/gui/SclTaskBrowser.hpp
             src/gui/MainWindow.cpp src/gui/MainWindow.hpp src/gui/SclWorkspace.cpp src/gui/SclWorkspace.hpp
             src/gui/SclSearchSession.cpp src/gui/SclSearchSession.hpp src/gui/SclWorkspaceSearch.cpp
             src/gui/SclSourcePreview.cpp src/gui/SclSourcePreview.hpp src/gui/SclWorkspaceTopology.cpp)

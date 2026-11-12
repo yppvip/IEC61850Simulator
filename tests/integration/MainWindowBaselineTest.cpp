@@ -3,6 +3,7 @@
 #include "SclIssueExport.hpp"
 #include "SclSourcePreview.hpp"
 #include "SclTopology.hpp"
+#include "SclTaskPages.hpp"
 
 #include <QAction>
 #include <QApplication>
@@ -26,6 +27,7 @@
 #include <QSettings>
 #include <QScrollBar>
 #include <QStatusBar>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTableView>
 #include <QTemporaryDir>
@@ -55,6 +57,9 @@ void IsolateSettings(const QString& path)
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, path);
     QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, path);
+    QSettings settings(QSettings::IniFormat, QSettings::UserScope, "IEC61850Simulator", "IEC61850Simulator");
+    if (!settings.contains("SclWorkspace/TaskView"))
+        settings.setValue("SclWorkspace/TaskView", false);
 }
 
 bool WriteFile(const QString& path, const QByteArray& bytes)
@@ -352,7 +357,348 @@ private slots:
     void SclIssueExport();
     void SclLocalAcceptance();
     void SclLocalCycles();
+    void SclNativeTiming();
+    void SclTaskViewFlow();
+    void SclTaskLocal();
 };
+
+void MainWindowBaselineTest::SclTaskViewFlow()
+{
+    using Service = iec61850sim::SclAnalysisService;
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    IsolateSettings(temp.path());
+    QSettings settings(QSettings::IniFormat, QSettings::UserScope, "IEC61850Simulator", "IEC61850Simulator");
+    settings.setValue("SclWorkspace/TaskView", true);
+    iec61850sim::MainWindow window;
+    if (qEnvironmentVariableIntValue("IEC61850_TASK4_HIGH_CONTRAST") == 1)
+    {
+        QApplication::setStyle(QStringLiteral("Fusion"));
+        QPalette contrast = QApplication::palette();
+        contrast.setColor(QPalette::Window, Qt::black);
+        contrast.setColor(QPalette::WindowText, Qt::white);
+        contrast.setColor(QPalette::Base, Qt::black);
+        contrast.setColor(QPalette::AlternateBase, QColor("#151515"));
+        contrast.setColor(QPalette::Text, Qt::white);
+        contrast.setColor(QPalette::Button, QColor("#151515"));
+        contrast.setColor(QPalette::ButtonText, Qt::white);
+        contrast.setColor(QPalette::Highlight, Qt::yellow);
+        contrast.setColor(QPalette::HighlightedText, Qt::black);
+        window.setPalette(contrast);
+    }
+    window.resize(1280, 800);
+    window.show();
+    auto* service = window.findChild<Service*>();
+    auto* pages = window.findChild<iec61850sim::SclTaskPages*>();
+    auto* filter = window.findChild<QLineEdit*>("SclTaskFilter");
+    auto* detail = window.findChild<QTextBrowser*>("SclTaskDetail");
+    auto* source = window.findChild<QPushButton*>("SclTaskSource");
+    auto* preview = window.findChild<QPlainTextEdit*>("SclSource");
+    auto* switchView = window.findChild<QPushButton*>("SclTaskViewSwitch");
+    auto* back = window.findChild<QPushButton*>("SclBack");
+    auto* inspector = window.findChild<QTabWidget*>("SclInspector");
+    QVERIFY(service && pages && filter && detail && source && preview && switchView && back && inspector);
+    service->Open(QStringLiteral(SCL_FIXTURE_DIR "/Task4Signals.scd"));
+    QTRY_VERIFY(service->state() == Service::State::Ready);
+    QVERIFY(pages->isVisible());
+    pages->SetPage(iec61850sim::SclTaskPages::Signals);
+    filter->setText(QStringLiteral("XCBR"));
+    QTRY_COMPARE(pages->Table()->model()->rowCount(), 3);
+    pages->Table()->setCurrentIndex(pages->Table()->model()->index(0, 0));
+    QTRY_VERIFY(source->isEnabled());
+    QVERIFY(detail->toPlainText().contains(QStringLiteral("如何使用")));
+    const auto artifact = qEnvironmentVariable("IEC61850_TASK4_ARTIFACT");
+    if (!artifact.isEmpty())
+        QVERIFY(window.grab().save(artifact));
+    qInfo() << "Task view Qt platform, DPR, screen count:" << QGuiApplication::platformName()
+            << window.devicePixelRatioF() << QGuiApplication::screens().size();
+    source->click();
+    QCOMPARE(inspector->currentIndex(), 2);
+    QTRY_VERIFY(preview->toPlainText().contains(QStringLiteral("lnClass=\"XCBR\"")));
+    QVERIFY(back->isEnabled());
+    back->click();
+    QTRY_VERIFY(source->isEnabled());
+    QCOMPARE(filter->text(), QStringLiteral("XCBR"));
+    QCOMPARE(pages->Table()->model()->rowCount(), 3);
+    QCOMPARE(pages->Table()->currentIndex().row(), 0);
+    pages->SetPage(iec61850sim::SclTaskPages::Goose);
+    filter->clear();
+    QTRY_COMPARE(pages->Table()->model()->rowCount(), 1);
+    pages->SetPage(iec61850sim::SclTaskPages::Checks);
+    const auto* coverage = window.findChild<QLabel*>("SclTaskCoverage");
+    QVERIFY(coverage && coverage->isVisible());
+    QVERIFY(coverage->text().contains(QStringLiteral("完整 XSD 未执行")));
+    QVERIFY(coverage->text().contains(QStringLiteral("工程点表完整性未执行")));
+    filter->setText(QStringLiteral("Events"));
+    service->Close();
+    QTRY_VERIFY(!pages->isVisible());
+    QCOMPARE(pages->Table()->model()->rowCount(), 0);
+    service->Open(QStringLiteral(SCL_FIXTURE_DIR "/Minimal.scd"));
+    QTRY_VERIFY(service->state() == Service::State::Ready);
+    QVERIFY(pages->isVisible());
+    switchView->click();
+    QVERIFY(!pages->isVisible());
+    QVERIFY(window.findChild<QTabWidget*>("SclTables")->isVisible());
+}
+
+void MainWindowBaselineTest::SclTaskLocal()
+{
+    using Service = iec61850sim::SclAnalysisService;
+    using Pages = iec61850sim::SclTaskPages;
+    const auto path = qEnvironmentVariable("IEC61850_LOCAL_SCL");
+    if (path.isEmpty() || !QCoreApplication::arguments().contains("SclTaskLocal"))
+        QSKIP("Run SclTaskLocal explicitly with IEC61850_LOCAL_SCL");
+    QCOMPARE(QGuiApplication::platformName(), QStringLiteral("windows"));
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    IsolateSettings(temp.path());
+    QSettings settings(QSettings::IniFormat, QSettings::UserScope, "IEC61850Simulator", "IEC61850Simulator");
+    settings.setValue("SclWorkspace/TaskView", true);
+    iec61850sim::MainWindow window;
+    window.resize(1280, 800);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    auto* service = window.findChild<Service*>();
+    auto* pages = window.findChild<Pages*>();
+    auto* source = window.findChild<QPushButton*>("SclTaskSource");
+    QVERIFY(service && pages && source);
+    service->Open(path);
+    QTRY_VERIFY_WITH_TIMEOUT(service->state() == Service::State::Ready, 30000);
+    pages->SetPage(Pages::Signals);
+    auto* table = pages->Table();
+    QTRY_VERIFY_WITH_TIMEOUT(table->model()->rowCount() >= 100, 5000);
+    const auto& index = service->snapshot()->tasks;
+    qInfo() << "Signals, shared definitions, GOOSE, SV, inputs, limited:"
+            << index.catalog.instances.size() << index.catalog.definitions.size()
+            << index.goose.size() << index.sv.size() << index.inputs.size()
+            << (index.catalog.limited || index.relationsLimited);
+    QList<qint64> samples;
+    for (int i = 0; i < 100; ++i)
+    {
+        QElapsedTimer elapsed;
+        elapsed.start();
+        const auto selection = table->model()->index(i * (table->model()->rowCount() - 1) / 99, 0);
+        table->setCurrentIndex(selection);
+        QTRY_VERIFY_WITH_TIMEOUT(source->isEnabled(), 1500);
+        QApplication::processEvents();
+        samples.push_back(elapsed.elapsed());
+    }
+    std::sort(samples.begin(), samples.end());
+    qInfo() << "Task signal details P50/P95/P99/max ms:" << samples[49] << samples[94] << samples[98] << samples.back();
+    pages->SetPage(Pages::Goose);
+    QTRY_COMPARE(table->model()->rowCount(), int(index.goose.size()));
+    pages->SetPage(Pages::SampledValues);
+    QTRY_COMPARE(table->model()->rowCount(), int(index.sv.size()));
+    service->Close();
+    QCOMPARE(table->model()->rowCount(), 0);
+}
+
+void MainWindowBaselineTest::SclNativeTiming()
+{
+    using Service = iec61850sim::SclAnalysisService;
+    const auto path = qEnvironmentVariable("IEC61850_LOCAL_SCL");
+    if (path.isEmpty() || !QCoreApplication::arguments().contains("SclNativeTiming"))
+        QSKIP("Run SclNativeTiming explicitly with IEC61850_LOCAL_SCL");
+    QCOMPARE(QGuiApplication::platformName(), QStringLiteral("windows"));
+    QTemporaryDir settings;
+    QVERIFY(settings.isValid());
+    IsolateSettings(settings.path());
+    iec61850sim::MainWindow window;
+    window.resize(1280, 800);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+
+    QElapsedTimer clock;
+    clock.start();
+    QTimer heartbeat;
+    heartbeat.setTimerType(Qt::PreciseTimer);
+    heartbeat.setInterval(16);
+    qint64 lastTick = clock.elapsed();
+    qint64 maxGap = 0;
+    connect(&heartbeat, &QTimer::timeout, &window, [&] {
+        const auto now = clock.elapsed();
+        maxGap = std::max(maxGap, now - lastTick);
+        lastTick = now;
+    });
+    heartbeat.start();
+
+    auto* service = window.findChild<Service*>();
+    auto* tree = window.findChild<QTreeView*>("SclTree");
+    auto* tabs = window.findChild<QTabWidget*>("SclTables");
+    auto* inspector = window.findChild<QTabWidget*>("SclInspector");
+    QVERIFY(service && tree && tabs && inspector);
+    const auto loadStart = clock.elapsed();
+    service->Open(path);
+    QTRY_VERIFY_WITH_TIMEOUT(service->state() == Service::State::Ready, 30000);
+    const auto snapshot = service->snapshot();
+    QVERIFY(snapshot && snapshot->analysis.document);
+    qInfo() << "Native baseline load ms, heartbeat gap ms, DPR:"
+            << clock.elapsed() - loadStart << maxGap << window.devicePixelRatioF();
+
+    // Derive tree indexes from snapshot rows, independent of visible or expanded items.
+    const auto& nodes = snapshot->analysis.document->nodes;
+    const auto treeIndex = [&](Scl::NodeId id) {
+        QList<int> rows;
+        while (id != Scl::NoNode)
+        {
+            rows.push_back(snapshot->browse.branches[id].row);
+            id = nodes[id].parent;
+        }
+        QModelIndex result;
+        for (auto row = rows.crbegin(); row != rows.crend(); ++row)
+            result = tree->model()->index(*row, 0, result);
+        return result;
+    };
+    QHash<QString, Scl::NodeId> firstOfKind;
+    for (size_t i = 0; i < nodes.size(); ++i)
+    {
+        if (!firstOfKind.contains(nodes[i].name))
+            firstOfKind.insert(nodes[i].name, Scl::NodeId(i));
+    }
+    QHash<Scl::NodeId, int> incomingCounts;
+    Scl::NodeId largest = Scl::NoNode;
+    int degree = 0;
+    for (auto it = snapshot->analysis.incoming.cbegin(); it != snapshot->analysis.incoming.cend(); ++it)
+    {
+        const int count = ++incomingCounts[it.key()];
+        if (count > degree || (count == degree && it.key() < largest))
+        {
+            degree = count;
+            largest = it.key();
+        }
+    }
+    QVERIFY(largest != Scl::NoNode);
+    const auto highDegree = treeIndex(largest);
+    QVERIFY(highDegree.isValid());
+    QList<QModelIndex> targets;
+    for (const auto* kind : {"IED", "LDevice", "LN", "ReportControl", "DataSet", "FCDA", "DOI", "DAI"})
+    {
+        QVERIFY(firstOfKind.contains(QString::fromLatin1(kind)));
+        const auto index = treeIndex(firstOfKind.value(QString::fromLatin1(kind)));
+        QVERIFY(index.isValid());
+        targets.push_back(index);
+    }
+    targets.push_back(highDegree);
+    qInfo() << "Largest resolved incoming degree:" << degree;
+
+    class PaintProbe : public QObject
+    {
+    public:
+        QWidget* target = nullptr;
+        qint64 lastPaint = -1;
+        QElapsedTimer* clock = nullptr;
+
+        bool eventFilter(QObject* receiver, QEvent* event) override
+        {
+            if (receiver == target && event->type() == QEvent::Paint)
+                lastPaint = clock->nsecsElapsed();
+            return false;
+        }
+    } paint;
+    paint.clock = &clock;
+    qApp->installEventFilter(&paint);
+
+    const auto measure = [&](const char* label, auto operation, int count) {
+        QList<qint64> hot;
+        QList<qint64> first;
+        QList<qint64> synchronousSamples;
+        QList<qint64> painted;
+        for (int i = 0; i < 100 + count; ++i)
+        {
+            paint.lastPaint = -1;
+            const auto start = clock.nsecsElapsed();
+            operation(i);
+            const auto synchronous = clock.nsecsElapsed() - start;
+            // Dispatch normal Qt updates on the exposed Windows window; no grab or forced repaint.
+            QApplication::processEvents();
+            const auto dispatched = clock.nsecsElapsed() - start;
+            (i < count ? first : hot).push_back(dispatched);
+            if (i >= count)
+            {
+                synchronousSamples.push_back(synchronous);
+                if (paint.lastPaint >= start)
+                    painted.push_back(paint.lastPaint - start);
+            }
+            if (dispatched > 200'000'000)
+                qInfo() << label << "slow step" << i % count << "slot/dispatch ms"
+                        << synchronous / 1e6 << dispatched / 1e6;
+            QTest::qWait(16);
+        }
+        std::sort(hot.begin(), hot.end());
+        std::sort(synchronousSamples.begin(), synchronousSamples.end());
+        std::sort(painted.begin(), painted.end());
+        qInfo() << label << "first pass max ms" << *std::max_element(first.cbegin(), first.cend()) / 1e6
+                << "hot P50/P95/P99/max ms" << hot[49] / 1e6 << hot[94] / 1e6
+                << hot[98] / 1e6 << hot.back() / 1e6;
+        qInfo() << label << "slot P95 ms" << synchronousSamples[94] / 1e6 << "target paint events" << painted.size()
+                << "last paint entry P95 ms" << (painted.empty() ? -1.0 : painted[(painted.size() * 95 - 1) / 100] / 1e6);
+    };
+    maxGap = 0;
+    paint.target = tree->viewport();
+    measure("Tree selection", [&](int i) { tree->setCurrentIndex(targets[i % targets.size()]); }, targets.size());
+    auto* details = window.findChild<QToolButton*>("SclToggleDetails");
+    QVERIFY(details);
+    details->click();
+    measure("Tree selection with details hidden",
+            [&](int i) { tree->setCurrentIndex(targets[i % targets.size()]); }, targets.size());
+    details->click();
+    tree->setCurrentIndex(tree->model()->index(0, 0));
+    QList<int> pages;
+    for (int i = 0; i < tabs->count(); ++i)
+        if (tabs->isTabVisible(i))
+            pages.push_back(i);
+    QVERIFY(pages.size() > 1);
+    const auto switchPage = [&](int index) {
+        auto* widget = tabs->widget(index);
+        auto* view = qobject_cast<QAbstractItemView*>(widget);
+        paint.target = view ? view->viewport() : widget;
+        tabs->setCurrentIndex(index);
+    };
+    measure("Data tab switch", [&](int i) { switchPage(pages[i % pages.size()]); }, pages.size());
+    auto* query = window.findChild<QLineEdit*>("SclQuery");
+    auto* mode = window.findChild<QComboBox*>("SclSearchMode");
+    auto* cancel = window.findChild<QPushButton*>("SclCancelSearch");
+    auto* status = window.findChild<QLabel*>("SclSearchStatus");
+    auto* reports = window.findChild<QTableView*>("SclReports");
+    auto* objects = window.findChild<QTableView*>("SclObjects");
+    auto* debounce = window.findChild<QTimer*>("SclSearchDelay");
+    QVERIFY(query && mode && cancel && status && reports && objects && debounce);
+    QSignalSpy searchStarted(debounce, &QTimer::timeout);
+    mode->setCurrentIndex(1);
+    tabs->setCurrentWidget(objects);
+    query->setText(QStringLiteral("a"));
+    QVERIFY(searchStarted.wait(10000));
+    QVERIFY(status->text().startsWith(QStringLiteral("正在搜索")));
+    measure("Filter tab switch", [&](int i) {
+        switchPage(tabs->indexOf(i % 2 == 0 ? reports : objects));
+    }, 2);
+    query->clear();
+    mode->setCurrentIndex(0);
+    query->setText(QStringLiteral("a"));
+    QTRY_VERIFY_WITH_TIMEOUT(status->text().startsWith(QStringLiteral("共 ")), 30000);
+    auto* more = window.findChild<QPushButton*>("SclMoreResults");
+    QVERIFY(more && more->isVisible());
+    query->setText(QStringLiteral("e"));
+    QVERIFY(searchStarted.wait(10000));
+    QVERIFY(status->text().startsWith(QStringLiteral("正在搜索")));
+    cancel->click();
+    QVERIFY(status->text().startsWith(QStringLiteral("搜索已取消")));
+    const auto cancelled = status->text();
+    QTRY_COMPARE_WITH_TIMEOUT(QThreadPool::globalInstance()->activeThreadCount(), 0, 10000);
+    QApplication::processEvents();
+    QCOMPARE(status->text(), cancelled);
+    query->clear();
+    tree->setCurrentIndex(highDegree);
+    measure("Inspector tab switch", [&](int i) {
+        auto* widget = inspector->widget(i % inspector->count());
+        auto* view = qobject_cast<QAbstractScrollArea*>(widget);
+        paint.target = view ? view->viewport() : widget;
+        inspector->setCurrentWidget(widget);
+    },
+            inspector->count());
+    qInfo() << "Native interaction heartbeat max gap ms, peak working set bytes:"
+            << maxGap << Memory().peakWorkingSet;
+}
 
 void MainWindowBaselineTest::SclLocalCycles()
 {

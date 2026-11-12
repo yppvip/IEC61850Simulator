@@ -1,4 +1,6 @@
 #include "SclWorkspace.hpp"
+#include "SclTiming.hpp"
+#include <QStackedWidget>
 #include "SclSourcePreview.hpp"
 
 #include <QAbstractItemModel>
@@ -644,7 +646,9 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     navigation->addWidget(m_failedSource);
     outer->addLayout(navigation);
     CreateSearchBar(outer);
-    auto* browseRow = new QHBoxLayout;
+    m_advancedScope = new QWidget(this);
+    auto* browseRow = new QHBoxLayout(m_advancedScope);
+    browseRow->setContentsMargins(0, 0, 0, 0);
     browseRow->addWidget(new QLabel(QStringLiteral("浏览范围"), this));
     m_browseScope = new QComboBox(this);
     m_browseScope->setObjectName("SclBrowseScope");
@@ -657,12 +661,11 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     m_allTemplates->setToolTip(QStringLiteral("默认仅显示当前 IED 经唯一解析引用使用的模板；工程范围显示全部。"));
     browseRow->addWidget(m_allTemplates);
     browseRow->addStretch();
-    outer->addLayout(browseRow);
+    outer->addWidget(m_advancedScope);
     connect(m_browseScope, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] {
         if (!m_snapshot || m_restoring)
             return;
         const auto ied = m_browseScope->currentData().toInt();
-        SetIedScope(ied);
         Select(ied == NoNode ? 0 : ied, true);
     });
     connect(m_allTemplates, &QCheckBox::toggled, this, [this] {
@@ -702,7 +705,31 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     m_tree->setAccessibleName(QStringLiteral("SCL 对象树"));
     m_treeModel = new SclTreeModel(m_tree);
     m_tree->setModel(m_treeModel);
-    auto* tablePane = new QWidget(this);
+    m_tableModes = new QStackedWidget(this);
+    m_taskBrowser = new SclTaskBrowser(m_tableModes);
+    auto* tablePane = new QWidget(m_tableModes);
+    m_tableModes->addWidget(tablePane);
+    m_tableModes->addWidget(m_taskBrowser->View());
+    m_taskSwitch = new QPushButton(QStringLiteral("任务视图"), this);
+    m_taskSwitch->setObjectName("SclTaskViewSwitch");
+    navigation->addWidget(m_taskSwitch);
+    connect(m_taskSwitch, &QPushButton::clicked, this, [this] {
+        ShowTaskView(m_tableModes->currentIndex() == 0, true);
+    });
+    connect(m_taskBrowser->View(), &SclTaskPages::ExportIssues, this, &SclWorkspace::SaveIssues);
+    connect(m_taskBrowser, &SclTaskBrowser::ScopeChanged, this, [this](NodeId ied) {
+        if (!m_snapshot)
+            return;
+        Select(ied == NoNode ? 0 : ied, true);
+    });
+    connect(m_taskBrowser, &SclTaskBrowser::OpenEvidence, this, [this](NodeId id, int finding) {
+        if (!m_snapshot)
+            return;
+        RememberView();
+        Select(id, false, finding, true);
+        m_inspectorDock->toggleView(true);
+        RememberView();
+    });
     auto* tableLayout = new QVBoxLayout(tablePane);
     tableLayout->setContentsMargins(0, 0, 0, 0);
     m_tables = new QTabWidget(tablePane);
@@ -725,7 +752,7 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
         result->setWidget(widget);
         return result;
     };
-    m_tableDock = dock(QStringLiteral("概览与数据"), "SclTableDock", tablePane);
+    m_tableDock = dock(QStringLiteral("概览与数据"), "SclTableDock", m_tableModes);
     m_tableDock->setFeature(ads::CDockWidget::DockWidgetClosable, false);
     auto* tableArea = m_docks->addDockWidget(ads::CenterDockWidgetArea, m_tableDock);
     m_inspectorDock = dock(QStringLiteral("属性与依据"), "SclInspectorDock", m_inspector);
@@ -735,7 +762,7 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     m_docks->addDockWidget(ads::LeftDockWidgetArea, m_treeDock);
     m_docks->setSplitterSizes(m_tableDock->dockAreaWidget(), {360, 230});
     m_docks->setSplitterSizes(m_treeDock->dockAreaWidget(), {250, 900});
-    m_defaultLayout = m_docks->saveState(1);
+    m_defaultLayout = m_docks->saveState(2);
     auto* details = new QToolButton(this);
     details->setObjectName("SclToggleDetails");
     details->setCheckable(true);
@@ -1007,9 +1034,10 @@ SclWorkspace::~SclWorkspace()
 {
     QSettings settings(QSettings::defaultFormat(), QSettings::UserScope,
         QStringLiteral("IEC61850Simulator"), QStringLiteral("IEC61850Simulator"));
-    const auto state = m_docks->saveState(1);
+    const auto state = m_docks->saveState(2);
     settings.setValue("SclWorkspace/Layout", state);
     settings.setValue("SclWorkspace/LayoutSha256", QCryptographicHash::hash(state, QCryptographicHash::Sha256));
+    settings.setValue("SclWorkspace/TaskView", m_preferTaskView);
     settings.sync();
     if (settings.status() != QSettings::NoError)
         qWarning("Cannot save SCL workspace layout");
@@ -1031,7 +1059,7 @@ void SclWorkspace::showEvent(QShowEvent* event)
 
 void SclWorkspace::ResetWorkspaceLayout()
 {
-    m_docks->restoreState(m_defaultLayout, 1);
+    m_docks->restoreState(m_defaultLayout, 2);
     m_treeDock->toggleView(true);
     m_tableDock->toggleView(true);
     m_inspectorDock->toggleView(true);
@@ -1041,12 +1069,13 @@ void SclWorkspace::RestoreWorkspaceLayout()
 {
     QSettings settings(QSettings::defaultFormat(), QSettings::UserScope,
         QStringLiteral("IEC61850Simulator"), QStringLiteral("IEC61850Simulator"));
+    m_preferTaskView = settings.value("SclWorkspace/TaskView", true).toBool();
     const auto state = settings.value("SclWorkspace/Layout").toByteArray();
     if (state.isEmpty())
         return;
     if (settings.value("SclWorkspace/LayoutSha256").toByteArray()
             != QCryptographicHash::hash(state, QCryptographicHash::Sha256)
-        || !m_docks->restoreState(state, 1) || !m_treeDock->dockAreaWidget()
+        || !m_docks->restoreState(state, 2) || !m_treeDock->dockAreaWidget()
         || !m_tableDock->dockAreaWidget() || m_treeDock->isClosed() || m_tableDock->isClosed())
         ResetWorkspaceLayout();
 }
@@ -1080,6 +1109,8 @@ bool SclWorkspace::UpdateSession(Snapshot snapshot, const Scl::Result& failure)
     UpdateHistoryButtons();
     ResetSearch(true);
     m_snapshot = std::move(snapshot);
+    m_taskBrowser->SetSnapshot(m_snapshot);
+    ShowTaskView(m_snapshot && m_preferTaskView);
     {
         const QSignalBlocker guard(m_browseScope);
         m_browseScope->clear();
@@ -1170,6 +1201,9 @@ void SclWorkspace::Select(NodeId id, bool route, int finding, bool openSource)
         return;
     const bool changed = id != m_selected || finding != m_finding;
     const bool refreshDetails = changed || m_showingFailure;
+    const bool newHistory = changed || (openSource && m_inspector->currentIndex() != 2);
+    if (newHistory)
+        RememberView();
     const auto* previousTable = m_tables->currentWidget();
     const auto previousScope = m_dataSet;
     const bool restoring = m_restoring;
@@ -1227,7 +1261,7 @@ void SclWorkspace::Select(NodeId id, bool route, int finding, bool openSource)
     if (restoring)
         return;
     UpdateTopologyControls();
-    if (changed)
+    if (newHistory)
     {
         m_history.resize(size_t(m_historyIndex + 1));
         m_history.push_back({});
@@ -1284,6 +1318,7 @@ void SclWorkspace::SetIedScope(NodeId ied)
     if (m_searchMode->currentIndex() == 1)
         ResetSearch();
     m_ied = ied;
+    m_taskBrowser->SetScope(ied);
     m_tabNodes.clear();
     m_tabFinding = -1;
     SetMemberScope(NoNode);
@@ -1351,7 +1386,26 @@ void SclWorkspace::UpdateTabVisibility()
 void SclWorkspace::RememberView()
 {
     if (!m_restoring && m_historyIndex >= 0)
-        m_history[m_historyIndex] = {m_selected, m_dataSet, m_tables->currentIndex(), m_inspector->currentIndex(), m_finding, m_ied};
+        m_history[m_historyIndex] = {m_selected, m_dataSet, m_tables->currentIndex(), m_inspector->currentIndex(),
+            m_finding, m_ied, m_tableModes->currentIndex() == 1, m_taskBrowser->CurrentLocation(),
+            !m_inspectorDock->isClosed()};
+}
+
+void SclWorkspace::ShowTaskView(bool show, bool remember)
+{
+    if (remember)
+        m_preferTaskView = show;
+    if (show != (m_tableModes->currentIndex() == 1))
+    {
+        if (show)
+            m_advancedInspectorVisible = !m_inspectorDock->isClosed();
+        m_tableModes->setCurrentIndex(show ? 1 : 0);
+        m_inspectorDock->toggleView(!show && m_advancedInspectorVisible);
+    }
+    m_advancedScope->setVisible(!show);
+    m_taskSwitch->setText(show ? QStringLiteral("高级视图") : QStringLiteral("任务视图"));
+    if (remember)
+        RememberView();
 }
 
 void SclWorkspace::UpdateHistoryButtons()
@@ -1377,6 +1431,9 @@ void SclWorkspace::Navigate(int direction)
         m_tables->setCurrentIndex(location.table);
         UpdateTabVisibility();
         m_inspector->setCurrentIndex(location.inspector);
+        ShowTaskView(location.taskView);
+        m_inspectorDock->toggleView(location.inspectorVisible);
+        m_taskBrowser->RestoreLocation(location.task);
         if (m_tables->currentWidget() == m_results)
             m_results->selectionModel()->clear();
     }
@@ -1435,6 +1492,7 @@ void SclWorkspace::UpdateOverview()
 
 void SclWorkspace::UpdateDetails()
 {
+    const SclTiming detailsTiming("UpdateDetails");
     const auto id = m_selected;
     const auto& snapshot = *m_snapshot;
     const auto& analysis = snapshot.analysis;
@@ -1515,8 +1573,14 @@ void SclWorkspace::UpdateDetails()
         html += QStringLiteral("<p>属性预览已截断</p>");
     if (!node.text.isEmpty())
         html += QStringLiteral("<h4>原始文本</h4><p>%1</p>").arg(node.text.left(2000).toHtmlEscaped());
-    m_properties->setHtml(html);
-    static_cast<SclTableModel*>(m_links->model())->Reset(m_snapshot, id);
+    {
+        const SclTiming timing("setHtml");
+        m_properties->setHtml(html);
+    }
+    {
+        const SclTiming timing("Links Reset");
+        static_cast<SclTableModel*>(m_links->model())->Reset(m_snapshot, id);
+    }
     static_cast<SclTableModel*>(m_candidates->model())->Reset(m_snapshot);
     m_candidates->hide();
     if (m_links->model()->rowCount())

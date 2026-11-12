@@ -1,8 +1,11 @@
 #include "SclSearchSession.hpp"
+#include "SclTiming.hpp"
 
 #include <QMutex>
 #include <QMutexLocker>
+#include <QWaitCondition>
 #include <QtConcurrentRun>
+#include <deque>
 #include <exception>
 #include <utility>
 
@@ -10,31 +13,29 @@ namespace iec61850sim
 {
 struct SclSearchSession::Worker
 {
+    static constexpr size_t QueueCapacity = 16384;
+    static constexpr size_t DeliveryLimit = 4096;
     Scl::TaskControl task;
     QMutex mutex;
-    SclHitBatch hits;
+    QWaitCondition spaceAvailable;
+    std::deque<SclHit> hits;
+    bool finished = false; // Owning event-loop thread.
 };
 
 SclSearchSession::SclSearchSession(QObject* parent) : QObject(parent)
 {
-    m_timer.setInterval(35);
+    m_timer.setInterval(10);
     connect(&m_timer, &QTimer::timeout, this, &SclSearchSession::Drain);
     connect(&m_watcher, &QFutureWatcher<QString>::finished, this, [this] {
-        m_timer.stop();
         const auto worker = m_worker;
-        if (!worker->task.cancelled.load(std::memory_order_relaxed))
+        worker->finished = true;
+        if (worker->task.cancelled.load(std::memory_order_relaxed))
         {
-            Drain();
-            if (!worker->task.cancelled.load(std::memory_order_relaxed))
-            {
-                const auto error = m_watcher.result();
-                m_worker.reset();
-                emit Finished(error);
-                return;
-            }
+            m_worker.reset();
+            Launch();
+            return;
         }
-        m_worker.reset();
-        Launch();
+        Drain();
     });
 }
 
@@ -47,8 +48,16 @@ void SclSearchSession::Cancel()
 {
     m_pending.reset();
     m_timer.stop();
-    if (m_worker)
-        m_worker->task.cancelled.store(true, std::memory_order_relaxed);
+    if (const auto worker = m_worker)
+    {
+        {
+            QMutexLocker guard(&worker->mutex);
+            worker->task.cancelled.store(true, std::memory_order_relaxed);
+            worker->spaceAvailable.wakeAll();
+        }
+        if (worker->finished)
+            m_worker.reset();
+    }
 }
 
 void SclSearchSession::Start(std::shared_ptr<const SclSnapshot> snapshot, SclQuery query)
@@ -70,8 +79,18 @@ void SclSearchSession::Launch()
         try
         {
             SearchScl(*request.snapshot, request.query, worker->task, [&](SclHitBatch batch) {
-                QMutexLocker guard(&worker->mutex);
-                worker->hits.insert(worker->hits.end(), batch.begin(), batch.end());
+                auto next = batch.begin();
+                while (next != batch.end())
+                {
+                    QMutexLocker guard(&worker->mutex);
+                    while (worker->hits.size() == Worker::QueueCapacity
+                        && !worker->task.cancelled.load(std::memory_order_relaxed))
+                        worker->spaceAvailable.wait(&worker->mutex);
+                    Scl::checkpoint(&worker->task);
+                    const auto count = qMin(Worker::QueueCapacity - worker->hits.size(), size_t(batch.end() - next));
+                    worker->hits.insert(worker->hits.end(), next, next + count);
+                    next += count;
+                }
             });
         }
         catch (const Scl::TaskCancelled&)
@@ -87,14 +106,35 @@ void SclSearchSession::Launch()
 
 void SclSearchSession::Drain()
 {
-    if (!m_worker || m_worker->task.cancelled.load(std::memory_order_relaxed))
+    const auto worker = m_worker;
+    if (!worker || worker->task.cancelled.load(std::memory_order_relaxed))
         return;
     SclHitBatch hits;
+    bool deliveredAll = false;
     {
-        QMutexLocker guard(&m_worker->mutex);
-        hits.swap(m_worker->hits);
+        QMutexLocker guard(&worker->mutex);
+        const auto count = qMin(worker->hits.size(), Worker::DeliveryLimit);
+        const auto end = worker->hits.begin() + count;
+        hits.assign(worker->hits.begin(), end);
+        worker->hits.erase(worker->hits.begin(), end);
+        deliveredAll = worker->finished && worker->hits.empty();
+        worker->spaceAvailable.wakeOne();
     }
     if (!hits.empty())
-        emit BatchReady(hits);
+    {
+        {
+            const SclTiming timing("Search Drain delivery");
+            emit BatchReady(hits);
+        }
+        if (qEnvironmentVariableIntValue("IEC61850_SCL_TIMING") == 1)
+            qInfo() << "SCL search batch rows" << hits.size();
+    }
+    if (deliveredAll && m_worker == worker && !worker->task.cancelled.load(std::memory_order_relaxed))
+    {
+        m_timer.stop();
+        const auto error = m_watcher.result();
+        m_worker.reset();
+        emit Finished(error);
+    }
 }
 } // namespace iec61850sim

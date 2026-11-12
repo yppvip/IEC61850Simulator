@@ -2,6 +2,7 @@
 
 #include "SclIssueExport.hpp"
 #include "SclSearchSession.hpp"
+#include <deque>
 #include <QAbstractTableModel>
 #include <QCheckBox>
 #include <QComboBox>
@@ -145,7 +146,7 @@ private:
 
     Snapshot m_snapshot;
     QString m_needle;
-    SclHitBatch m_hits;
+    std::deque<SclHit> m_hits;
     int m_visible = 0;
 };
 
@@ -210,6 +211,7 @@ void SclWorkspace::CreateSearchBar(QVBoxLayout* layout)
 
     m_search = new SclSearchSession(this);
     m_searchDelay = new QTimer(this);
+    m_searchDelay->setObjectName("SclSearchDelay");
     m_searchDelay->setSingleShot(true);
     m_searchDelay->setInterval(200);
     connect(m_searchDelay, &QTimer::timeout, this, &SclWorkspace::BeginSearch);
@@ -366,6 +368,7 @@ void SclWorkspace::BeginSearch()
     }
     if (query.scope == SearchScope::All)
     {
+        ShowTaskView(false);
         m_resultsModel->Reset(m_snapshot, query.text);
         m_tables->setCurrentWidget(m_results);
     }

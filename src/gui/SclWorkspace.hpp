@@ -2,6 +2,7 @@
 
 #include "SclAnalysisService.hpp"
 #include "SclSearch.hpp"
+#include "SclTaskBrowser.hpp"
 #include <QWidget>
 #include <optional>
 
@@ -16,6 +17,7 @@ class QTextBrowser;
 class QToolButton;
 class QPushButton;
 class QTabWidget;
+class QStackedWidget;
 class QTableView;
 class QTreeView;
 namespace ads { class CDockManager; class CDockWidget; }
@@ -49,6 +51,9 @@ private:
         int inspector;
         int finding;
         Scl::NodeId ied;
+        bool taskView = false;
+        SclTaskBrowser::Location task;
+        bool inspectorVisible = true;
     };
     void Select(Scl::NodeId id, bool route = false, int finding = -1, bool openSource = false);
     void SelectFinding(int finding, bool openSource, bool route = false);
@@ -77,6 +82,7 @@ private:
     void UpdateSearchStatus();
     void ApplyTableFilter(QTableView* table, std::optional<std::vector<int>> rows);
     void SaveIssues();
+    void ShowTaskView(bool show, bool remember = false);
     void CreateTopologyControls(QVBoxLayout* layout);
     void AddTopologyAction(QAbstractItemView* view);
     void UpdateTopologyControls();
@@ -91,6 +97,7 @@ private:
     Scl::NodeId m_dataSet = Scl::NoNode;
     Scl::NodeId m_ied = Scl::NoNode;
     QComboBox* m_browseScope;
+    QWidget* m_advancedScope;
     QCheckBox* m_allTemplates;
     QHash<int, Scl::NodeId> m_tabNodes;
     int m_tabFinding = -1;
@@ -105,6 +112,11 @@ private:
     SclTreeModel* m_treeModel;
     QTreeView* m_tree;
     QTabWidget* m_tables;
+    QStackedWidget* m_tableModes;
+    SclTaskBrowser* m_taskBrowser;
+    QPushButton* m_taskSwitch;
+    bool m_preferTaskView = true;
+    bool m_advancedInspectorVisible = true;
     QTabWidget* m_inspector;
     QLabel* m_summary;
     QLabel* m_scope;
