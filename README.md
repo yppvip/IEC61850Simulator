@@ -40,6 +40,8 @@ SCL 工作台优化见 [Task2](docs/Tasks/Task2.md)。树表双向定位和历�
 
 ### IED 信号与通信查阅（Task4）
 
+后续表格与详情优化见 [Task5](docs/Tasks/Task5.md)：规划双击复制完整单元格、非省略换行、共享信号/成员描述来源和统一选中对象详情，并评估图投影与 QtNodes 只读适配。本轮只完成方案，运行代码与依赖未变更。
+
 新增「收发关系」：选 IED 后按“发送到/接收自 → 对端装置 → 发布流”展开，直接查 APPID、MAC、VLAN 与成员到 `intAddr` 的映射。成员表、可点击路径、详情和内嵌关系图可相互配合；图支持平移、缩放、切换成员及双击原文。缺省源控制块时展示成员匹配候选，未见接收方时仍保留完整发送成员。设计与本地验收见 [Task4 第 12 节](docs/Tasks/Task4.md) 和 [T4.6](docs/Tasks/Task4T4.6.md)。本轮候选程序为 `build/windows-relations-debug/bin/IEC61850Simulator.exe`。
 
 打开 SCL 后，任务视图提供概览、信号查阅、GOOSE、SV 和文件检查。选 IED 后可筛选本机对象或查阅外部输入。选中一行可查看分类证据、数据集用法、接收声明和原文。顶部保留全工程搜索，可用「高级视图」进入原有技术表格与引用拓扑。完整 XSD 由 Task1 P7 独立交付。阶段记录见 [Task4](docs/Tasks/Task4.md)。
