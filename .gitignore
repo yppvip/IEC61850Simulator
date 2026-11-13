@@ -42,6 +42,7 @@ venv/
 .pytest_cache/
 
 # Editors and operating systems
+.finesse/
 .vscode/*.log
 .idea/
 .DS_Store

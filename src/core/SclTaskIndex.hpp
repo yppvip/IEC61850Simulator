@@ -46,6 +46,15 @@ struct SclTaskIndex
         Scl::NodeId matchedStream = Scl::NoNode;
         bool inferred = false;
         bool ambiguousControl = false;
+        std::vector<Scl::NodeId> publisherCandidates;
+    };
+    struct MemberLink
+    {
+        Scl::NodeId control;
+        int memberReference;
+        int input;
+        bool bound = false; // Only existing control + member evidence establishes a binding.
+        bool aggregate = false; // DO-level containment, rather than identical DA paths.
     };
 
     Scl::SignalCatalog catalog;
@@ -55,6 +64,9 @@ struct SclTaskIndex
     std::vector<Stream> goose;
     std::vector<Stream> sv;
     std::vector<Input> inputs;
+    std::vector<MemberLink> memberLinks;
+    QHash<Scl::NodeId, std::vector<int>> linksByControl;
+    QHash<Scl::NodeId, std::vector<int>> linksByInput;
     std::map<std::pair<Scl::NodeId, QString>, std::vector<int>> inputsBySignal;
     bool relationsLimited = false;
 

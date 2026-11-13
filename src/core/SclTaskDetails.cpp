@@ -1,4 +1,5 @@
 #include "SclAnalysisService.hpp"
+#include "SclConnections.hpp"
 #include <algorithm>
 #include <QSet>
 
@@ -314,6 +315,16 @@ SclTaskDetail DescribeSclTaskRow(const SclSnapshot& snapshot, SclTaskRow row, Sc
         field(QStringLiteral("声明的源对象"), cells[2]);
         evidence(QStringLiteral("ExtRef 声明"), input.node);
         evidence(QStringLiteral("已匹配的发布控制块"), input.matchedStream);
+        const auto links = index.linksByInput.value(input.node);
+        lines << QStringLiteral("成员匹配证据 %1 条；完整映射见「收发关系」。").arg(links.size());
+        for (size_t i = 0; i < input.publisherCandidates.size(); ++i)
+        {
+            Scl::checkpoint(task);
+            if (i >= displayLimit) { lines << QStringLiteral("其余候选见收发关系页"); break; }
+            const auto control = input.publisherCandidates[i];
+            lines << SclTaskPath(doc, control) << SclStreamAddresses(snapshot, control);
+            evidence(QStringLiteral("候选发布配置"), control);
+        }
         break;
     }
     case SclTaskKind::Finding:

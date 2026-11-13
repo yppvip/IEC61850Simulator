@@ -2,6 +2,7 @@
 
 #include "SclAnalysisService.hpp"
 #include "SclTaskPages.hpp"
+#include "SclConnectionView.hpp"
 #include <QTimer>
 #include <optional>
 
@@ -23,6 +24,7 @@ public:
         bool inputs = false;
         std::optional<SclTaskRow> row;
         int scroll = 0;
+        SclConnectionView::Location connection;
     };
 
     explicit SclTaskBrowser(QWidget* parent);

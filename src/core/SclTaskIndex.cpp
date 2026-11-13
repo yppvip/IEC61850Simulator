@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <tuple>
+#include <QSet>
 
 namespace iec61850sim
 {
@@ -157,12 +158,89 @@ SclTaskIndex SclTaskIndex::Build(const Scl::ReferenceAnalysis& analysis, const S
     for (int i = 0; i < int(index.inputs.size()); ++i)
     {
         checkpoint(task);
-        const auto& input = index.inputs[i];
+        auto& input = index.inputs[i];
         if (input.dataReference < 0)
             continue;
         const auto& ref = analysis.references[input.dataReference];
         if (resolved(ref) != NoNode && ref.logicalNode != NoNode)
             index.inputsBySignal[{ref.logicalNode, attribute(input.node, "doName")}].push_back(i);
+    }
+    // Missing source-control fields are common in earlier engineering exports.
+    // Keep member-based candidates separate from confirmed stream bindings.
+    int comparisons = 0;
+    for (int i = 0; i < int(index.inputs.size()); ++i)
+    {
+        checkpoint(task);
+        auto& input = index.inputs[i];
+        if (input.dataReference < 0)
+            continue;
+        const auto& data = analysis.references[input.dataReference];
+        if (resolved(data) == NoNode || data.logicalNode == NoNode)
+            continue;
+        const bool hasControl = !attribute(input.node, "srcCBName").isEmpty()
+            || !attribute(input.node, "srcLDInst").isEmpty() || !attribute(input.node, "srcLNClass").isEmpty()
+            || !attribute(input.node, "srcPrefix").isEmpty() || !attribute(input.node, "srcLNInst").isEmpty();
+        const auto uses = index.usages.find({data.logicalNode, attribute(input.node, "doName")});
+        if (uses == index.usages.end() || (hasControl && input.matchedStream == NoNode))
+            continue;
+        const auto da = attribute(input.node, "daName");
+        const auto service = attribute(input.node, "serviceType");
+        QSet<NodeId> publishersSeen;
+        for (const auto& use : uses->second)
+        {
+            checkpoint(task);
+            if (++comparisons > relationLimit)
+            {
+                index.relationsLimited = true;
+                break;
+            }
+            const auto& member = analysis.references[use.reference];
+            const auto memberDa = attribute(member.source, "daName");
+            // Unknown array selection never establishes a virtual-terminal mapping.
+            if (member.arrayIndex >= 0 || !attribute(member.source, "ix").isNull()
+                || !attribute(input.node, "ix").isNull())
+                continue;
+            const bool aggregate = da != memberDa && (da.isEmpty() || memberDa.isEmpty());
+            if (da != memberDa && !aggregate)
+                continue;
+            // The resolver records the actual DA functional constraint in the MMS
+            // mapping. A DO-level FCDA contains only that FC's attributes.
+            const auto dataFc = data.mmsItem.section('$', 1, 1);
+            if (!da.isEmpty() && ((!dataFc.isEmpty() && dataFc != attribute(member.source, "fc"))
+                || (memberDa.isEmpty() && dataFc.isEmpty())))
+                continue;
+            const auto declaredFc = attribute(input.node, "fc");
+            if (!declaredFc.isEmpty() && declaredFc != attribute(member.source, "fc"))
+                continue;
+            const auto publishers = index.controlsByDataSet.constFind(use.dataSet);
+            if (publishers == index.controlsByDataSet.cend())
+                continue;
+            for (const auto control : *publishers)
+            {
+                checkpoint(task);
+                if (++comparisons > relationLimit || index.memberLinks.size() >= relationLimit)
+                {
+                    index.relationsLimited = true;
+                    break;
+                }
+                const auto& kind = doc.nodes[control].name;
+                if (kind != "GSEControl" && kind != "SampledValueControl")
+                    continue;
+                if ((!service.isEmpty() && service != (kind == "GSEControl" ? "GOOSE" : "SMV"))
+                    || (hasControl && control != input.matchedStream))
+                    continue;
+                const int link = int(index.memberLinks.size());
+                index.memberLinks.push_back({control, use.reference, i,
+                    control == input.matchedStream && !aggregate, aggregate});
+                index.linksByControl[control].push_back(link);
+                index.linksByInput[input.node].push_back(link);
+                if (!publishersSeen.contains(control))
+                {
+                    publishersSeen.insert(control);
+                    input.publisherCandidates.push_back(control);
+                }
+            }
+        }
     }
     for (auto id : browse.categories[size_t(SclCategory::Communication)])
     {

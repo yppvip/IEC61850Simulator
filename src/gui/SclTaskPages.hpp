@@ -14,11 +14,12 @@ class QTextBrowser;
 
 namespace iec61850sim
 {
+class SclConnectionView;
 class SclTaskPages final : public QWidget
 {
     Q_OBJECT
 public:
-    enum Page { Overview, Signals, Goose, SampledValues, Checks, PageCount };
+    enum Page { Overview, Signals, Goose, SampledValues, Checks, Connections, PageCount };
     explicit SclTaskPages(QWidget* parent = nullptr);
     void SetScopeOptions(const QList<QPair<int, QString>>& options, int current);
     void SetScope(int id);
@@ -33,6 +34,7 @@ public:
     void SetInputDirection(bool inputs);
     void SetCoverage(const QString& summary, const QString& rules);
     QTableView* Table() const { return m_table; }
+    SclConnectionView* ConnectionsView() const { return m_connections; }
 
 signals:
     void ScopeChanged(int id);
@@ -61,5 +63,6 @@ private:
     QPushButton* m_coverageButton;
     QPushButton* m_exportIssues;
     QString m_rules;
+    SclConnectionView* m_connections;
 };
 }

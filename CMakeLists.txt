@@ -43,6 +43,7 @@ target_include_directories(SclAnalysis PUBLIC src/iec61850/scl)
 target_link_libraries(SclAnalysis PUBLIC Qt${QT_VERSION_MAJOR}::Core)
 
 add_library(SclApplication STATIC src/core/SclAnalysisService.cpp src/core/SclAnalysisService.hpp
+    src/core/SclConnections.cpp src/core/SclConnections.hpp
     src/core/SclTaskIndex.cpp src/core/SclTaskIndex.hpp src/core/SclTaskQuery.cpp src/core/SclTaskDetails.cpp
     src/core/SclBrowseIndex.cpp src/core/SclBrowseIndex.hpp
     src/core/SclSearch.cpp src/core/SclSearch.hpp
@@ -79,6 +80,7 @@ add_executable(${AppTarget}
     src/gui/SclWorkspace.hpp
     src/gui/SclTaskPages.cpp src/gui/SclTaskPages.hpp
     src/gui/SclTaskBrowser.cpp src/gui/SclTaskBrowser.hpp
+    src/gui/SclConnectionView.cpp src/gui/SclConnectionView.hpp
     src/gui/SclSourcePreview.cpp
     src/gui/SclSourcePreview.hpp
     src/gui/SclWorkspaceTopology.cpp
@@ -201,14 +203,17 @@ if(BUILD_TESTING)
 
     if(TARGET Qt${QT_VERSION_MAJOR}::QOffscreenIntegrationPlugin)
         add_executable(SclTaskPagesTest tests/integration/SclTaskPagesTest.cpp
+            src/gui/SclConnectionView.cpp src/gui/SclConnectionView.hpp
             src/gui/SclTaskPages.cpp src/gui/SclTaskPages.hpp)
         target_include_directories(SclTaskPagesTest PRIVATE src/gui)
-        target_link_libraries(SclTaskPagesTest PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Test)
+        target_link_libraries(SclTaskPagesTest PRIVATE SclApplication Qt${QT_VERSION_MAJOR}::Concurrent
+            Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Test)
         add_test(NAME SclTaskPagesTest COMMAND SclTaskPagesTest)
         set_tests_properties(SclTaskPagesTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
         add_executable(MainWindowBaselineTest
             res/Application.qrc
             tests/integration/MainWindowBaselineTest.cpp
+            src/gui/SclConnectionView.cpp src/gui/SclConnectionView.hpp
             src/gui/SclTaskPages.cpp src/gui/SclTaskPages.hpp
             src/gui/SclTaskBrowser.cpp src/gui/SclTaskBrowser.hpp
             src/gui/MainWindow.cpp src/gui/MainWindow.hpp src/gui/SclWorkspace.cpp src/gui/SclWorkspace.hpp

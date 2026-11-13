@@ -24,12 +24,13 @@ QStringList Headers(SclTaskKind kind)
     case SclTaskKind::GooseInput:
     case SclTaskKind::SvInput:
         return {QStringLiteral("内部地址"), QStringLiteral("接收证据"), QStringLiteral("声明来源"),
-                QStringLiteral("serviceType"), QStringLiteral("接收装置")};
+                QStringLiteral("serviceType"), QStringLiteral("接收装置"), QStringLiteral("APPID / 通信端点（候选单列）")};
     case SclTaskKind::Goose:
     case SclTaskKind::Sv:
         return {QStringLiteral("控制块"), QStringLiteral("发送装置 / 路径"),
                 kind == SclTaskKind::Goose ? QStringLiteral("appID") : QStringLiteral("smvID"),
-                QStringLiteral("数据集"), QStringLiteral("成员数"), QStringLiteral("端点数"), QStringLiteral("接收声明")};
+                QStringLiteral("数据集"), QStringLiteral("成员数"), QStringLiteral("端点数"), QStringLiteral("明确接收声明"),
+                QStringLiteral("APPID / MAC / VLAN")};
     case SclTaskKind::Finding:
         return {QStringLiteral("规则"), QStringLiteral("发现"), QStringLiteral("对象"), QStringLiteral("原文行")};
     }
@@ -114,6 +115,10 @@ SclTaskBrowser::SclTaskBrowser(QWidget* parent)
         Schedule();
     });
     connect(m_view, &SclTaskPages::Selected, this, &SclTaskBrowser::SelectRow);
+    connect(m_view->ConnectionsView(), &SclConnectionView::ScopeChanged, this, &SclTaskBrowser::ScopeChanged);
+    connect(m_view->ConnectionsView(), &SclConnectionView::OpenEvidence, this, [this](int node) {
+        emit OpenEvidence(node, -1);
+    });
     connect(m_view, &SclTaskPages::OpenSource, this, [this] {
         const int item = m_view->EvidenceIndex();
         if (item < 0 || item >= int(m_detail.evidence.size()))
@@ -187,6 +192,7 @@ void SclTaskBrowser::SetSnapshot(std::shared_ptr<const SclSnapshot> snapshot)
     m_view->SetFilterText({});
     m_view->SetInputDirection(false);
     m_view->SetPage(SclTaskPages::Overview);
+    m_view->ConnectionsView()->SetContext(m_snapshot, m_ied);
     UpdateOverview();
     Schedule();
 }
@@ -197,6 +203,7 @@ void SclTaskBrowser::SetScope(Scl::NodeId ied)
         return;
     m_ied = ied;
     m_view->SetScope(ied);
+    m_view->ConnectionsView()->SetContext(m_snapshot, m_ied);
     UpdateOverview();
     Schedule();
 }
@@ -204,7 +211,7 @@ void SclTaskBrowser::SetScope(Scl::NodeId ied)
 SclTaskBrowser::Location SclTaskBrowser::CurrentLocation() const
 {
     return {m_page, m_filter, m_inputs, m_model->Row(m_view->Table()->currentIndex()),
-        m_view->Table()->verticalScrollBar()->value()};
+        m_view->Table()->verticalScrollBar()->value(), m_view->ConnectionsView()->CurrentLocation()};
 }
 
 void SclTaskBrowser::RestoreLocation(const Location& location)
@@ -216,6 +223,8 @@ void SclTaskBrowser::RestoreLocation(const Location& location)
     m_view->SetPage(location.page);
     Schedule();
     m_restore = location;
+    if (location.page == SclTaskPages::Connections)
+        m_view->ConnectionsView()->RestoreLocation(location.connection);
 }
 
 SclTaskKind SclTaskBrowser::Kind() const
@@ -237,7 +246,7 @@ void SclTaskBrowser::Schedule()
     m_model->Reset({}, Kind());
     m_view->SetEvidence({});
     m_view->SetDetail({}, false);
-    if (!m_snapshot || m_page == SclTaskPages::Overview)
+    if (!m_snapshot || m_page == SclTaskPages::Overview || m_page == SclTaskPages::Connections)
         return;
     m_view->SetStatus(QStringLiteral("正在准备当前范围…"));
     m_delay.start();

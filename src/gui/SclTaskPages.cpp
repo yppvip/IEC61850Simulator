@@ -1,4 +1,5 @@
 #include "SclTaskPages.hpp"
+#include "SclConnectionView.hpp"
 
 #include <QComboBox>
 #include <QCompleter>
@@ -9,6 +10,7 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QScrollArea>
 #include <QStackedWidget>
 #include <QStyle>
 #include <QTabBar>
@@ -51,6 +53,7 @@ SclTaskPages::SclTaskPages(QWidget* parent) : QWidget(parent)
     addPage(QStyle::SP_ArrowRight, QStringLiteral("GOOSE"));
     addPage(QStyle::SP_BrowserReload, QStringLiteral("SV"));
     addPage(QStyle::SP_FileDialogDetailedView, QStringLiteral("文件检查"));
+    addPage(QStyle::SP_ComputerIcon, QStringLiteral("收发关系"));
     layout->addWidget(m_pages);
 
     m_body = new QStackedWidget(this);
@@ -131,9 +134,25 @@ SclTaskPages::SclTaskPages(QWidget* parent) : QWidget(parent)
     sources->addWidget(m_source);
     resultLayout->addLayout(sources);
     m_body->addWidget(results);
+    m_connections = new SclConnectionView(m_body);
+    auto* relationScroll = new QScrollArea(m_body);
+    relationScroll->setWidgetResizable(true);
+    relationScroll->setFrameShape(QFrame::NoFrame);
+    relationScroll->setWidget(m_connections);
+    m_body->addWidget(relationScroll);
+    auto* relations = new QPushButton(style()->standardIcon(QStyle::SP_FileLinkIcon),
+        QStringLiteral("查看双向收发与成员映射 →"), this);
+    relations->setObjectName("SclOpenConnections");
+    navigation->addWidget(relations);
+    connect(relations, &QPushButton::clicked, this, [this] {
+        const int page = m_pages->currentIndex();
+        m_connections->SetService(page == Goose ? QStringLiteral("GOOSE")
+            : page == SampledValues ? QStringLiteral("SV") : QString{});
+        SetPage(Connections);
+    });
 
     connect(m_pages, &QTabBar::currentChanged, this, [this](int index) {
-        m_body->setCurrentIndex(index == Overview ? 0 : 1);
+        m_body->setCurrentIndex(index == Connections ? 2 : index == Overview ? 0 : 1);
         const bool communication = index == Goose || index == SampledValues;
         m_direction->setItemText(0, communication ? QStringLiteral("发送配置") : QStringLiteral("本机对象"));
         m_direction->setItemText(1, communication ? QStringLiteral("接收声明") : QStringLiteral("外部输入"));

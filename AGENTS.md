@@ -81,6 +81,9 @@
 
 ## Task4：IED 信号与通信查阅
 
+- T4.6 的双向虚端子查阅使用 `SclTaskIndex::MemberLink` 与 `SclConnections` 后台查询、`SclConnectionView` 的有界关系树/分页成员/Graphics View 局部图。成员候选不能写成明确 `matchedStream`；显式源控制块冲突不回退猜测，DO/DA 包含候选须保留 FC 和数组边界。查阅图不编辑工程、不表示在线收发结果。
+- 当前关系查询最多交付 512 个条目，成员页每次最多 200 行；资源受限需提示。查询/详情分别校验快照和独立请求身份，隐藏/切范围/关闭须取消旧请求；历史按同快照的控制块、接收 IED、输入身份恢复，不能用旧显示行号跨范围定位。新增页面最小尺寸不得破坏旧 ADS 收起详情和窄窗行为。
+
 - 按 [Task4](docs/Tasks/Task4.md) 的阶段门槛验证。任务视图和高级视图共用中央 Dock、快照和 IED 范围。任务筛选及详情交付校验快照和请求身份。工作台内部 ADS 布局使用版本 2。Task3 性能归因与 Task1 P7 完整 XSD 的验收边界保留。
 - 四遥是可追溯的业务分类建议，不能仅按数据集名称或 FC 强制归类；信号目录按 LN 实例及类型结构建立，不只统计 FCDA/DOI/DAI。对象、附属属性、成员出现次数分开计数；不将静态配置当成实时值或工程完整性证明。
 - GOOSE appID、SV smvID、数值 APPID、MMS Domain/Item、RCB 引用和原始 rptID 分列。ExtRef 缺少 serviceType 时保留证据状态，不能默认 GOOSE；仅对象匹配不能证明某个发布流的接收关系。

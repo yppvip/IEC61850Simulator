@@ -1,4 +1,6 @@
 #include "SclAnalysisService.hpp"
+#include "SclConnections.hpp"
+#include <QSet>
 
 namespace iec61850sim
 {
@@ -78,7 +80,8 @@ QStringList SclTaskCells(const SclSnapshot& snapshot, SclTaskRow row)
         return {attr(stream.control, "name"), SclTaskPath(doc, stream.control),
                 attr(stream.control, goose ? "appID" : "smvID"), attr(stream.control, "datSet"),
                 QString::number(snapshot.browse.dataSetMembers.value(stream.dataSet).count),
-                QString::number(stream.endpoints.size()), QString::number(stream.receivers.size())};
+                QString::number(stream.endpoints.size()), QString::number(stream.receivers.size()),
+                SclStreamAddresses(snapshot, stream.control)};
     }
     case SclTaskKind::Input:
     case SclTaskKind::GooseInput:
@@ -97,8 +100,13 @@ QStringList SclTaskCells(const SclSnapshot& snapshot, SclTaskRow row)
             state = QStringLiteral("工程外来源");
         else if (reference && reference->state == Scl::LinkState::Ambiguous)
             state = QStringLiteral("来源有歧义");
+        QStringList publishers;
+        for (size_t i = 0; i < input.publisherCandidates.size() && i < 8; ++i)
+            publishers << SclStreamAddresses(snapshot, input.publisherCandidates[i]);
+        if (input.matchedStream == NoNode && !input.publisherCandidates.empty())
+            state = QStringLiteral("%1 个成员匹配候选发布流 · 绑定未确认").arg(input.publisherCandidates.size());
         return {attr(input.node, "intAddr"), state, reference ? reference->declared : QString{},
-                attr(input.node, "serviceType"), SclTaskPath(doc, input.node)};
+                attr(input.node, "serviceType"), SclTaskPath(doc, input.node), publishers.join('\n')};
     }
     case SclTaskKind::Finding:
     {
@@ -171,10 +179,18 @@ std::vector<SclTaskRow> FilterSclTaskRows(const SclSnapshot& snapshot, SclTaskKi
             Scl::checkpoint(task);
             const auto& input = index.inputs[i];
             const auto declared = doc.attribute(input.node, QStringLiteral("serviceType"));
+            bool gooseCandidate = false, svCandidate = false;
+            for (const auto link : index.linksByInput.value(input.node))
+            {
+                Scl::checkpoint(task);
+                const auto& name = doc.nodes[index.memberLinks[link].control].name;
+                gooseCandidate |= name == "GSEControl";
+                svCandidate |= name == "SampledValueControl";
+            }
             if (kind == SclTaskKind::Input
-                || (kind == SclTaskKind::GooseInput && (declared == "GOOSE"
+                || (kind == SclTaskKind::GooseInput && (declared == "GOOSE" || gooseCandidate
                     || (input.matchedStream != NoNode && doc.nodes[input.matchedStream].name == "GSEControl")))
-                || (kind == SclTaskKind::SvInput && (declared == "SMV"
+                || (kind == SclTaskKind::SvInput && (declared == "SMV" || svCandidate
                     || (input.matchedStream != NoNode && doc.nodes[input.matchedStream].name == "SampledValueControl"))))
                 add(i, input.node);
         }

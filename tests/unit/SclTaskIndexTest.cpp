@@ -1,6 +1,7 @@
 #include "SclBrowseIndex.hpp"
 #include "SclAnalysisService.hpp"
 #include "SclTaskIndex.hpp"
+#include "SclConnections.hpp"
 
 #include <QtTest>
 #include <set>
@@ -12,6 +13,9 @@ private slots:
     void SignalsAndEvidence();
     void SourceControlEvidence();
     void ObjectBudget();
+    void MemberConnections();
+    void LocalConnections();
+    void MemberPagination();
 };
 
 void SclTaskIndexTest::SignalsAndEvidence()
@@ -107,8 +111,8 @@ void SclTaskIndexTest::SourceControlEvidence()
     QCOMPARE(index.inputs[1].matchedStream, index.goose.front().control);
     QVERIFY(index.inputs[1].inferred);
     QCOMPARE(index.inputs[2].matchedStream, NoNode);
-    QCOMPARE(FilterSclTaskRows(snapshot, SclTaskKind::GooseInput, NoNode, {}, nullptr).size(), 2);
-    QVERIFY(FilterSclTaskRows(snapshot, SclTaskKind::SvInput, NoNode, {}, nullptr).empty());
+    QCOMPARE(FilterSclTaskRows(snapshot, SclTaskKind::GooseInput, NoNode, {}, nullptr).size(), 3);
+    QCOMPARE(FilterSclTaskRows(snapshot, SclTaskKind::SvInput, NoNode, {}, nullptr).size(), 1);
     const auto goose = FilterSclTaskRows(snapshot, SclTaskKind::Goose, NoNode, QStringLiteral("0001"), nullptr);
     QCOMPARE(goose.size(), 1);
     const auto detail = DescribeSclTaskRow(snapshot, goose.front(), nullptr);
@@ -139,6 +143,137 @@ void SclTaskIndexTest::ObjectBudget()
     QVERIFY(catalog.limited);
     QCOMPARE(catalog.instances.size(), SignalCatalog::ObjectLimit);
     QCOMPARE(catalog.definitions.size(), 128);
+}
+
+void SclTaskIndexTest::MemberConnections()
+{
+    using namespace Scl;
+    using namespace iec61850sim;
+    QFile file(QStringLiteral(SCL_FIXTURE_DIR "/Minimal.scd"));
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    auto xml = file.readAll();
+    const QByteArray source = "iedName='IED_TEST' ldInst='LD0' lnClass='GGIO' lnInst='1' doName='Ind1'";
+    xml.replace("<DataTypeTemplates>", "<IED name='RECEIVER'><AccessPoint name='A'><Server><LDevice inst='L'>"
+        "<LN0 lnClass='LLN0' inst='' lnType='T_LLN0'><Inputs>"
+        "<ExtRef " + source + " daName='stVal' intAddr='Local.Input'/>"
+        "<ExtRef " + source + " serviceType='GOOSE' intAddr='Local.Aggregate'/>"
+        "<ExtRef " + source + " daName='stVal' serviceType='Report' intAddr='Local.Report'/>"
+        "<ExtRef " + source + " daName='stVal' srcLDInst='LD0' srcLNClass='LLN0' srcCBName='MISSING'/>"
+        "</Inputs></LN0></LDevice></Server></AccessPoint></IED><DataTypeTemplates>");
+    const auto parsed = Reader::readBytes(xml);
+    QVERIFY(parsed.document);
+    auto analysis = ReferenceResolver::analyze(parsed);
+    SclBrowseIndex browse(*parsed.document, nullptr);
+    browse.BuildScopes(analysis, nullptr);
+    auto index = SclTaskIndex::Build(analysis, browse, nullptr);
+    SclSnapshot snapshot{{}, std::move(analysis), std::move(browse), std::move(index)};
+    QCOMPARE(snapshot.tasks.inputs.size(), 4);
+    for (const auto& input : snapshot.tasks.inputs)
+        QCOMPARE(input.matchedStream, NoNode); // Candidates never become confirmed bindings.
+    const auto candidates = QuerySclConnections(snapshot, NoNode, {}, {}, nullptr);
+    QCOMPARE(candidates.rows.size(), 4); // two service candidates + two unresolved declarations
+    QCOMPARE(candidates.rows[0].candidates, 6); // duplicate FCDA occurrences remain separate
+    QVERIFY(candidates.rows[0].addresses.contains("0001"));
+    const auto detail = DescribeSclConnection(snapshot, candidates.rows[0], 0, true, nullptr);
+    QCOMPARE(detail.members.size(), 6);
+    QVERIFY(detail.members[0].candidate);
+    QVERIFY(detail.members[0].cells[5].contains(QStringLiteral("候选")));
+    NodeId sink = NoNode;
+    for (auto ied : snapshot.browse.ieds)
+        if (parsed.document->attribute(ied, QStringLiteral("name")) == "RECEIVER")
+            sink = ied;
+    const auto incoming = QuerySclConnections(snapshot, sink, QStringLiteral("SV"), "4001", nullptr);
+    QCOMPARE(incoming.rows.size(), 1);
+    QCOMPARE(incoming.rows.front().candidates, 3);
+    TaskControl cancelled;
+    cancelled.cancelled = true;
+    QVERIFY_EXCEPTION_THROWN(QuerySclConnections(snapshot, sink, {}, {}, &cancelled), TaskCancelled);
+    // Adding a second publisher preserves both candidates rather than picking the first.
+    xml.replace("<GSEControl name=\"gcb1\"", "<GSEControl name='other' datSet='dsEvents'/><GSEControl name=\"gcb1\"");
+    const auto ambiguous = Reader::readBytes(xml);
+    const auto refs = ReferenceResolver::analyze(ambiguous);
+    SclBrowseIndex ambiguousBrowse(*ambiguous.document, nullptr);
+    ambiguousBrowse.BuildScopes(refs, nullptr);
+    const auto ambiguousIndex = SclTaskIndex::Build(refs, ambiguousBrowse, nullptr);
+    QCOMPARE(ambiguousIndex.goose.size(), 2);
+    QVERIFY(ambiguousIndex.linksByInput.value(ambiguousIndex.inputs.front().node).size() > 6);
+}
+
+void SclTaskIndexTest::LocalConnections()
+{
+    using namespace Scl;
+    using namespace iec61850sim;
+    const auto path = qEnvironmentVariable("IEC61850_RELATION_SCL");
+    if (path.isEmpty())
+        QSKIP("Explicit local read-only acceptance requires IEC61850_RELATION_SCL");
+    const auto parsed = Reader::readFile(path);
+    QVERIFY(parsed.document);
+    auto analysis = ReferenceResolver::analyze(parsed);
+    SclBrowseIndex browse(*parsed.document, nullptr);
+    browse.BuildScopes(analysis, nullptr);
+    auto index = SclTaskIndex::Build(analysis, browse, nullptr);
+    SclSnapshot snapshot{path, std::move(analysis), std::move(browse), std::move(index)};
+    const auto rows = QuerySclConnections(snapshot, NoNode, {}, {}, nullptr);
+    int sv = 0, goose = 0, unreceived = 0;
+    for (const auto& row : rows.rows)
+    {
+        if (row.sourceName == "ML2201B" && row.targetName == "PL2201B" && row.service == "SV")
+        {
+            QCOMPARE(row.bound, 0);
+            QCOMPARE(row.candidates, 14);
+            QVERIFY(row.addresses.contains("400B"));
+            const auto detail = DescribeSclConnection(snapshot, row, 0, true, nullptr);
+            QCOMPARE(detail.total, 14);
+            QVERIFY(detail.members.front().cells[4].contains("SVLD1/"));
+            QCOMPARE(QuerySclConnections(snapshot, row.sender, row.service, row.targetName, nullptr).rows.size(), 1);
+            QCOMPARE(QuerySclConnections(snapshot, row.receiver, row.service, row.sourceName, nullptr).rows.size(), 1);
+            ++sv;
+        }
+        if (row.sourceName == "IL2201B" && row.targetName == "PL2201B" && row.service == "GOOSE")
+        {
+            QCOMPARE(row.candidates, 5);
+            QVERIFY(row.addresses.contains("0132"));
+            ++goose;
+        }
+        if (row.sourceName == "PL2201B" && row.service == "GOOSE" && row.receiver == NoNode)
+        {
+            QVERIFY(row.addresses.contains("0131"));
+            QCOMPARE(DescribeSclConnection(snapshot, row, 0, false, nullptr).total, 19);
+            ++unreceived;
+        }
+    }
+    QCOMPARE(sv, 1);
+    QCOMPARE(goose, 1);
+    QCOMPARE(unreceived, 1);
+    qInfo().noquote() << rows.statistics;
+}
+
+void SclTaskIndexTest::MemberPagination()
+{
+    using namespace Scl;
+    using namespace iec61850sim;
+    QFile file(QStringLiteral(SCL_FIXTURE_DIR "/Minimal.scd"));
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    auto xml = file.readAll();
+    QByteArray members;
+    for (int i = 0; i < 220; ++i)
+        members += "<FCDA ldInst='LD0' lnClass='GGIO' lnInst='1' doName='Ind1' daName='stVal' fc='ST'/>";
+    xml.replace("</DataSet>", members + "</DataSet>");
+    const auto parsed = Reader::readBytes(xml);
+    auto analysis = ReferenceResolver::analyze(parsed);
+    SclBrowseIndex browse(*parsed.document, nullptr);
+    browse.BuildScopes(analysis, nullptr);
+    auto index = SclTaskIndex::Build(analysis, browse, nullptr);
+    const SclSnapshot snapshot{{}, std::move(analysis), std::move(browse), std::move(index)};
+    const auto query = QuerySclConnections(snapshot, NoNode, QStringLiteral("GOOSE"), {}, nullptr);
+    QCOMPARE(query.rows.size(), 1);
+    const auto first = DescribeSclConnection(snapshot, query.rows[0], 0, false, nullptr);
+    QCOMPARE(first.total, 223);
+    QCOMPARE(first.members.size(), 200);
+    const auto second = DescribeSclConnection(snapshot, query.rows[0], 200, false, nullptr);
+    QCOMPARE(second.members.size(), 23);
+    QCOMPARE(second.members[0].cells[0], QStringLiteral("201"));
+    QVERIFY(DescribeSclConnection(snapshot, query.rows[0], 0, true, nullptr).members.empty());
 }
 
 QTEST_GUILESS_MAIN(SclTaskIndexTest)

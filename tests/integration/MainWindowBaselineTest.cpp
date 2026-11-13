@@ -4,6 +4,7 @@
 #include "SclSourcePreview.hpp"
 #include "SclTopology.hpp"
 #include "SclTaskPages.hpp"
+#include "SclConnectionView.hpp"
 
 #include <QAction>
 #include <QApplication>
@@ -38,6 +39,8 @@
 #include <QToolBar>
 #include <QToolButton>
 #include <QTreeView>
+#include <QTreeWidget>
+#include <QTableWidget>
 #include <QUrl>
 #include <QtTest>
 #include <DockManager.h>
@@ -360,7 +363,116 @@ private slots:
     void SclNativeTiming();
     void SclTaskViewFlow();
     void SclTaskLocal();
+    void SclConnectionsFlow();
 };
+
+void MainWindowBaselineTest::SclConnectionsFlow()
+{
+    using namespace iec61850sim;
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    IsolateSettings(temp.path());
+    QSettings settings(QSettings::IniFormat, QSettings::UserScope, "IEC61850Simulator", "IEC61850Simulator");
+    settings.setValue("SclWorkspace/TaskView", true);
+    auto path = qEnvironmentVariable("IEC61850_RELATION_SCL");
+    const bool local = !path.isEmpty();
+    if (!local)
+    {
+        QFile source(QStringLiteral(SCL_FIXTURE_DIR "/Minimal.scd"));
+        QVERIFY(source.open(QIODevice::ReadOnly));
+        auto xml = source.readAll();
+        xml.replace("<DataTypeTemplates>", "<IED name='RECEIVER'><AccessPoint name='A'><Server><LDevice inst='L'>"
+            "<LN0 lnClass='LLN0' inst='' lnType='T_LLN0'><Inputs>"
+            "<ExtRef iedName='IED_TEST' ldInst='LD0' lnClass='GGIO' lnInst='1' doName='Ind1'"
+            " daName='stVal' intAddr='Local.Input'/></Inputs></LN0></LDevice></Server></AccessPoint></IED><DataTypeTemplates>");
+        path = temp.filePath("Connections.scd");
+        QFile output(path);
+        QVERIFY(output.open(QIODevice::WriteOnly));
+        QCOMPARE(output.write(xml), xml.size());
+    }
+    MainWindow window;
+    window.resize(1480, 940);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    auto* service = window.findChild<SclAnalysisService*>();
+    auto* pages = window.findChild<SclTaskPages*>();
+    QVERIFY(service && pages);
+    service->Open(path);
+    QTRY_COMPARE_WITH_TIMEOUT(service->state(), SclAnalysisService::State::Ready, 30000);
+    auto* scope = window.findChild<QComboBox*>("SclTaskIed");
+    auto* relations = pages->ConnectionsView();
+    auto* tree = window.findChild<QTreeWidget*>("SclConnectionTree");
+    auto* members = window.findChild<QTableWidget*>("SclConnectionMembers");
+    auto* filter = window.findChild<QLineEdit*>("SclConnectionFilter");
+    auto* summary = window.findChild<QLabel*>("SclConnectionSummary");
+    auto* mapped = window.findChild<QCheckBox*>("SclConnectionMappedOnly");
+    QVERIFY(scope && relations && tree && members && filter && summary && mapped);
+    const QString sink = local ? QStringLiteral("PL2201B") : QStringLiteral("RECEIVER");
+    int scopeIndex = -1;
+    for (int i = 0; i < scope->count(); ++i)
+        if (scope->itemText(i).startsWith(sink)) { scopeIndex = i; break; }
+    QVERIFY(scopeIndex >= 0);
+    scope->setCurrentIndex(scopeIndex);
+    QVERIFY(QMetaObject::invokeMethod(scope, "activated", Q_ARG(int, scopeIndex)));
+    pages->SetPage(SclTaskPages::Connections);
+    relations->SetService(QStringLiteral("SV"));
+    filter->setText(local ? QStringLiteral("ML2201B") : QStringLiteral("IED_TEST"));
+    mapped->setChecked(true);
+    QTRY_COMPARE_WITH_TIMEOUT(members->rowCount(), local ? 14 : 3, 10000);
+    QVERIFY(summary->text().contains(local ? "400B" : "4001"));
+    QCOMPARE(members->item(0, 3)->text(), sink);
+    QVERIFY(!members->item(0, 4)->text().isEmpty());
+    QVERIFY(members->item(0, 5)->text().contains(QStringLiteral("候选")));
+    QApplication::processEvents();
+    const auto artifact = qEnvironmentVariable("IEC61850_RELATION_ARTIFACT");
+    if (!artifact.isEmpty()) QVERIFY(window.grab().save(artifact + "-members.png"));
+    auto* modes = window.findChild<QTabWidget*>("SclConnectionModes");
+    QVERIFY(modes);
+    modes->setCurrentIndex(1);
+    QApplication::processEvents();
+    if (!artifact.isEmpty()) QVERIFY(window.grab().save(artifact + "-graph.png"));
+    // Restore through the workspace's real history after jumping to source.
+    QSignalSpy evidence(relations, &SclConnectionView::OpenEvidence);
+    const auto saved = relations->CurrentLocation();
+    QVERIFY(QMetaObject::invokeMethod(relations, "OpenEvidence", Q_ARG(int, service->snapshot()->tasks.sv.front().control)));
+    QCOMPARE(evidence.size(), 1);
+    auto* back = window.findChild<QPushButton*>("SclBack");
+    QVERIFY(back && back->isEnabled());
+    back->click();
+    QTRY_COMPARE_WITH_TIMEOUT(relations->CurrentLocation().control, saved.control, 10000);
+    QTRY_COMPARE(members->rowCount(), local ? 14 : 3);
+    relations->SetService(QStringLiteral("GOOSE"));
+    filter->setText(local ? QStringLiteral("IL2201B") : QStringLiteral("IED_TEST"));
+    QTRY_COMPARE_WITH_TIMEOUT(members->rowCount(), local ? 5 : 3, 10000);
+    QVERIFY(summary->text().contains(local ? "0132" : "0001"));
+    // The same mapping must be discoverable from the sender, without changing
+    // member identity or claiming that a candidate is a confirmed subscription.
+    const QString sender = local ? QStringLiteral("IL2201B") : QStringLiteral("IED_TEST");
+    for (int i = 0; i < scope->count(); ++i)
+        if (scope->itemText(i).startsWith(sender)) { scopeIndex = i; break; }
+    scope->setCurrentIndex(scopeIndex);
+    QVERIFY(QMetaObject::invokeMethod(scope, "activated", Q_ARG(int, scopeIndex)));
+    filter->setText(sink);
+    QTRY_COMPARE_WITH_TIMEOUT(members->rowCount(), local ? 5 : 3, 10000);
+    QVERIFY(summary->text().contains(local ? "0132" : "0001"));
+    if (local)
+    {
+        for (int i = 0; i < scope->count(); ++i)
+            if (scope->itemText(i).startsWith("PL2201B")) { scopeIndex = i; break; }
+        scope->setCurrentIndex(scopeIndex);
+        QVERIFY(QMetaObject::invokeMethod(scope, "activated", Q_ARG(int, scopeIndex)));
+        mapped->setChecked(false);
+        filter->setText("0131");
+        QTRY_COMPARE_WITH_TIMEOUT(members->rowCount(), 19, 10000);
+        QVERIFY(members->item(0, 5)->text().contains(QStringLiteral("未见")));
+    }
+    // Fast query replacement must never republish a result from the old context.
+    filter->setText(QStringLiteral("no-such-stream"));
+    relations->SetContext({}, Scl::NoNode);
+    QTRY_COMPARE(members->rowCount(), 0);
+    service->Close();
+    QCOMPARE(tree->topLevelItemCount(), 0);
+}
 
 void MainWindowBaselineTest::SclTaskViewFlow()
 {
