@@ -2,6 +2,7 @@
 #include "SclAnalysisService.hpp"
 #include "SclTaskIndex.hpp"
 #include "SclConnections.hpp"
+#include "SclRelationGraph.hpp"
 
 #include <QtTest>
 #include <set>
@@ -11,12 +12,128 @@ class SclTaskIndexTest final : public QObject
     Q_OBJECT
 private slots:
     void SignalsAndEvidence();
+    void DescriptionSources();
     void SourceControlEvidence();
     void ObjectBudget();
     void MemberConnections();
     void LocalConnections();
     void MemberPagination();
 };
+
+void SclTaskIndexTest::DescriptionSources()
+{
+    using namespace Scl;
+    using namespace iec61850sim;
+    const auto parsed = Reader::readBytes(R"xml(
+<SCL xmlns="http://www.iec.ch/61850/2003/SCL">
+  <IED name="Synthetic">
+    <AccessPoint name="A"><Server><LDevice inst="L">
+      <LN0 lnClass="LLN0" lnType="Zero"><DataSet name="D">
+        <FCDA ldInst="L" lnClass="XCBR" lnInst="1" doName="Pos" daName="stVal" fc="ST" desc="Member only"/>
+        <FCDA ldInst="L" lnClass="XCBR" lnInst="1" doName="Pos" daName="stVal" fc="ST"/>
+        <FCDA ldInst="L" lnClass="XCBR" lnInst="1" doName="Arr" daName="stVal" fc="ST" ix="1"/>
+        <FCDA ldInst="L" lnClass="XCBR" lnInst="1" doName="Fc" daName="shared" fc="ST"/>
+      </DataSet></LN0>
+      <LN lnClass="XCBR" inst="1" lnType="Breaker">
+        <DOI name="Pos" desc="Object A"><DAI name="dU"><Val>  A description  </Val></DAI><DAI name="stVal" desc="Attribute A"/></DOI>
+        <DOI name="Arr" ix="0" desc="Array zero"/>
+        <DOI name="Arr" ix="1" desc="Array one"/>
+        <DOI name="Grouped" desc="Fallback"><DAI name="dU"><Val sGroup="1">Group only</Val></DAI></DOI>
+        <DOI name="Multi"><DAI name="dU"><Val>First</Val><Val>Second</Val></DAI></DOI>
+        <DOI name="Dup" desc="First object"/><DOI name="Dup" desc="Second object"/>
+        <DOI name="Empty" desc=""><DAI name="dU"><Val/></DAI></DOI>
+        <DOI name="Fc"><DAI name="shared" desc="FC is not declared here"/></DOI>
+      </LN>
+    </LDevice></Server></AccessPoint>
+    <AccessPoint name="B"><Server><LDevice inst="L">
+      <LN lnClass="XCBR" inst="1" lnType="Breaker">
+        <DOI name="Pos" desc="Object B"><DAI name="dU"><Val>Unused B</Val></DAI></DOI>
+      </LN>
+    </LDevice></Server></AccessPoint>
+  </IED>
+  <DataTypeTemplates>
+    <LNodeType id="Zero" lnClass="LLN0"/>
+    <LNodeType id="Breaker" lnClass="XCBR">
+      <DO name="Pos" type="P" desc="Template object"/><DO name="Arr" type="P" count="2"/>
+      <DO name="Grouped" type="P"/><DO name="Multi" type="P" desc="Template fallback"/>
+      <DO name="Dup" type="P"/><DO name="Empty" type="P"/>
+      <DO name="Fc" type="F"/>
+    </LNodeType>
+    <DOType id="P" cdc="DPC" desc="Type only"><DA name="dU" bType="VisString255" fc="DC"/><DA name="stVal" bType="Dbpos" fc="ST"/></DOType>
+    <DOType id="F" cdc="SPS"><DA name="shared" bType="BOOLEAN" fc="ST" desc="Status"/><DA name="shared" bType="BOOLEAN" fc="CF" desc="Config"/></DOType>
+  </DataTypeTemplates>
+</SCL>)xml");
+    QVERIFY(parsed.document);
+    auto analysis = ReferenceResolver::analyze(parsed);
+    SclBrowseIndex browse(*parsed.document, nullptr);
+    browse.BuildScopes(analysis, nullptr);
+    auto index = SclTaskIndex::Build(analysis, browse, nullptr);
+    const SclSnapshot snapshot{{}, std::move(analysis), std::move(browse), std::move(index)};
+    const auto& doc = *parsed.document;
+    const auto& refs = snapshot.analysis;
+    using Source = SclDescriptionSource;
+    using State = SclDescriptionState;
+    const auto field = [](const SclDescription& description, Source source) {
+        for (const auto& item : description.fields)
+            if (item.source == source)
+                return item;
+        return SclDescriptionField{source, State::Unresolved};
+    };
+    const auto& members = snapshot.browse.memberRows;
+    QCOMPARE(members.size(), 4);
+    const auto first = DescribeSclMember(refs, members[0], nullptr);
+    const auto repeated = DescribeSclMember(refs, members[1], nullptr);
+    const auto array = DescribeSclMember(refs, members[2], nullptr);
+    QVERIFY(first.ObjectTitle() && repeated.ObjectTitle() && array.ObjectTitle());
+    QCOMPARE(first.ObjectTitle()->value, QStringLiteral("  A description  "));
+    QCOMPARE(first.ObjectTitle()->node, repeated.ObjectTitle()->node);
+    QVERIFY(first.member != repeated.member);
+    QCOMPARE(first.memberOrdinal, 1);
+    QCOMPARE(repeated.memberOrdinal, 2);
+    QCOMPARE(field(first, Source::Member).value, QStringLiteral("Member only"));
+    QCOMPARE(field(repeated, Source::Member).state, State::Missing);
+    QCOMPARE(field(first, Source::InstanceAttribute).value, QStringLiteral("Attribute A"));
+    QCOMPARE(field(first, Source::TemplateAttribute).state, State::Missing);
+    QCOMPARE(field(first, Source::ObjectType).value, QStringLiteral("Type only"));
+    QCOMPARE(field(first, Source::TemplateObject).value, QStringLiteral("Template object"));
+    QCOMPARE(array.arrayIndex, 1);
+    QCOMPARE(array.ObjectTitle()->value, QStringLiteral("Array one"));
+    const auto fc = DescribeSclMember(refs, members[3], nullptr);
+    QCOMPARE(field(fc, Source::InstanceAttribute).state, State::Ambiguous);
+    QCOMPARE(field(fc, Source::TemplateAttribute).value, QStringLiteral("Status"));
+    QCOMPARE(field(DescribeSclSignal(refs, first.logicalNode, "Arr", nullptr), Source::InstanceObject).state, State::Array);
+    const auto grouped = DescribeSclSignal(refs, first.logicalNode, "Grouped", nullptr);
+    QCOMPARE(field(grouped, Source::InstanceDU).state, State::SettingGroup);
+    QVERIFY(grouped.ObjectTitle());
+    QCOMPARE(grouped.ObjectTitle()->value, QStringLiteral("Fallback"));
+    const auto multi = DescribeSclSignal(refs, first.logicalNode, "Multi", nullptr);
+    QCOMPARE(field(multi, Source::InstanceDU).state, State::Ambiguous);
+    QCOMPARE(field(multi, Source::InstanceDU).candidates.size(), 2);
+    QVERIFY(multi.ObjectTitle());
+    QCOMPARE(multi.ObjectTitle()->source, Source::TemplateObject);
+    const auto duplicate = DescribeSclSignal(refs, first.logicalNode, "Dup", nullptr);
+    QCOMPARE(field(duplicate, Source::InstanceObject).state, State::Ambiguous);
+    QVERIFY(!duplicate.ObjectTitle());
+    const auto empty = DescribeSclSignal(refs, first.logicalNode, "Empty", nullptr);
+    QCOMPARE(field(empty, Source::InstanceDU).state, State::Empty);
+    QCOMPARE(field(empty, Source::InstanceObject).state, State::Empty);
+    QVERIFY(!empty.ObjectTitle());
+    int unused = -1;
+    for (int i = 0; i < int(snapshot.tasks.catalog.instances.size()); ++i)
+    {
+        const auto& instance = snapshot.tasks.catalog.instances[i];
+        if (instance.logicalNode != first.logicalNode && snapshot.tasks.catalog.definitions[instance.definition].path == "Pos")
+            unused = i;
+    }
+    QVERIFY(unused >= 0);
+    QCOMPARE(SclTaskCells(snapshot, {SclTaskKind::Signal, unused}).front(), QStringLiteral("Unused B"));
+    const auto detail = DescribeSclTaskRow(snapshot, {SclTaskKind::Signal, unused}, nullptr);
+    const auto source = detail.descriptions.front().projection.ObjectTitle();
+    QVERIFY(source);
+    QCOMPARE(doc.nodes[source->node].name, QStringLiteral("Val"));
+    QVERIFY(std::any_of(detail.evidence.begin(), detail.evidence.end(),
+        [source](const auto& item) { return item.node == source->node; }));
+}
 
 void SclTaskIndexTest::SignalsAndEvidence()
 {
@@ -178,6 +295,38 @@ void SclTaskIndexTest::MemberConnections()
     QCOMPARE(detail.members.size(), 6);
     QVERIFY(detail.members[0].candidate);
     QVERIFY(detail.members[0].cells[5].contains(QStringLiteral("候选")));
+    const auto& root = detail.members.front();
+    const auto compact = ProjectSclRelation(snapshot, candidates.rows.front(), root, 0, nullptr);
+    const auto expanded = ProjectSclRelation(snapshot, candidates.rows.front(), root, 1, nullptr);
+    QVERIFY(expanded.nodes.size() > compact.nodes.size());
+    QVERIFY(compact.hiddenMappings > 0);
+    QCOMPARE(expanded.hiddenMappings, 0);
+    QVERIFY(std::none_of(expanded.edges.begin(), expanded.edges.end(),
+        [](const auto& edge) { return edge.relation == SclGraphRelation::Bound; }));
+    QVERIFY(std::any_of(expanded.nodes.begin(), expanded.nodes.end(), [&](const auto& node) {
+        return node.role == SclGraphRole::Input && node.member == root.member && node.input == root.input;
+    }));
+    auto crowded = candidates.rows.front();
+    auto crowdedSnapshot = snapshot;
+    auto document = std::make_shared<Document>(*snapshot.analysis.document);
+    crowdedSnapshot.analysis.document = document;
+    crowded.links.clear();
+    const auto originalLink = *std::find_if(snapshot.tasks.memberLinks.cbegin(), snapshot.tasks.memberLinks.cend(),
+        [&](const auto& link) { return snapshot.analysis.references[link.memberReference].source == root.member; });
+    for (int i = 0; i < 100; ++i)
+    {
+        auto link = originalLink;
+        link.input = int(crowdedSnapshot.tasks.inputs.size());
+        crowdedSnapshot.tasks.inputs.push_back({NodeId(document->nodes.size())});
+        const auto input = document->nodes[root.input];
+        document->nodes.push_back(input);
+        crowded.links.push_back(int(crowdedSnapshot.tasks.memberLinks.size()));
+        crowdedSnapshot.tasks.memberLinks.push_back(link);
+    }
+    const auto bounded = ProjectSclRelation(crowdedSnapshot, crowded, root, 1, nullptr);
+    QCOMPARE(bounded.nodes.size(), SclRelationGraph::NodeLimit);
+    QVERIFY(bounded.edges.size() <= SclRelationGraph::EdgeLimit);
+    QVERIFY(bounded.limited && bounded.hiddenMappings > 0);
     NodeId sink = NoNode;
     for (auto ied : snapshot.browse.ieds)
         if (parsed.document->attribute(ied, QStringLiteral("name")) == "RECEIVER")
@@ -187,6 +336,7 @@ void SclTaskIndexTest::MemberConnections()
     QCOMPARE(incoming.rows.front().candidates, 3);
     TaskControl cancelled;
     cancelled.cancelled = true;
+    QVERIFY_EXCEPTION_THROWN(ProjectSclRelation(snapshot, candidates.rows.front(), root, 1, &cancelled), TaskCancelled);
     QVERIFY_EXCEPTION_THROWN(QuerySclConnections(snapshot, sink, {}, {}, &cancelled), TaskCancelled);
     // Adding a second publisher preserves both candidates rather than picking the first.
     xml.replace("<GSEControl name=\"gcb1\"", "<GSEControl name='other' datSet='dsEvents'/><GSEControl name=\"gcb1\"");
@@ -273,6 +423,15 @@ void SclTaskIndexTest::MemberPagination()
     const auto second = DescribeSclConnection(snapshot, query.rows[0], 200, false, nullptr);
     QCOMPARE(second.members.size(), 23);
     QCOMPARE(second.members[0].cells[0], QStringLiteral("201"));
+    const auto publication = DescribeSclPublication(snapshot, snapshot.tasks.goose.front().control, 200, nullptr);
+    QCOMPARE(publication.total, 223);
+    QCOMPARE(publication.members.size(), 23);
+    QCOMPARE(publication.members.front().cells[0], QStringLiteral("201"));
+    QVERIFY(!publication.endpoints.empty());
+    QCOMPARE(publication.endpoints.front().cells[2], QStringLiteral("0001"));
+    const auto sv = DescribeSclPublication(snapshot, snapshot.tasks.sv.front().control, 0, nullptr);
+    QVERIFY(sv.description.contains(QStringLiteral("sampleRate=true")));
+    QVERIFY(sv.description.contains(QStringLiteral("单位/换算依据未确认")));
     QVERIFY(DescribeSclConnection(snapshot, query.rows[0], 0, true, nullptr).members.empty());
 }
 

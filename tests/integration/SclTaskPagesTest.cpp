@@ -1,5 +1,9 @@
 #include "SclTaskPages.hpp"
+#include "SclTableInteraction.hpp"
 
+#include <QClipboard>
+#include <QHeaderView>
+#include <QScrollBar>
 #include <QComboBox>
 #include <QLabel>
 #include <QLineEdit>
@@ -18,7 +22,113 @@ class SclTaskPagesTest : public QObject
     Q_OBJECT
 private slots:
     void Walkthrough();
+    void SignalTablePilot();
+    void VisibleRowBudget_data();
+    void VisibleRowBudget();
 };
+
+void SclTaskPagesTest::VisibleRowBudget_data()
+{
+    QTest::addColumn<int>("rows");
+    QTest::newRow("1k") << 1000;
+    QTest::newRow("50k") << 50000;
+    QTest::newRow("500k") << 500000;
+}
+
+void SclTaskPagesTest::VisibleRowBudget()
+{
+    QFETCH(int, rows);
+    class Model final : public QAbstractTableModel
+    {
+    public:
+        explicit Model(int rows) : rows(rows) {}
+        int rowCount(const QModelIndex& parent) const override { return parent.isValid() ? 0 : rows; }
+        int columnCount(const QModelIndex& parent) const override { return parent.isValid() ? 0 : 2; }
+        QVariant data(const QModelIndex& index, int role) const override
+        {
+            if (role != Qt::DisplayRole)
+                return {};
+            visited.insert(index.row());
+            return index.row() % 7 == 0 ? QStringLiteral("多行说明\n") + QString(500, 'a')
+                : QStringLiteral("0001");
+        }
+        int rows;
+        mutable QSet<int> visited;
+    } model(rows);
+    SclTaskPages widget;
+    widget.SetModel(&model);
+    widget.SetPage(SclTaskPages::Signals);
+    widget.resize(800, 640);
+    widget.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&widget));
+    auto* table = widget.Table();
+    const int target = rows / 14 * 7;
+    model.visited.clear();
+    table->scrollTo(model.index(target, 0), QAbstractItemView::PositionAtTop);
+    QTRY_VERIFY(table->rowHeight(target) > table->verticalHeader()->defaultSectionSize());
+    QCOMPARE(table->rowAt(0), target);
+    QVERIFY(model.visited.size() < 100);
+    QCOMPARE(table->rowHeight(rows - 1), table->verticalHeader()->defaultSectionSize());
+}
+
+void SclTaskPagesTest::SignalTablePilot()
+{
+    using iec61850sim::SclTableInteraction;
+    QStandardItemModel rows(1000, 3);
+    const auto value = QStringLiteral("0001\n原始说明 😀 ") + QString(180, 'W');
+    const auto huge = QString(6000, 'x') + QStringLiteral("末尾");
+    rows.setData(rows.index(400, 0), value);
+    rows.setData(rows.index(400, 0), value, SclTableInteraction::FullValueRole);
+    rows.setData(rows.index(400, 1), QStringLiteral("完整值"));
+    rows.setData(rows.index(400, 1), huge, SclTableInteraction::FullValueRole);
+    SclTaskPages widget;
+    widget.SetModel(&rows);
+    widget.SetPage(SclTaskPages::Signals);
+    widget.SetDetail(QStringLiteral("原文依据"), true);
+    auto* table = widget.Table();
+    table->setColumnWidth(0, 145);
+    table->setColumnWidth(1, 110);
+    widget.resize(800, 640);
+    widget.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&widget));
+    table->scrollTo(rows.index(400, 0), QAbstractItemView::PositionAtTop);
+    QTRY_VERIFY(table->rowHeight(400) > table->verticalHeader()->defaultSectionSize() * 3);
+    QCOMPARE(table->rowAt(0), 400);
+    QCOMPARE(table->rowHeight(800), table->verticalHeader()->defaultSectionSize());
+    table->verticalScrollBar()->setValue(table->verticalScrollBar()->value() + 10);
+    const auto oldHeight = table->rowHeight(400);
+    table->setColumnWidth(0, 210);
+    QTRY_VERIFY(table->rowHeight(400) < oldHeight);
+    QCOMPARE(table->rowAt(0), 400);
+    QCOMPARE(table->rowViewportPosition(400), -10);
+    QSignalSpy open(&widget, &SclTaskPages::OpenSource);
+    QSignalSpy activated(table, &QTableView::activated);
+    QSignalSpy clipboard(QApplication::clipboard(), &QClipboard::dataChanged);
+    const auto click = [&](int column) {
+        const auto rect = table->visualRect(rows.index(400, column)).intersected(table->viewport()->rect());
+        QVERIFY(!rect.isEmpty());
+        QTest::mouseDClick(table->viewport(), Qt::LeftButton, Qt::NoModifier, rect.center());
+    };
+    click(0);
+    QCOMPARE(QApplication::clipboard()->text(), value);
+    QCOMPARE(clipboard.size(), 1);
+    click(1);
+    QCOMPARE(QApplication::clipboard()->text(), huge);
+    QCOMPARE(clipboard.size(), 2);
+    click(2);
+    QCOMPARE(QApplication::clipboard()->text(), huge);
+    QCOMPARE(clipboard.size(), 2);
+    QCOMPARE(open.size(), 0);
+    QCOMPARE(activated.size(), 0);
+    table->setCurrentIndex(rows.index(400, 0));
+    QTest::keyClick(table, Qt::Key_C, Qt::ControlModifier);
+    QCOMPARE(QApplication::clipboard()->text(), value);
+    table->hideColumn(1);
+    QTest::keyClick(table, Qt::Key_C, Qt::ControlModifier | Qt::ShiftModifier);
+    QCOMPARE(QApplication::clipboard()->text(), value + '\t');
+    QTest::keyClick(table, Qt::Key_Return);
+    QCOMPARE(open.size(), 1);
+}
 
 void SclTaskPagesTest::Walkthrough()
 {

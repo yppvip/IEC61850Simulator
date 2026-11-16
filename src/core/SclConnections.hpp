@@ -26,14 +26,21 @@ struct SclConnectionList
 struct SclConnectionMember
 {
     QStringList cells;
+    SclDescription description;
     Scl::NodeId member = Scl::NoNode;
     Scl::NodeId input = Scl::NoNode;
     bool candidate = false;
+    QString mmsDomain, mmsItem;
+    int arrayIndex = -1;
+    std::vector<SclTaskDetail::Evidence> reception;
 };
 
 struct SclConnectionDetail
 {
+    struct Endpoint { QStringList cells; Scl::NodeId node; };
     QString title, description;
+    std::vector<Endpoint> endpoints;
+    bool endpointsLimited = false;
     std::vector<SclTaskDetail::Evidence> evidence;
     std::vector<SclConnectionMember> members;
     int total = 0;
@@ -43,6 +50,8 @@ struct SclConnectionDetail
 SclConnectionList QuerySclConnections(const SclSnapshot& snapshot, Scl::NodeId scope,
     const QString& service, const QString& text, Scl::TaskControl* task);
 SclConnectionDetail DescribeSclConnection(const SclSnapshot& snapshot, const SclConnection& connection,
-    int offset, bool mappedOnly, Scl::TaskControl* task);
+    int offset, bool mappedOnly, Scl::TaskControl* task, bool publication = false);
+SclConnectionDetail DescribeSclPublication(const SclSnapshot& snapshot, Scl::NodeId control,
+    int offset, Scl::TaskControl* task);
 QString SclStreamAddresses(const SclSnapshot& snapshot, Scl::NodeId control);
 }

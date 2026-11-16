@@ -1,4 +1,5 @@
 #include "SclTaskPages.hpp"
+#include "SclTableInteraction.hpp"
 #include "SclConnectionView.hpp"
 
 #include <QComboBox>
@@ -12,6 +13,7 @@
 #include <QSignalBlocker>
 #include <QScrollArea>
 #include <QStackedWidget>
+#include <QSplitter>
 #include <QStyle>
 #include <QTabBar>
 #include <QTableView>
@@ -115,7 +117,23 @@ SclTaskPages::SclTaskPages(QWidget* parent) : QWidget(parent)
     m_table->verticalHeader()->setDefaultSectionSize(qMax(28, fontMetrics().height() + 8));
     m_table->setMinimumHeight(88);
     m_table->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
-    resultLayout->addWidget(m_table, 3);
+    auto* publicationSplit = new QSplitter(Qt::Vertical, results);
+    publicationSplit->setChildrenCollapsible(false);
+    publicationSplit->addWidget(m_table);
+    auto* publicationScroll = new QScrollArea(publicationSplit);
+    publicationScroll->setObjectName("SclPublicationScroll");
+    publicationScroll->setWidgetResizable(true);
+    publicationScroll->setFrameShape(QFrame::NoFrame);
+    publicationScroll->setMinimumHeight(90);
+    m_publication = new SclConnectionView(publicationScroll);
+    m_publication->SetPublicationMode();
+    publicationScroll->setWidget(m_publication);
+    publicationSplit->addWidget(publicationScroll);
+    publicationSplit->setStretchFactor(0, 1);
+    publicationSplit->setStretchFactor(1, 3);
+    publicationScroll->hide();
+    resultLayout->addWidget(publicationSplit, 3);
+    m_tableInteraction = new SclTableInteraction(m_table);
     m_detail = new QTextBrowser(results);
     m_detail->setObjectName("SclTaskDetail");
     m_detail->setAccessibleName(QStringLiteral("所选条目的解释与证据"));
@@ -152,6 +170,8 @@ SclTaskPages::SclTaskPages(QWidget* parent) : QWidget(parent)
     });
 
     connect(m_pages, &QTabBar::currentChanged, this, [this](int index) {
+        UpdateResultLayout();
+        m_tableInteraction->SetEnabled(index == Signals && m_direction->currentIndex() == 0);
         m_body->setCurrentIndex(index == Connections ? 2 : index == Overview ? 0 : 1);
         const bool communication = index == Goose || index == SampledValues;
         m_direction->setItemText(0, communication ? QStringLiteral("发送配置") : QStringLiteral("本机对象"));
@@ -169,6 +189,8 @@ SclTaskPages::SclTaskPages(QWidget* parent) : QWidget(parent)
     });
     connect(m_filter, &QLineEdit::textChanged, this, &SclTaskPages::FilterChanged);
     connect(m_direction, &QComboBox::currentIndexChanged, this, [this](int index) {
+        UpdateResultLayout();
+        m_tableInteraction->SetEnabled(m_pages->currentIndex() == Signals && index == 0);
         emit DirectionChanged(index == 1);
     });
     connect(m_source, &QPushButton::clicked, this, &SclTaskPages::OpenSource);
@@ -179,9 +201,10 @@ SclTaskPages::SclTaskPages(QWidget* parent) : QWidget(parent)
         dialog.exec();
     });
     connect(m_table, &QTableView::activated, this, [this](const QModelIndex&) {
-        if (m_source->isEnabled())
+        if (m_source->isVisible() && m_source->isEnabled())
             emit OpenSource();
     });
+    connect(m_tableInteraction, &SclTableInteraction::OpenSource, m_source, &QPushButton::click);
 }
 
 void SclTaskPages::SetScopeOptions(const QList<QPair<int, QString>>& options, int current)
@@ -209,6 +232,7 @@ void SclTaskPages::SetPage(Page page)
 void SclTaskPages::SetModel(QAbstractItemModel* model)
 {
     m_table->setModel(model);
+    m_tableInteraction->SetModel(model);
     if (auto* selection = m_table->selectionModel())
         connect(selection, &QItemSelectionModel::currentRowChanged, this, &SclTaskPages::Selected,
                 Qt::UniqueConnection);
@@ -234,7 +258,7 @@ void SclTaskPages::SetEvidence(const QStringList& labels)
 {
     m_evidence->clear();
     m_evidence->addItems(labels);
-    m_evidence->setVisible(!labels.empty());
+    UpdateResultLayout();
 }
 
 int SclTaskPages::EvidenceIndex() const
@@ -252,6 +276,20 @@ void SclTaskPages::SetInputDirection(bool inputs)
 {
     const QSignalBlocker blocker(m_direction);
     m_direction->setCurrentIndex(inputs ? 1 : 0);
+    UpdateResultLayout();
+    m_tableInteraction->SetEnabled(m_pages->currentIndex() == Signals && !inputs);
+}
+
+void SclTaskPages::UpdateResultLayout()
+{
+    const int page = m_pages->currentIndex();
+    const bool local = m_direction->currentIndex() == 0;
+    const bool publication = local && (page == Goose || page == SampledValues);
+    const bool inlineDetail = !publication && !(local && page == Signals);
+    findChild<QScrollArea*>("SclPublicationScroll")->setVisible(publication);
+    m_detail->setVisible(inlineDetail);
+    m_source->setVisible(inlineDetail);
+    m_evidence->setVisible(inlineDetail && m_evidence->count() != 0);
 }
 
 void SclTaskPages::SetCoverage(const QString& summary, const QString& rules)

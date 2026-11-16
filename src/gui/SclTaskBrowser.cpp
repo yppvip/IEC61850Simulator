@@ -1,4 +1,5 @@
 #include "SclTaskBrowser.hpp"
+#include "SclTableInteraction.hpp"
 
 #include <QAbstractTableModel>
 #include <QFutureWatcher>
@@ -18,8 +19,8 @@ QStringList Headers(SclTaskKind kind)
     switch (kind)
     {
     case SclTaskKind::Signal:
-        return {QStringLiteral("信号"), QStringLiteral("分类依据"), QStringLiteral("对象路径"),
-                QStringLiteral("CDC"), QStringLiteral("覆盖")};
+        return {QStringLiteral("对象名称"), QStringLiteral("对象描述（来源）"), QStringLiteral("对象引用"),
+                QStringLiteral("类别"), QStringLiteral("CDC"), QStringLiteral("状态")};
     case SclTaskKind::Input:
     case SclTaskKind::GooseInput:
     case SclTaskKind::SvInput:
@@ -62,14 +63,36 @@ public:
     }
     QVariant data(const QModelIndex& index, int role) const override
     {
-        if (!m_snapshot || !index.isValid() || (role != Qt::DisplayRole && role != Qt::ToolTipRole))
+        if (!m_snapshot || !index.isValid() || (role != Qt::DisplayRole && role != Qt::ToolTipRole
+            && role != SclTableInteraction::FullValueRole))
             return {};
         if (m_cachedRow != index.row())
         {
             m_cachedRow = index.row();
-            m_cells = SclTaskCells(*m_snapshot, m_rows[index.row()]);
+            const auto row = m_rows[index.row()];
+            m_cells = SclTaskCells(*m_snapshot, row, true);
+            m_descriptionLabel.clear();
+            if (row.kind == SclTaskKind::Signal)
+            {
+                const auto& tasks = m_snapshot->tasks;
+                const auto& definition = tasks.catalog.definitions[tasks.catalog.instances[row.index].definition];
+                const auto source = tasks.signalDescriptionNodes[row.index];
+                if (source != Scl::NoNode)
+                    m_descriptionLabel = m_snapshot->analysis.document->nodes[source].name == "Val"
+                        ? QStringLiteral("实例 dU") : source == definition.declaration
+                            ? QStringLiteral("模板") : QStringLiteral("实例 desc");
+                m_cells = {definition.path, source == Scl::NoNode ? QString{} : m_cells[0], m_cells[2],
+                    m_cells[1], m_cells[3], m_cells[4].isEmpty() ? QStringLiteral("类型已解析") : m_cells[4]};
+            }
         }
-        const auto cell = m_cells.value(index.column());
+        auto cell = m_cells.value(index.column());
+        if (role == SclTableInteraction::FullValueRole)
+            return cell;
+        if (m_rows[index.row()].kind == SclTaskKind::Signal && cell.size() > SclTableInteraction::PreviewLimit)
+            cell = tr("完整值 %1 字符（右键查看）").arg(cell.size());
+        else if (index.column() == 1 && m_rows[index.row()].kind == SclTaskKind::Signal)
+            cell = m_descriptionLabel.isEmpty() ? QStringLiteral("未声明描述")
+                : cell + QStringLiteral("（%1）").arg(m_descriptionLabel);
         return role == Qt::ToolTipRole ? cell.toHtmlEscaped() : cell;
     }
 
@@ -92,6 +115,7 @@ private:
     std::vector<SclTaskRow> m_rows;
     mutable int m_cachedRow = -1;
     mutable QStringList m_cells;
+    mutable QString m_descriptionLabel;
 };
 
 SclTaskBrowser::SclTaskBrowser(QWidget* parent)
@@ -104,11 +128,15 @@ SclTaskBrowser::SclTaskBrowser(QWidget* parent)
     connect(m_view, &SclTaskPages::ScopeChanged, this, &SclTaskBrowser::ScopeChanged);
     connect(m_view, &SclTaskPages::PageChanged, this, [this](SclTaskPages::Page page) {
         m_page = page;
+        m_signal.reset();
         Schedule();
+        emit SignalPageChanged();
     });
     connect(m_view, &SclTaskPages::DirectionChanged, this, [this](bool inputs) {
         m_inputs = inputs;
+        m_signal.reset();
         Schedule();
+        emit SignalPageChanged();
     });
     connect(m_view, &SclTaskPages::FilterChanged, this, [this](const QString& text) {
         m_filter = text.trimmed();
@@ -119,7 +147,15 @@ SclTaskBrowser::SclTaskBrowser(QWidget* parent)
     connect(m_view->ConnectionsView(), &SclConnectionView::OpenEvidence, this, [this](int node) {
         emit OpenEvidence(node, -1);
     });
+    connect(m_view->PublicationView(), &SclConnectionView::OpenEvidence, this, [this](int node) {
+        emit OpenEvidence(node, -1);
+    });
     connect(m_view, &SclTaskPages::OpenSource, this, [this] {
+        if (IsSignalPage())
+        {
+            OpenSignalEvidence(0);
+            return;
+        }
         const int item = m_view->EvidenceIndex();
         if (item < 0 || item >= int(m_detail.evidence.size()))
             return;
@@ -149,6 +185,7 @@ void SclTaskBrowser::SetSnapshot(std::shared_ptr<const SclSnapshot> snapshot)
 {
     Cancel();
     m_snapshot = std::move(snapshot);
+    m_signal.reset();
     m_ied = Scl::NoNode;
     m_filter.clear();
     m_inputs = false;
@@ -193,6 +230,7 @@ void SclTaskBrowser::SetSnapshot(std::shared_ptr<const SclSnapshot> snapshot)
     m_view->SetInputDirection(false);
     m_view->SetPage(SclTaskPages::Overview);
     m_view->ConnectionsView()->SetContext(m_snapshot, m_ied);
+    m_view->PublicationView()->SetContext(m_snapshot, m_ied);
     UpdateOverview();
     Schedule();
 }
@@ -202,16 +240,22 @@ void SclTaskBrowser::SetScope(Scl::NodeId ied)
     if (m_ied == ied)
         return;
     m_ied = ied;
+    m_signal.reset();
     m_view->SetScope(ied);
     m_view->ConnectionsView()->SetContext(m_snapshot, m_ied);
+    m_view->PublicationView()->SetContext(m_snapshot, m_ied);
     UpdateOverview();
     Schedule();
 }
 
 SclTaskBrowser::Location SclTaskBrowser::CurrentLocation() const
 {
-    return {m_page, m_filter, m_inputs, m_model->Row(m_view->Table()->currentIndex()),
-        m_view->Table()->verticalScrollBar()->value(), m_view->ConnectionsView()->CurrentLocation()};
+    auto* table = m_view->Table();
+    const int top = table->rowAt(0);
+    return {m_page, m_filter, m_inputs, IsSignalPage() ? m_signal : m_model->Row(table->currentIndex()),
+        table->verticalScrollBar()->value(), m_view->ConnectionsView()->CurrentLocation(),
+        m_model->Row(m_model->index(top, 0)), top < 0 ? 0 : -table->rowViewportPosition(top),
+        m_view->PublicationView()->CurrentLocation()};
 }
 
 void SclTaskBrowser::RestoreLocation(const Location& location)
@@ -223,8 +267,93 @@ void SclTaskBrowser::RestoreLocation(const Location& location)
     m_view->SetPage(location.page);
     Schedule();
     m_restore = location;
+    m_signal = IsSignalPage() ? location.row : std::nullopt;
+    PresentSignal(m_signal ? QStringLiteral("正在恢复信号…") : QString{});
+    emit SignalPageChanged();
     if (location.page == SclTaskPages::Connections)
         m_view->ConnectionsView()->RestoreLocation(location.connection);
+}
+
+bool SclTaskBrowser::IsSignalPage() const
+{
+    return m_page == SclTaskPages::Signals && !m_inputs;
+}
+
+bool SclTaskBrowser::IsPublicationPage() const
+{
+    return !m_inputs && (m_page == SclTaskPages::Goose || m_page == SclTaskPages::SampledValues);
+}
+
+QString SclTaskBrowser::SignalPath() const
+{
+    return m_snapshot && IsSignalPage() && m_signal ? SclTaskCells(*m_snapshot, *m_signal, true).value(2) : QString{};
+}
+
+void SclTaskBrowser::LocateSignal()
+{
+    if (!IsSignalPage() || !m_signal)
+        return;
+    const auto index = m_model->Locate(*m_signal);
+    if (index.isValid())
+    {
+        m_view->Table()->setCurrentIndex(index);
+        m_view->Table()->scrollTo(index, QAbstractItemView::PositionAtCenter);
+        m_view->Table()->setFocus();
+    }
+    else if (!m_filter.isEmpty())
+    {
+        m_filter.clear();
+        m_view->SetFilterText({});
+        Schedule();
+    }
+}
+
+void SclTaskBrowser::OpenSignalEvidence(int index)
+{
+    if (IsSignalPage() && m_signal && index >= 0 && index < int(m_detail.evidence.size()))
+    {
+        const auto& evidence = m_detail.evidence[index];
+        emit OpenSignalSource(evidence.node, evidence.label);
+    }
+}
+
+void SclTaskBrowser::PresentSignal(const QString& message)
+{
+    if (!IsSignalPage())
+        return;
+    auto html = message.toHtmlEscaped();
+    if (html.isEmpty() && m_signal)
+    {
+        const auto field = [](const QString& text) { return text.toHtmlEscaped().replace('\n', QStringLiteral("<br>")); };
+        const auto link = [](int index) { return QStringLiteral(" <a href='%1'>原文</a>").arg(index); };
+        html += QStringLiteral("<h4>对象信息</h4>");
+        for (const auto& group : m_detail.descriptions)
+        {
+            if (!group.label.isEmpty())
+                html += QStringLiteral("<b>%1</b><br>").arg(field(group.label));
+            for (const auto& item : group.projection.fields)
+            {
+                const auto label = group.label + SclDescriptionLabel(item.source);
+                const auto value = SclDescriptionText(item);
+                html += field(SclDescriptionLabel(item.source) + QStringLiteral("  ")
+                    + (value.size() > 4096 ? QStringLiteral("完整值 %1 字符，请查看原文").arg(value.size()) : value));
+                const auto found = std::find_if(m_detail.evidence.cbegin(), m_detail.evidence.cend(),
+                    [&](const auto& entry) { return entry.node == item.node && entry.label == label; });
+                if (found != m_detail.evidence.cend())
+                    html += link(int(found - m_detail.evidence.cbegin()));
+                html += QStringLiteral("<br>");
+            }
+        }
+        html += QStringLiteral("<h4>技术字段</h4>") + field(m_detail.signalFields.join('\n').left(12000));
+        html += QStringLiteral("<h4>通信使用</h4>") + field(m_detail.signalUsage.join('\n').left(12000));
+        if (!m_detail.evidence.empty())
+        {
+            html += QStringLiteral("<h4>文件依据</h4>");
+            for (int i = 0; i < int(m_detail.evidence.size()); ++i)
+                html += field(m_detail.evidence[i].label) + link(i) + QStringLiteral("<br>");
+        }
+    }
+    emit SignalDetailChanged(SignalPath(), html);
 }
 
 SclTaskKind SclTaskBrowser::Kind() const
@@ -242,10 +371,12 @@ void SclTaskBrowser::Schedule()
 {
     Cancel();
     m_restore.reset();
+    m_view->PublicationView()->SetPublication(Scl::NoNode);
     m_detail = {};
     m_model->Reset({}, Kind());
     m_view->SetEvidence({});
     m_view->SetDetail({}, false);
+    PresentSignal(m_signal ? QStringLiteral("正在检查筛选范围…") : QString{});
     if (!m_snapshot || m_page == SclTaskPages::Overview || m_page == SclTaskPages::Connections)
         return;
     m_view->SetStatus(QStringLiteral("正在准备当前范围…"));
@@ -268,6 +399,7 @@ void SclTaskBrowser::RunFilter()
         if (!rows)
         {
             m_view->SetStatus(QStringLiteral("无法完成当前范围查询。"));
+            PresentSignal(QStringLiteral("无法完成当前范围查询。"));
             return;
         }
         const auto count = rows->size();
@@ -276,20 +408,29 @@ void SclTaskBrowser::RunFilter()
         header->setSectionResizeMode(QHeaderView::Interactive);
         const bool signalOrInput = kind == SclTaskKind::Signal || kind == SclTaskKind::Input
             || kind == SclTaskKind::GooseInput || kind == SclTaskKind::SvInput;
-        const int flexible = signalOrInput ? 2 : 1;
+        const int flexible = kind == SclTaskKind::Signal ? 1 : signalOrInput ? 2 : 1;
         header->setSectionResizeMode(flexible, QHeaderView::Stretch);
         if (kind == SclTaskKind::Signal)
         {
-            header->resizeSection(0, 150);
-            header->resizeSection(1, 145);
-            header->resizeSection(3, 66);
-            header->resizeSection(4, 90);
+            header->resizeSection(0, 105);
+            header->resizeSection(2, 235);
+            header->resizeSection(3, 120);
+            header->resizeSection(4, 60);
+            header->resizeSection(5, 90);
         }
         m_view->SetStatus(count ? QStringLiteral("%1 条").arg(count)
             : m_filter.isEmpty() ? (kind == SclTaskKind::Finding
                 ? QStringLiteral("当前范围没有已执行规则的发现。")
                 : QStringLiteral("当前范围没有可展示的条目。"))
                 : QStringLiteral("筛选结果为空，可清除筛选。"));
+        if (!m_restore && IsSignalPage() && m_signal)
+        {
+            const auto index = m_model->Locate(*m_signal);
+            if (index.isValid())
+                m_view->Table()->setCurrentIndex(index);
+            else
+                PresentSignal(QStringLiteral("所选信号被当前筛选遮挡。可清除筛选并定位。"));
+        }
         if (m_restore)
         {
             const auto location = std::exchange(m_restore, std::nullopt);
@@ -297,11 +438,28 @@ void SclTaskBrowser::RunFilter()
             {
                 const auto index = m_model->Locate(*location->row);
                 if (index.isValid())
+                {
                     m_view->Table()->setCurrentIndex(index);
+                    if (location->publication.control != Scl::NoNode
+                        && m_view->PublicationView()->CurrentLocation().control == location->publication.control)
+                        m_view->PublicationView()->SetPublication(location->publication.control, location->publication);
+                }
                 else
+                {
                     m_view->SetStatus(QStringLiteral("当前范围或筛选条件遮挡了原条目。"));
+                    PresentSignal(QStringLiteral("所选信号被当前筛选遮挡。可清除筛选并定位。"));
+                }
             }
-            m_view->Table()->verticalScrollBar()->setValue(location->scroll);
+            auto* table = m_view->Table();
+            const auto top = location->top ? m_model->Locate(*location->top) : QModelIndex{};
+            if (kind == SclTaskKind::Signal && top.isValid())
+            {
+                table->scrollTo(top, QAbstractItemView::PositionAtTop);
+                table->verticalScrollBar()->setValue(table->verticalScrollBar()->value()
+                    + qMin(location->topOffset, table->rowHeight(top.row()) - 1));
+            }
+            else
+                table->verticalScrollBar()->setValue(location->scroll);
         }
     });
     watcher->setFuture(QtConcurrent::run([snapshot, kind, ied, filter, task]
@@ -326,6 +484,21 @@ void SclTaskBrowser::SelectRow(const QModelIndex& row)
         m_view->SetDetail({}, false);
         return;
     }
+    if (item->kind == SclTaskKind::Goose || item->kind == SclTaskKind::Sv)
+    {
+        const auto& streams = item->kind == SclTaskKind::Goose ? snapshot->tasks.goose : snapshot->tasks.sv;
+        m_view->SetDetail({}, false);
+        m_view->PublicationView()->SetPublication(streams[item->index].control);
+        return;
+    }
+    if (IsSignalPage())
+    {
+        const bool changed = !m_signal || m_signal->index != item->index;
+        m_signal = item;
+        PresentSignal(QStringLiteral("正在加载所选信号…"));
+        if (changed && !m_restore)
+            emit SignalSelectionChanged();
+    }
     m_view->SetDetail(QStringLiteral("正在查找文件依据…"), false);
     const auto task = m_selection = std::make_shared<Scl::TaskControl>();
     auto* watcher = new QFutureWatcher<std::optional<SclTaskDetail>>(this);
@@ -337,6 +510,7 @@ void SclTaskBrowser::SelectRow(const QModelIndex& row)
         if (!result)
         {
             m_view->SetDetail(QStringLiteral("无法展开当前条目的文件依据。"), false);
+            PresentSignal(QStringLiteral("无法加载所选信号详情。"));
             return;
         }
         m_detail = std::move(*result);
@@ -345,6 +519,7 @@ void SclTaskBrowser::SelectRow(const QModelIndex& row)
             labels << entry.label;
         m_view->SetEvidence(labels);
         m_view->SetDetail(m_detail.text, !labels.empty());
+        PresentSignal();
     });
     watcher->setFuture(QtConcurrent::run([snapshot, item, task]() -> std::optional<SclTaskDetail> {
         try { return DescribeSclTaskRow(*snapshot, *item, task.get()); }

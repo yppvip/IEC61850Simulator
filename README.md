@@ -40,7 +40,7 @@ SCL 工作台优化见 [Task2](docs/Tasks/Task2.md)。树表双向定位和历�
 
 ### IED 信号与通信查阅（Task4）
 
-后续表格与详情优化见 [Task5](docs/Tasks/Task5.md)：规划双击复制完整单元格、非省略换行、共享信号/成员描述来源和统一选中对象详情，并评估图投影与 QtNodes 只读适配。本轮只完成方案，运行代码与依赖未变更。
+后续表格与详情优化见 [Task5](docs/Tasks/Task5.md)：规划双击复制完整单元格、非省略换行、共享信号/成员描述来源和统一选中对象详情，并评估图投影与 QtNodes 只读适配。[T5.0 基线记录](docs/Tasks/Task5T5.0.md) 包含表格交互盘点与原生滚动复测。[T5.1](docs/Tasks/Task5T5.1.md) 已接入共享描述投影及来源原文。[T5.2](docs/Tasks/Task5T5.2.md) 试点信号与收发成员表的复制和换行。[T5.3](docs/Tasks/Task5T5.3.md) 将信号详情集中到「属性与依据」，保留独立原文浏览。[T5.4](docs/Tasks/Task5T5.4.md) 提供 GOOSE/SV 发布成员分页和网络端点表。[T5.5](docs/Tasks/Task5T5.5.md) 提供有界只读关系图。[T5.6](docs/Tasks/Task5T5.6.md) 记录综合验收和未通过项。
 
 新增「收发关系」：选 IED 后按“发送到/接收自 → 对端装置 → 发布流”展开，直接查 APPID、MAC、VLAN 与成员到 `intAddr` 的映射。成员表、可点击路径、详情和内嵌关系图可相互配合；图支持平移、缩放、切换成员及双击原文。缺省源控制块时展示成员匹配候选，未见接收方时仍保留完整发送成员。设计与本地验收见 [Task4 第 12 节](docs/Tasks/Task4.md) 和 [T4.6](docs/Tasks/Task4T4.6.md)。本轮候选程序为 `build/windows-relations-debug/bin/IEC61850Simulator.exe`。
 

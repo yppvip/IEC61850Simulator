@@ -54,6 +54,7 @@ private:
         bool taskView = false;
         SclTaskBrowser::Location task;
         bool inspectorVisible = true;
+        QString signalEvidence;
     };
     void Select(Scl::NodeId id, bool route = false, int finding = -1, bool openSource = false);
     void SelectFinding(int finding, bool openSource, bool route = false);
@@ -134,6 +135,11 @@ private:
     QString m_topologyPath;
     bool m_buildingTopology = false;
     QLabel* m_sourceLabel;
+    QLabel* m_signalTitle;
+    QLabel* m_structureTitle;
+    QPushButton* m_locateSignal;
+    QWidget* m_signalInspector;
+    QString m_signalEvidence;
     QTextBrowser* m_properties;
     SclSourcePreview* m_source;
     QPushButton* m_back;

@@ -15,6 +15,9 @@
 #include <QDir>
 #include <QDesktopServices>
 #include <QFile>
+#include <QGraphicsView>
+#include <QGraphicsItem>
+#include <QGraphicsScene>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -423,12 +426,39 @@ void MainWindowBaselineTest::SclConnectionsFlow()
     QCOMPARE(members->item(0, 3)->text(), sink);
     QVERIFY(!members->item(0, 4)->text().isEmpty());
     QVERIFY(members->item(0, 5)->text().contains(QStringLiteral("候选")));
+    members->scrollToItem(members->item(0, 4));
+    QSignalSpy tableSource(relations, &SclConnectionView::OpenEvidence);
+    const auto addressCell = members->visualItemRect(members->item(0, 4))
+        .intersected(members->viewport()->rect());
+    QVERIFY(!addressCell.isEmpty());
+    QTest::mouseDClick(members->viewport(), Qt::LeftButton, Qt::NoModifier, addressCell.center());
+    QCOMPARE(QApplication::clipboard()->text(), members->item(0, 4)->text());
+    QCOMPARE(tableSource.size(), 0);
     QApplication::processEvents();
     const auto artifact = qEnvironmentVariable("IEC61850_RELATION_ARTIFACT");
     if (!artifact.isEmpty()) QVERIFY(window.grab().save(artifact + "-members.png"));
     auto* modes = window.findChild<QTabWidget*>("SclConnectionModes");
     QVERIFY(modes);
     modes->setCurrentIndex(1);
+    auto* graph = window.findChild<QGraphicsView*>("SclConnectionGraph");
+    auto* expandGraph = window.findChild<QPushButton*>("SclExpandRelationGraph");
+    auto* graphStatus = window.findChild<QLabel*>("SclRelationGraphStatus");
+    QVERIFY(graph && expandGraph && graphStatus);
+    QTRY_VERIFY(!graph->scene()->items().isEmpty());
+    expandGraph->click();
+    QTRY_VERIFY(graphStatus->text().contains(QStringLiteral("隐藏映射")));
+    bool selectedMappingFound = false;
+    for (const auto* item : graph->scene()->items())
+        if (item->data(1).isValid() && item->data(2).isValid())
+        {
+            QVERIFY(!item->flags().testFlag(QGraphicsItem::ItemIsMovable));
+            selectedMappingFound = true;
+        }
+    QVERIFY(selectedMappingFound);
+    modes->setCurrentIndex(0);
+    QVERIFY(graph->scene()->items().isEmpty());
+    modes->setCurrentIndex(1);
+    QTRY_VERIFY(!graph->scene()->items().isEmpty());
     QApplication::processEvents();
     if (!artifact.isEmpty()) QVERIFY(window.grab().save(artifact + "-graph.png"));
     // Restore through the workspace's real history after jumping to source.
@@ -465,6 +495,45 @@ void MainWindowBaselineTest::SclConnectionsFlow()
         filter->setText("0131");
         QTRY_COMPARE_WITH_TIMEOUT(members->rowCount(), 19, 10000);
         QVERIFY(members->item(0, 5)->text().contains(QStringLiteral("未见")));
+        int tripPhase = -1;
+        for (int row = 0; row < members->rowCount(); ++row)
+            if (members->item(row, 1)->text().contains(QStringLiteral("Break1PTRC1.Tr.phsA")))
+            {
+                tripPhase = row;
+                break;
+            }
+        QVERIFY(tripPhase >= 0);
+        QVERIFY(!members->item(tripPhase, 2)->text().isEmpty());
+        members->setCurrentCell(tripPhase, 0);
+        auto* descriptions = window.findChild<QTextBrowser*>("SclConnectionInspector");
+        auto* sources = window.findChild<QComboBox*>("SclConnectionEvidence");
+        auto* open = window.findChild<QPushButton*>("SclConnectionOpenEvidence");
+        auto* original = window.findChild<QPlainTextEdit*>("SclSource");
+        QVERIFY(descriptions && sources && open && original);
+        QVERIFY(descriptions->toPlainText().contains(QStringLiteral("属性描述 · 模板 DA/BDA desc  未声明")));
+        const auto snapshot = service->snapshot();
+        const auto& analysis = snapshot->analysis;
+        const QList<QPair<QString, QString>> expected{
+            {QStringLiteral("对象描述 · 实例 dU"), QStringLiteral("Val")},
+            {QStringLiteral("属性描述 · 实例 desc"), QStringLiteral("DAI")}
+        };
+        for (const auto& [label, element] : expected)
+        {
+            const int entry = sources->findText(label);
+            QVERIFY(entry >= 0);
+            const auto node = sources->itemData(entry).toInt();
+            QCOMPARE(analysis.document->nodes[node].name, element);
+            const int line = analysis.document->nodes[node].source.line;
+            sources->setCurrentIndex(entry);
+            open->click();
+            QTRY_COMPARE(original->extraSelections().size(), 1);
+            QTRY_COMPARE(original->extraSelections().front().cursor.block().text().trimmed(),
+                analysis.source->line(line).text.trimmed().left(1024).trimmed());
+            QVERIFY(back->isEnabled());
+            back->click();
+            QTRY_COMPARE(members->rowCount(), 19);
+            members->setCurrentCell(tripPhase, 0);
+        }
     }
     // Fast query replacement must never republish a result from the old context.
     filter->setText(QStringLiteral("no-such-stream"));
@@ -503,7 +572,7 @@ void MainWindowBaselineTest::SclTaskViewFlow()
     auto* service = window.findChild<Service*>();
     auto* pages = window.findChild<iec61850sim::SclTaskPages*>();
     auto* filter = window.findChild<QLineEdit*>("SclTaskFilter");
-    auto* detail = window.findChild<QTextBrowser*>("SclTaskDetail");
+    auto* detail = window.findChild<QTextBrowser*>("SclSignalInspector");
     auto* source = window.findChild<QPushButton*>("SclTaskSource");
     auto* preview = window.findChild<QPlainTextEdit*>("SclSource");
     auto* switchView = window.findChild<QPushButton*>("SclTaskViewSwitch");
@@ -518,13 +587,25 @@ void MainWindowBaselineTest::SclTaskViewFlow()
     QTRY_COMPARE(pages->Table()->model()->rowCount(), 3);
     pages->Table()->setCurrentIndex(pages->Table()->model()->index(0, 0));
     QTRY_VERIFY(source->isEnabled());
-    QVERIFY(detail->toPlainText().contains(QStringLiteral("如何使用")));
+    QVERIFY(detail->isVisible() && !source->isVisible());
+    QVERIFY(detail->toPlainText().contains(QStringLiteral("通信使用")));
+    const auto selectedPath = pages->Table()->currentIndex().siblingAtColumn(2).data().toString();
+    filter->setText(QStringLiteral("不存在的信号"));
+    QTRY_VERIFY(detail->toPlainText().contains(QStringLiteral("遮挡")));
+    QVERIFY(!pages->Table()->currentIndex().isValid());
+    auto* locate = window.findChild<QPushButton*>("SclLocateSignal");
+    QVERIFY(locate);
+    locate->click();
+    QTRY_VERIFY(source->isEnabled());
+    QCOMPARE(pages->Table()->currentIndex().siblingAtColumn(2).data().toString(), selectedPath);
+    filter->setText(QStringLiteral("XCBR"));
+    QTRY_VERIFY(source->isEnabled());
     const auto artifact = qEnvironmentVariable("IEC61850_TASK4_ARTIFACT");
     if (!artifact.isEmpty())
         QVERIFY(window.grab().save(artifact));
     qInfo() << "Task view Qt platform, DPR, screen count:" << QGuiApplication::platformName()
             << window.devicePixelRatioF() << QGuiApplication::screens().size();
-    source->click();
+    QVERIFY(QMetaObject::invokeMethod(detail, "anchorClicked", Q_ARG(QUrl, QUrl("0"))));
     QCOMPARE(inspector->currentIndex(), 2);
     QTRY_VERIFY(preview->toPlainText().contains(QStringLiteral("lnClass=\"XCBR\"")));
     QVERIFY(back->isEnabled());
@@ -536,6 +617,12 @@ void MainWindowBaselineTest::SclTaskViewFlow()
     pages->SetPage(iec61850sim::SclTaskPages::Goose);
     filter->clear();
     QTRY_COMPARE(pages->Table()->model()->rowCount(), 1);
+    pages->Table()->setCurrentIndex(pages->Table()->model()->index(0, 0));
+    auto* publication = window.findChild<QTableWidget*>("SclPublicationMembers");
+    QVERIFY(publication);
+    QTRY_COMPARE(publication->rowCount(), 2);
+    QCOMPARE(publication->item(1, 0)->text(), QStringLiteral("2"));
+    QCOMPARE(publication->item(1, 4)->text(), QStringLiteral("ST"));
     pages->SetPage(iec61850sim::SclTaskPages::Checks);
     const auto* coverage = window.findChild<QLabel*>("SclTaskCoverage");
     QVERIFY(coverage && coverage->isVisible());
@@ -567,15 +654,26 @@ void MainWindowBaselineTest::SclTaskLocal()
     QSettings settings(QSettings::IniFormat, QSettings::UserScope, "IEC61850Simulator", "IEC61850Simulator");
     settings.setValue("SclWorkspace/TaskView", true);
     iec61850sim::MainWindow window;
-    window.resize(1280, 800);
+    const auto width = qEnvironmentVariableIntValue("IEC61850_TASK5_WIDTH");
+    const auto height = qEnvironmentVariableIntValue("IEC61850_TASK5_HEIGHT");
+    window.resize(width > 0 ? width : 1280, height > 0 ? height : 800);
     window.show();
     QVERIFY(QTest::qWaitForWindowExposed(&window));
+    qInfo() << "Task window, DPR:" << window.size() << window.devicePixelRatioF();
     auto* service = window.findChild<Service*>();
     auto* pages = window.findChild<Pages*>();
     auto* source = window.findChild<QPushButton*>("SclTaskSource");
-    QVERIFY(service && pages && source);
+    auto* detail = window.findChild<QTextBrowser*>("SclSignalInspector");
+    auto* context = window.findChild<QLabel*>("SclStructureContext");
+    auto* tree = window.findChild<QTreeView*>("SclTree");
+    auto* back = window.findChild<QPushButton*>("SclBack");
+    auto* scope = window.findChild<QComboBox*>("SclTaskIed");
+    QVERIFY(service && pages && source && detail && tree && back && scope && context);
+    QElapsedTimer load;
+    load.start();
     service->Open(path);
     QTRY_VERIFY_WITH_TIMEOUT(service->state() == Service::State::Ready, 30000);
+    qInfo() << "Task snapshot ready ms:" << load.elapsed();
     pages->SetPage(Pages::Signals);
     auto* table = pages->Table();
     QTRY_VERIFY_WITH_TIMEOUT(table->model()->rowCount() >= 100, 5000);
@@ -597,6 +695,69 @@ void MainWindowBaselineTest::SclTaskLocal()
     }
     std::sort(samples.begin(), samples.end());
     qInfo() << "Task signal details P50/P95/P99/max ms:" << samples[49] << samples[94] << samples[98] << samples.back();
+
+    const auto selectedSignal = table->model()->index(0, 0);
+    table->setCurrentIndex(selectedSignal);
+    QTRY_VERIFY(source->isEnabled());
+    auto* toggleDetails = window.findChild<QToolButton*>("SclToggleDetails");
+    QVERIFY(toggleDetails && detail->isVisible());
+    toggleDetails->click();
+    QTRY_VERIFY(!detail->isVisible());
+    toggleDetails->click();
+    QTRY_VERIFY(detail->isVisible());
+    const auto signalDetail = detail->toPlainText();
+    samples.clear();
+    for (int i = 0; i < 100; ++i)
+    {
+        QElapsedTimer elapsed;
+        elapsed.start();
+        const int row = (i + 1) * (table->model()->rowCount() - 1) / 100;
+        table->scrollTo(table->model()->index(row, 0), QAbstractItemView::PositionAtTop);
+        QApplication::processEvents();
+        samples.push_back(elapsed.nsecsElapsed());
+    }
+    std::sort(samples.begin(), samples.end());
+    qInfo() << "Signal scrolling rows/P50/P95/P99/max ms:" << table->model()->rowCount()
+            << samples[49] / 1e6 << samples[94] / 1e6 << samples[98] / 1e6 << samples.back() / 1e6;
+    QCOMPARE(table->currentIndex(), selectedSignal);
+    QVERIFY(!table->viewport()->rect().intersects(table->visualRect(selectedSignal)));
+    QCOMPARE(detail->toPlainText(), signalDetail);
+
+    source->click();
+    QVERIFY(context->text().contains(QStringLiteral("→")));
+    const auto evidence = tree->currentIndex().data(Qt::UserRole).toInt();
+    const auto snapshot = service->snapshot();
+    const auto& nodes = snapshot->analysis.document->nodes;
+    const auto definition = std::find_if(nodes.cbegin(), nodes.cend(), [&](const auto& node) {
+        return node.name == QStringLiteral("DA") && &node != &nodes.at(evidence);
+    });
+    QVERIFY(definition != nodes.cend());
+    const auto definitionId = Scl::NodeId(definition - nodes.cbegin());
+    QList<int> pathRows;
+    for (auto id = definitionId; id != Scl::NoNode; id = nodes[id].parent)
+        pathRows.prepend(snapshot->browse.branches[id].row);
+    QModelIndex definitionIndex;
+    for (int row : pathRows)
+        definitionIndex = tree->model()->index(row, 0, definitionIndex);
+    QVERIFY(definitionIndex.isValid());
+    tree->setCurrentIndex(definitionIndex);
+    QCOMPARE(tree->currentIndex().data(Qt::UserRole).toInt(), definitionId);
+    QTRY_VERIFY_WITH_TIMEOUT(QThreadPool::globalInstance()->activeThreadCount() == 0, 5000);
+    QApplication::processEvents();
+    QVERIFY(context->text().startsWith(QStringLiteral("结构浏览")));
+    QCOMPARE(table->currentIndex(), selectedSignal);
+    QCOMPARE(detail->toPlainText(), signalDetail);
+    const auto artifact = qEnvironmentVariable("IEC61850_TASK5_ARTIFACT");
+    if (!artifact.isEmpty())
+        QVERIFY(window.grab().save(artifact));
+    QVERIFY(back->isEnabled());
+    back->click();
+    QTRY_COMPARE(tree->currentIndex().data(Qt::UserRole).toInt(), evidence);
+    QTRY_VERIFY(context->text().contains(QStringLiteral("→")));
+    qInfo() << "Signal baseline peak working set bytes:" << Memory().peakWorkingSet;
+    const int projectScope = scope->findData(Scl::NoNode);
+    QVERIFY(projectScope >= 0);
+    QVERIFY(QMetaObject::invokeMethod(scope, "activated", Q_ARG(int, projectScope)));
     pages->SetPage(Pages::Goose);
     QTRY_COMPARE(table->model()->rowCount(), int(index.goose.size()));
     pages->SetPage(Pages::SampledValues);

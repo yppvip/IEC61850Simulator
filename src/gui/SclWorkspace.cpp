@@ -975,14 +975,110 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     m_sourceLabel->setObjectName("SclSourceLabel");
     m_sourceLabel->setTextFormat(Qt::PlainText);
     m_sourceLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    m_structureTitle = new QLabel(sourcePage);
+    m_structureTitle->setObjectName("SclStructureContext");
+    m_structureTitle->setTextFormat(Qt::PlainText);
+    m_structureTitle->setWordWrap(true);
+    m_structureTitle->hide();
+    auto* returnSignal = new QPushButton(QStringLiteral("返回所选信号"), sourcePage);
+    returnSignal->hide();
+    sourceLayout->addWidget(m_structureTitle);
+    sourceLayout->addWidget(returnSignal);
     m_source = new SclSourcePreview(sourcePage);
     sourceLayout->addWidget(m_sourceLabel);
     sourceLayout->addWidget(m_source);
     m_inspector->addTab(sourcePage, QStringLiteral("原文"));
+    m_signalInspector = new QWidget(m_inspector);
+    auto* signalLayout = new QVBoxLayout(m_signalInspector);
+    auto* signalActions = new QHBoxLayout;
+    m_signalTitle = new QLabel(m_signalInspector);
+    m_signalTitle->setObjectName("SclSelectedSignal");
+    m_signalTitle->setTextFormat(Qt::PlainText);
+    m_signalTitle->setWordWrap(true);
+    m_signalTitle->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    m_locateSignal = new QPushButton(QStringLiteral("定位选中行"), m_signalInspector);
+    m_locateSignal->setObjectName("SclLocateSignal");
+    auto* copySignal = new QPushButton(QStringLiteral("复制引用"), m_signalInspector);
+    signalActions->addWidget(m_signalTitle, 1);
+    signalActions->addWidget(m_locateSignal);
+    signalActions->addWidget(copySignal);
+    signalLayout->addLayout(signalActions);
+    auto* signalDetail = new QTextBrowser(m_signalInspector);
+    signalDetail->setObjectName("SclSignalInspector");
+    signalDetail->setOpenLinks(false);
+    signalDetail->setMinimumSize(0, 0);
+    signalLayout->addWidget(signalDetail);
+    const int signalTab = m_inspector->addTab(m_signalInspector, QStringLiteral("所选信号"));
+    m_inspector->setTabVisible(signalTab, false);
+    connect(m_locateSignal, &QPushButton::clicked, m_taskBrowser, &SclTaskBrowser::LocateSignal);
+    connect(copySignal, &QPushButton::clicked, this, [this] {
+        const auto path = m_taskBrowser->SignalPath();
+        if (!path.isEmpty())
+            QApplication::clipboard()->setText(path);
+    });
+    connect(returnSignal, &QPushButton::clicked, this, [this] {
+        m_inspector->setCurrentWidget(m_signalInspector);
+        m_taskBrowser->LocateSignal();
+    });
+    connect(signalDetail, &QTextBrowser::anchorClicked, this, [this](const QUrl& url) {
+        bool ok = false;
+        const auto index = url.path().toInt(&ok);
+        if (ok && url.isRelative())
+            m_taskBrowser->OpenSignalEvidence(index);
+    });
+    connect(m_taskBrowser, &SclTaskBrowser::SignalDetailChanged, this,
+        [this, signalDetail, copySignal, returnSignal](const QString& path, const QString& html) {
+        m_signalTitle->setText(path.isEmpty() ? QStringLiteral("请选择一个信号") : QStringLiteral("所选信号 · ") + path);
+        m_locateSignal->setEnabled(!path.isEmpty());
+        copySignal->setEnabled(!path.isEmpty());
+        returnSignal->setVisible(!path.isEmpty() && m_tableModes->currentIndex() == 1);
+        signalDetail->setHtml(html);
+        RefreshSourcePreview();
+    });
+    const auto showSignalTab = [this, signalTab, returnSignal] {
+        const bool show = m_tableModes->currentIndex() == 1 && m_taskBrowser->IsSignalPage();
+        m_inspector->setTabVisible(signalTab, show);
+        returnSignal->setVisible(show && !m_taskBrowser->SignalPath().isEmpty());
+        if (show && !m_restoring)
+        {
+            m_inspectorDock->toggleView(true);
+            m_inspector->setCurrentWidget(m_signalInspector);
+        }
+        RefreshSourcePreview();
+    };
+    connect(m_taskBrowser, &SclTaskBrowser::SignalPageChanged, this, showSignalTab);
+    connect(m_taskBrowser, &SclTaskBrowser::SignalSelectionChanged, this, [this] {
+        if (m_tableModes->currentIndex() == 1)
+        {
+            m_signalEvidence.clear();
+            m_inspector->setCurrentWidget(m_signalInspector);
+            RememberView();
+        }
+    });
+    connect(m_tableModes, &QStackedWidget::currentChanged, this, showSignalTab);
+    connect(m_taskBrowser, &SclTaskBrowser::OpenSignalSource, this, [this](NodeId id, const QString& label) {
+        RememberView();
+        m_inspectorDock->toggleView(true);
+        Select(id, false, -1, true);
+        m_signalEvidence = label;
+        RefreshSourcePreview();
+        RememberView();
+    });
 
     const auto selectTree = [this](const QModelIndex& index) {
         if (!m_restoring)
-            Select(SclTreeModel::Node(index), true);
+        {
+            const bool signal = m_tableModes->currentIndex() == 1 && m_taskBrowser->IsSignalPage();
+            if (signal)
+                RememberView();
+            Select(SclTreeModel::Node(index), true, -1, signal);
+            if (signal)
+            {
+                m_signalEvidence.clear();
+                RefreshSourcePreview();
+                RememberView();
+            }
+        }
     };
     connect(m_tree->selectionModel(), &QItemSelectionModel::currentChanged, this, selectTree);
     connect(m_tree, &QTreeView::clicked, this, selectTree);
@@ -1101,6 +1197,7 @@ bool SclWorkspace::UpdateSession(Snapshot snapshot, const Scl::Result& failure)
     m_showingFailure = false;
     m_sourceDirty = true;
     m_history.clear();
+    m_signalEvidence.clear();
     m_historyIndex = -1;
     m_dataSet = NoNode;
     m_ied = NoNode;
@@ -1211,7 +1308,9 @@ void SclWorkspace::Select(NodeId id, bool route, int finding, bool openSource)
         const QScopedValueRollback<bool> guard(m_restoring, true);
         m_showingFailure = false;
         const auto owner = m_snapshot->browse.iedOwners[id];
-        if (id == 0 || owner != NoNode)
+        const bool signalSource = openSource && m_tableModes->currentIndex() == 1
+            && (m_taskBrowser->IsSignalPage() || m_taskBrowser->IsPublicationPage());
+        if (!restoring && !signalSource && (id == 0 || owner != NoNode))
             SetIedScope(id == 0 ? NoNode : owner);
         m_selected = id;
         m_finding = finding;
@@ -1388,7 +1487,7 @@ void SclWorkspace::RememberView()
     if (!m_restoring && m_historyIndex >= 0)
         m_history[m_historyIndex] = {m_selected, m_dataSet, m_tables->currentIndex(), m_inspector->currentIndex(),
             m_finding, m_ied, m_tableModes->currentIndex() == 1, m_taskBrowser->CurrentLocation(),
-            !m_inspectorDock->isClosed()};
+            !m_inspectorDock->isClosed(), m_signalEvidence};
 }
 
 void SclWorkspace::ShowTaskView(bool show, bool remember)
@@ -1400,7 +1499,7 @@ void SclWorkspace::ShowTaskView(bool show, bool remember)
         if (show)
             m_advancedInspectorVisible = !m_inspectorDock->isClosed();
         m_tableModes->setCurrentIndex(show ? 1 : 0);
-        m_inspectorDock->toggleView(!show && m_advancedInspectorVisible);
+        m_inspectorDock->toggleView(show ? m_taskBrowser->IsSignalPage() : m_advancedInspectorVisible);
     }
     m_advancedScope->setVisible(!show);
     m_taskSwitch->setText(show ? QStringLiteral("高级视图") : QStringLiteral("任务视图"));
@@ -1425,15 +1524,17 @@ void SclWorkspace::Navigate(int direction)
     {
         const QScopedValueRollback<bool> restoring(m_restoring, true);
         m_historyIndex = next;
+        m_signalEvidence = location.signalEvidence;
         SetIedScope(location.ied);
-        Select(location.node, false, location.finding);
+        Select(location.node, false, location.finding, location.taskView
+            && location.task.page == SclTaskPages::Signals && !location.task.inputs && location.inspector == 2);
         SetMemberScope(location.dataSet);
         m_tables->setCurrentIndex(location.table);
         UpdateTabVisibility();
-        m_inspector->setCurrentIndex(location.inspector);
         ShowTaskView(location.taskView);
         m_inspectorDock->toggleView(location.inspectorVisible);
         m_taskBrowser->RestoreLocation(location.task);
+        m_inspector->setCurrentIndex(location.inspector);
         if (m_tables->currentWidget() == m_results)
             m_results->selectionModel()->clear();
     }
@@ -1688,6 +1789,17 @@ void SclWorkspace::UpdateReferencePath(const QModelIndex& index)
 
 void SclWorkspace::RefreshSourcePreview()
 {
+    const bool signal = m_snapshot && !m_showingFailure && m_selected != NoNode
+        && m_tableModes->currentIndex() == 1 && m_taskBrowser->IsSignalPage();
+    m_structureTitle->setVisible(signal);
+    if (signal)
+    {
+        const auto& node = m_snapshot->analysis.document->nodes[m_selected];
+        const auto name = Attribute(*m_snapshot, m_selected, "name");
+        m_structureTitle->setText(m_signalEvidence.isEmpty()
+            ? QStringLiteral("结构浏览 · %1 %2").arg(node.name, name)
+            : QStringLiteral("%1 → %2").arg(m_taskBrowser->SignalPath(), m_signalEvidence));
+    }
     if (!m_sourceDirty || m_inspector->currentIndex() != 2 || m_inspector->isHidden())
         return;
     m_sourceDirty = false;

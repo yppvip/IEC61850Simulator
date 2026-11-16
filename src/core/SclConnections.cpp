@@ -28,7 +28,7 @@ QString Name(const SclSnapshot& snapshot, NodeId node)
 
 QString Object(const Scl::Document& doc, NodeId member)
 {
-    const auto attr = [&](const char* key) { return doc.attribute(member, QLatin1String(key)).left(512); };
+    const auto attr = [&](const char* key) { return doc.attribute(member, QLatin1String(key)); };
     const auto da = attr("daName");
     return attr("ldInst") + '/' + attr("prefix") + attr("lnClass") + attr("lnInst")
         + '.' + attr("doName") + (da.isEmpty() ? QString{} : '.' + da);
@@ -177,7 +177,7 @@ SclConnectionList QuerySclConnections(const SclSnapshot& snapshot, NodeId scope,
 }
 
 SclConnectionDetail DescribeSclConnection(const SclSnapshot& snapshot, const SclConnection& connection,
-    int offset, bool mappedOnly, Scl::TaskControl* task)
+    int offset, bool mappedOnly, Scl::TaskControl* task, bool publication)
 {
     SclConnectionDetail result;
     const auto& doc = *snapshot.analysis.document;
@@ -196,7 +196,7 @@ SclConnectionDetail DescribeSclConnection(const SclSnapshot& snapshot, const Scl
         result.description += QStringLiteral("\n源控制块/数据成员证据不足或冲突；请查阅原文，不能按名称猜测接线。");
         result.members.push_back({{QStringLiteral("—"), connection.controlName, {}, connection.targetName,
             doc.attribute(connection.unresolvedInput, QStringLiteral("intAddr")), QStringLiteral("发布流未确认")},
-            NoNode, connection.unresolvedInput, true});
+            {}, NoNode, connection.unresolvedInput, true});
         result.total = 1;
         return result;
     }
@@ -205,6 +205,75 @@ SclConnectionDetail DescribeSclConnection(const SclSnapshot& snapshot, const Scl
         return result;
     evidence(QStringLiteral("发送控制块"), stream->control);
     evidence(QStringLiteral("发布数据集"), stream->dataSet);
+    if (publication)
+    {
+        const auto attr = [&](NodeId node, const char* key) { return doc.attribute(node, QLatin1String(key)); };
+        const auto display = [](const QString& value) {
+            return value.isNull() ? QStringLiteral("未声明") : value.isEmpty() ? QStringLiteral("已声明空值") : value;
+        };
+        result.description = SclTaskPath(doc, stream->control)
+            + QStringLiteral("\n数据集 %1 · %2 %3 · confRev %4").arg(display(attr(stream->control, "datSet")),
+                connection.service == "SV" ? QStringLiteral("smvID") : QStringLiteral("appID"),
+                display(connection.identifier), display(attr(stream->control, "confRev")));
+        if (connection.service == "SV")
+        {
+            result.description += QStringLiteral("\n采样配置 · smpRate %1 · smpMod %2 · nofASDU %3\n单位/换算依据未确认")
+                .arg(display(attr(stream->control, "smpRate")), display(attr(stream->control, "smpMod")),
+                     display(attr(stream->control, "nofASDU")));
+            QStringList options;
+            for (auto child = doc.nodes[stream->control].firstChild; child != NoNode; child = doc.nodes[child].nextSibling)
+            {
+                Scl::checkpoint(task);
+                const auto& node = doc.nodes[child];
+                if (!node.isScl() || node.name != "SmvOpts")
+                    continue;
+                evidence(QStringLiteral("SmvOpts 声明"), child);
+                QStringList values;
+                for (int i = 0; i < node.attributeCount; ++i)
+                {
+                    const auto& item = doc.attributes[node.firstAttribute + i];
+                    if (item.namespaceUri.isEmpty())
+                        values << item.name + '=' + item.value;
+                }
+                options << (values.isEmpty() ? QStringLiteral("已声明，无属性") : values.join(QStringLiteral(" · ")));
+                if (options.size() == 16)
+                    break;
+            }
+            result.description += QStringLiteral("\nSmvOpts · ") + (options.isEmpty()
+                ? QStringLiteral("未声明") : options.join(QStringLiteral(" / ")));
+        }
+        for (const auto endpoint : stream->endpoints)
+        {
+            Scl::checkpoint(task);
+            if (result.endpoints.size() == 512)
+            {
+                result.endpointsLimited = true;
+                break;
+            }
+            const auto ap = doc.nodes[endpoint].parent;
+            const auto subnet = doc.nodes[ap].parent;
+            QMap<QString, QStringList> address;
+            for (auto child = doc.nodes[endpoint].firstChild; child != NoNode; child = doc.nodes[child].nextSibling)
+            {
+                Scl::checkpoint(task);
+                if (!doc.nodes[child].isScl() || doc.nodes[child].name != "Address")
+                    continue;
+                for (auto p = doc.nodes[child].firstChild; p != NoNode; p = doc.nodes[p].nextSibling)
+                {
+                    Scl::checkpoint(task);
+                    if (!doc.nodes[p].isScl() || doc.nodes[p].name != "P")
+                        continue;
+                    const auto type = attr(p, "type");
+                    if (type == "APPID" || type == "MAC-Address" || type == "VLAN-ID" || type == "VLAN-PRIORITY")
+                        address[type] << doc.nodes[p].text;
+                }
+            }
+            QStringList cells{attr(subnet, "name"), attr(ap, "apName")};
+            for (const auto* field : {"APPID", "MAC-Address", "VLAN-ID", "VLAN-PRIORITY"})
+                cells << address.value(QLatin1String(field)).join('\n');
+            result.endpoints.push_back({std::move(cells), endpoint});
+        }
+    }
     for (size_t i = 0; i < stream->endpoints.size() && i < 16; ++i)
         evidence(QStringLiteral("通信端点 %1").arg(i + 1), stream->endpoints[i]);
     const auto members = snapshot.browse.dataSetMembers.value(stream->dataSet);
@@ -228,26 +297,56 @@ SclConnectionDetail DescribeSclConnection(const SclSnapshot& snapshot, const Scl
             if (reference.kind != Scl::LinkKind::Fcda) continue;
             if (reference.state != Scl::LinkState::Resolved)
                 row.cells[5] = QStringLiteral("发送成员未唯一解析，接收关系未知");
-            if (reference.instanceDescription != NoNode)
-                row.cells[2] = QStringLiteral("dU: ") + doc.nodes[reference.instanceDescription].text.left(512);
+            else
+            {
+                row.mmsDomain = reference.mmsDomain;
+                row.mmsItem = reference.mmsItem;
+                row.arrayIndex = reference.arrayIndex;
+            }
             break;
         }
-        // Preserve instance dU and the resolved FC/MMS evidence for member inspection.
+        row.description = DescribeSclMember(snapshot.analysis, member, task);
+        if (const auto* title = row.description.ObjectTitle())
+            row.cells[2] = title->value;
+        if (publication)
+        {
+            row.cells[4] = doc.attribute(member, QStringLiteral("fc"));
+            for (const auto& field : row.description.fields)
+                if ((field.source == SclDescriptionSource::InstanceAttribute || field.source == SclDescriptionSource::TemplateAttribute)
+                    && field.state == SclDescriptionState::Present)
+                {
+                    row.cells[3] = field.value;
+                    break;
+                }
+            const auto found = mapped.find(member);
+            int bound = 0, candidates = 0;
+            if (found != mapped.end())
+                for (const int index : found->second)
+                {
+                    Scl::checkpoint(task);
+                    const auto& link = snapshot.tasks.memberLinks[index];
+                    link.bound ? ++bound : ++candidates;
+                    if (row.reception.size() < 8)
+                    {
+                        const auto input = snapshot.tasks.inputs[link.input].node;
+                        row.reception.push_back({(link.bound ? QStringLiteral("明确接收 · ")
+                            : QStringLiteral("候选接收 · ")) + Name(snapshot, snapshot.browse.iedOwners[input]), input});
+                    }
+                }
+            if (bound || candidates)
+                row.cells[5] = QStringLiteral("明确映射 %1 · 候选 %2").arg(bound).arg(candidates);
+        }
         if (link >= 0)
         {
             const auto& mapping = snapshot.tasks.memberLinks[link];
-            const auto& ref = snapshot.analysis.references[mapping.memberReference];
             row.input = snapshot.tasks.inputs[mapping.input].node;
             row.candidate = !mapping.bound;
-            if (ref.instanceDescription != NoNode)
-                row.cells[2] = QStringLiteral("dU: ") + doc.nodes[ref.instanceDescription].text.left(512);
-            row.cells[4] = doc.attribute(row.input, QStringLiteral("intAddr")).left(1024);
+            row.cells[4] = doc.attribute(row.input, QStringLiteral("intAddr"));
             row.cells[5] = mapping.bound ? QStringLiteral("源控制块与成员绑定")
                 : mapping.aggregate ? QStringLiteral("对象包含候选 · 未确认绑定") : QStringLiteral("成员匹配候选 · 未确认绑定");
         }
-        if (row.cells[2].isEmpty())
-            row.cells[2] = doc.attribute(member, QStringLiteral("desc")).left(512);
-        row.cells[1] += QStringLiteral(" [FC %1]").arg(doc.attribute(member, QStringLiteral("fc")));
+        if (!publication)
+            row.cells[1] += QStringLiteral(" [FC %1]").arg(doc.attribute(member, QStringLiteral("fc")));
         result.members.push_back(std::move(row));
     };
     for (int ordinal = 0; ordinal < members.count; ++ordinal)
@@ -255,7 +354,7 @@ SclConnectionDetail DescribeSclConnection(const SclSnapshot& snapshot, const Scl
         Scl::checkpoint(task);
         const auto member = snapshot.browse.memberRows[members.first + ordinal];
         const auto found = mapped.find(member);
-        if (found == mapped.end())
+        if (publication || found == mapped.end())
         {
             if (!mappedOnly)
                 append(member, ordinal + 1, -1);
@@ -267,5 +366,25 @@ SclConnectionDetail DescribeSclConnection(const SclSnapshot& snapshot, const Scl
     if (stream->dataSet == NoNode)
         result.description += QStringLiteral("\n数据集未解析，成员覆盖不足。");
     return result;
+}
+
+SclConnectionDetail DescribeSclPublication(const SclSnapshot& snapshot, NodeId control, int offset,
+    Scl::TaskControl* task)
+{
+    const auto* stream = Stream(snapshot, control);
+    if (!stream)
+        return {};
+    const auto& doc = *snapshot.analysis.document;
+    SclConnection publication;
+    publication.control = control;
+    const bool sv = doc.nodes[control].name == "SampledValueControl";
+    publication.service = sv ? QStringLiteral("SV") : QStringLiteral("GOOSE");
+    publication.identifier = doc.attribute(control, sv ? QStringLiteral("smvID") : QStringLiteral("appID"));
+    publication.controlName = doc.attribute(control, QStringLiteral("name"));
+    publication.sourceName = Name(snapshot, snapshot.browse.iedOwners[control]);
+    const auto links = snapshot.tasks.linksByControl.constFind(control);
+    if (links != snapshot.tasks.linksByControl.cend())
+        publication.links = *links;
+    return DescribeSclConnection(snapshot, publication, offset, false, task, true);
 }
 }

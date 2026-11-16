@@ -15,6 +15,7 @@ class QTextBrowser;
 namespace iec61850sim
 {
 class SclConnectionView;
+class SclTableInteraction;
 class SclTaskPages final : public QWidget
 {
     Q_OBJECT
@@ -35,6 +36,7 @@ public:
     void SetCoverage(const QString& summary, const QString& rules);
     QTableView* Table() const { return m_table; }
     SclConnectionView* ConnectionsView() const { return m_connections; }
+    SclConnectionView* PublicationView() const { return m_publication; }
 
 signals:
     void ScopeChanged(int id);
@@ -46,6 +48,7 @@ signals:
     void ExportIssues();
 
 private:
+    void UpdateResultLayout();
     QComboBox* m_scope;
     int m_appliedScope = -1;
     QTabBar* m_pages;
@@ -55,6 +58,7 @@ private:
     QLineEdit* m_filter;
     QComboBox* m_direction;
     QTableView* m_table;
+    SclTableInteraction* m_tableInteraction;
     QTextBrowser* m_detail;
     QPushButton* m_source;
     QComboBox* m_evidence;
@@ -64,5 +68,6 @@ private:
     QPushButton* m_exportIssues;
     QString m_rules;
     SclConnectionView* m_connections;
+    SclConnectionView* m_publication;
 };
 }

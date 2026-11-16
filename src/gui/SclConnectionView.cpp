@@ -1,4 +1,6 @@
 #include "SclConnectionView.hpp"
+#include "SclRelationGraph.hpp"
+#include "SclTableInteraction.hpp"
 
 // finesse · register=product · native palette/type · direction tree + member columns
 // + bounded local graph · Qt Graphics View · feedback-only · density=9
@@ -21,7 +23,6 @@
 #include <QScrollBar>
 #include <QScrollArea>
 #include <QSignalBlocker>
-#include <QShortcut>
 #include <QSplitter>
 #include <QStyle>
 #include <QTableWidget>
@@ -31,6 +32,7 @@
 #include <QVBoxLayout>
 #include <QWheelEvent>
 #include <QtConcurrentRun>
+#include <cmath>
 #include <functional>
 #include <optional>
 
@@ -50,6 +52,7 @@ public:
         setAccessibleName(QStringLiteral("局部虚端子关系图，Ctrl 加滚轮缩放，拖动平移，双击节点查看原文"));
     }
     std::function<void(int)> activate;
+    std::function<void(int, int)> selectIdentity;
     void Fit()
     {
         m_autoFit = true;
@@ -60,11 +63,21 @@ public:
     }
     void Zoom(double factor)
     {
-        if (transform().m11() * factor < .25 || transform().m11() * factor > 3.) return;
+        const auto next = transform().m11() * factor;
+        if (next > 3. || (factor < 1. && next < .04)) return;
         m_autoFit = false;
         scale(factor, factor);
     }
 protected:
+    void mousePressEvent(QMouseEvent* event) override
+    {
+        auto* item = itemAt(event->pos());
+        while (item && !item->data(0).isValid())
+            item = item->parentItem();
+        if (event->button() == Qt::LeftButton && item && item->data(1).isValid() && selectIdentity)
+            selectIdentity(item->data(1).toInt(), item->data(2).toInt());
+        QGraphicsView::mousePressEvent(event);
+    }
     void resizeEvent(QResizeEvent* event) override
     {
         QGraphicsView::resizeEvent(event);
@@ -150,6 +163,7 @@ SclConnectionView::SclConnectionView(QWidget* parent) : QWidget(parent)
     m_breadcrumb->setTextInteractionFlags(Qt::LinksAccessibleByMouse | Qt::LinksAccessibleByKeyboard);
     pathBar->addWidget(m_breadcrumb, 1);
     auto* treeToggle = new QPushButton(QStringLiteral("关系树"), body);
+    treeToggle->setObjectName("SclConnectionTreeToggle");
     treeToggle->setCheckable(true);
     treeToggle->setChecked(true);
     pathBar->addWidget(treeToggle);
@@ -187,7 +201,7 @@ SclConnectionView::SclConnectionView(QWidget* parent) : QWidget(parent)
     m_members->setObjectName("SclConnectionMembers");
     m_members->setColumnCount(6);
     m_members->setHorizontalHeaderLabels({QStringLiteral("序号"), QStringLiteral("发送成员 / FC"),
-        QStringLiteral("描述"), QStringLiteral("接收 IED"), QStringLiteral("接收内部地址 intAddr"), QStringLiteral("证据")});
+        QStringLiteral("对象描述"), QStringLiteral("接收 IED"), QStringLiteral("接收内部地址 intAddr"), QStringLiteral("证据")});
     m_members->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_members->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_members->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -201,18 +215,14 @@ SclConnectionView::SclConnectionView(QWidget* parent) : QWidget(parent)
     for (int i = 0; i < 6; ++i)
         m_members->setColumnWidth(i, widths[i]);
     mapLayout->addWidget(m_members, 1);
-    auto* copy = new QShortcut(QKeySequence::Copy, m_members);
-    connect(copy, &QShortcut::activated, this, [this] {
-        QStringList cells;
-        for (auto* item : m_members->selectedItems()) cells << item->text();
-        QApplication::clipboard()->setText(cells.join('\t'));
-    });
+    auto* memberInteraction = new SclTableInteraction(m_members);
+    memberInteraction->SetEnabled(true);
     tabs->addTab(mapping, style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("成员映射"));
 
     auto* graphPanel = new QWidget(tabs);
     auto* graphLayout = new QVBoxLayout(graphPanel);
     auto* graphActions = new QHBoxLayout;
-    auto* legend = new QLabel(QStringLiteral("实线：源控制块绑定  ·  虚线：候选  ·  双击节点：原文"), graphPanel);
+    auto* legend = new QLabel(QStringLiteral("实线：明确绑定 · 虚线：候选 · 点线：归属或依据 · 双击：原文"), graphPanel);
     legend->setWordWrap(true);
     graphActions->addWidget(legend, 1);
     auto* fit = new QPushButton(QStringLiteral("适应"), graphPanel);
@@ -221,6 +231,10 @@ SclConnectionView::SclConnectionView(QWidget* parent) : QWidget(parent)
     graphActions->addWidget(zoomOut);
     graphActions->addWidget(zoomIn);
     graphActions->addWidget(fit);
+    m_expandGraph = new QPushButton(QStringLiteral("展开更多"), graphPanel);
+    m_expandGraph->setObjectName("SclExpandRelationGraph");
+    m_expandGraph->setCheckable(true);
+    graphActions->addWidget(m_expandGraph);
     graphLayout->addLayout(graphActions);
     m_graphMember = new QComboBox(graphPanel);
     m_graphMember->setObjectName("SclConnectionGraphMember");
@@ -232,8 +246,36 @@ SclConnectionView::SclConnectionView(QWidget* parent) : QWidget(parent)
     m_graph->setObjectName("SclConnectionGraph");
     m_graph->setBackgroundBrush(palette().brush(QPalette::AlternateBase));
     graph->activate = [this](int node) { emit OpenEvidence(node); };
+    graph->selectIdentity = [this](int member, int input) {
+        for (int i = 0; i < int(m_detail.members.size()); ++i)
+            if (m_detail.members[i].member == member && m_detail.members[i].input == input
+                && i != m_members->currentRow())
+            {
+                // Let the mouse event finish before the selected row can replace the scene.
+                QTimer::singleShot(0, this, [this, request = m_graphRequest, i, member, input] {
+                    if (request && m_graphRequest == request && i < int(m_detail.members.size())
+                        && m_detail.members[i].member == member && m_detail.members[i].input == input)
+                        m_members->setCurrentCell(i, 0);
+                });
+                break;
+            }
+    };
+    m_graphStatus = new QLabel(graphPanel);
+    m_graphStatus->setObjectName("SclRelationGraphStatus");
+    m_graphStatus->setWordWrap(true);
+    graphLayout->addWidget(m_graphStatus);
     graphLayout->addWidget(graph, 1);
     tabs->addTab(graphPanel, style()->standardIcon(QStyle::SP_ComputerIcon), QStringLiteral("关系图"));
+    connect(m_expandGraph, &QPushButton::toggled, this, [this](bool expanded) {
+        m_graphExpanded = expanded;
+        LoadGraph();
+    });
+    connect(tabs, &QTabWidget::currentChanged, this, [this](int index) {
+        if (index == 1)
+            QTimer::singleShot(0, this, &SclConnectionView::LoadGraph);
+        else
+            CancelGraph();
+    });
 
     auto* inspector = new QWidget(tabs);
     auto* inspectorLayout = new QVBoxLayout(inspector);
@@ -241,13 +283,33 @@ SclConnectionView::SclConnectionView(QWidget* parent) : QWidget(parent)
     m_inspector->setObjectName("SclConnectionInspector");
     inspectorLayout->addWidget(m_inspector);
     tabs->addTab(inspector, QStringLiteral("成员详情"));
+    m_endpoints = new QTableWidget(tabs);
+    m_endpoints->setObjectName("SclPublicationEndpoints");
+    m_endpoints->setColumnCount(6);
+    m_endpoints->setHorizontalHeaderLabels({QStringLiteral("SubNetwork"), QStringLiteral("AP"),
+        QStringLiteral("APPID"), QStringLiteral("MAC"), QStringLiteral("VLAN-ID"), QStringLiteral("VLAN 优先级")});
+    m_endpoints->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_endpoints->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_endpoints->verticalHeader()->hide();
+    auto* endpointInteraction = new SclTableInteraction(m_endpoints);
+    endpointInteraction->SetEnabled(true);
+    connect(endpointInteraction, &SclTableInteraction::OpenSource, this, [this] {
+        const auto row = m_endpoints->currentRow();
+        if (row >= 0 && row < int(m_detail.endpoints.size()))
+            emit OpenEvidence(m_detail.endpoints[row].node);
+    });
+    tabs->addTab(m_endpoints, QStringLiteral("网络端点"));
+    tabs->setTabVisible(tabs->indexOf(m_endpoints), false);
     auto* actions = new QHBoxLayout;
     m_source = new QPushButton(QStringLiteral("发送成员原文"), body);
+    connect(memberInteraction, &SclTableInteraction::OpenSource, m_source, &QPushButton::click);
     m_input = new QPushButton(QStringLiteral("接收声明原文"), body);
     m_evidence = new QComboBox(body);
+    m_evidence->setObjectName("SclConnectionEvidence");
     m_evidence->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     m_evidence->setMinimumContentsLength(7);
-    auto* evidence = new QPushButton(QStringLiteral("配置依据"), body);
+    auto* evidence = new QPushButton(QStringLiteral("查看所选依据"), body);
+    evidence->setObjectName("SclConnectionOpenEvidence");
     actions->addWidget(m_source);
     actions->addWidget(m_input);
     actions->addWidget(m_evidence, 1);
@@ -315,6 +377,7 @@ SclConnectionView::~SclConnectionView() { Cancel(); }
 
 void SclConnectionView::Cancel()
 {
+    CancelGraph();
     m_delay.stop();
     if (m_query) m_query->cancelled = true;
     if (m_selection) m_selection->cancelled = true;
@@ -327,6 +390,7 @@ void SclConnectionView::ClearDetail()
     m_detail = {};
     m_current = -1;
     m_members->setRowCount(0);
+    m_endpoints->setRowCount(0);
     m_graph->scene()->clear();
     m_graphMember->clear();
     m_inspector->clear();
@@ -338,6 +402,45 @@ void SclConnectionView::ClearDetail()
     m_paging->clear();
     m_breadcrumb->setText(QStringLiteral("选择关系树中的发布流"));
     m_summary->setText(QStringLiteral("从发端看去向，从收端查来源；缺省的源控制块将保留为成员匹配候选。"));
+}
+
+void SclConnectionView::SetPublicationMode()
+{
+    m_publication = true;
+    m_expandGraph->setObjectName("SclPublicationExpandGraph");
+    m_graphStatus->setObjectName("SclPublicationGraphStatus");
+    m_service->hide();
+    m_filter->hide();
+    m_stats->hide();
+    m_tree->hide();
+    findChild<QPushButton*>("SclConnectionTreeToggle")->hide();
+    m_breadcrumb->hide();
+    m_mappedOnly->hide();
+    m_input->hide();
+    auto* tabs = findChild<QTabWidget*>("SclConnectionModes");
+    tabs->setTabVisible(1, false);
+    tabs->setTabVisible(tabs->indexOf(m_endpoints), true);
+    m_members->setObjectName("SclPublicationMembers");
+    for (auto* child : findChildren<QWidget*>())
+        if (child->objectName().startsWith(QStringLiteral("SclConnection")))
+            child->setObjectName(QStringLiteral("SclPublication") + child->objectName().mid(13));
+    m_members->setHorizontalHeaderItem(3, new QTableWidgetItem(QStringLiteral("属性描述")));
+    m_members->setHorizontalHeaderItem(4, new QTableWidgetItem(QStringLiteral("FC")));
+    m_members->setHorizontalHeaderItem(5, new QTableWidgetItem(QStringLiteral("接收映射")));
+    setObjectName("SclPublication");
+}
+
+void SclConnectionView::SetPublication(Scl::NodeId control, const std::optional<Location>& restore)
+{
+    Cancel();
+    ClearDetail();
+    m_control = control;
+    m_restore = restore;
+    m_offset = restore ? restore->offset : 0;
+    if (control != Scl::NoNode && isVisible())
+        LoadMembers();
+    else
+        m_summary->setText(QStringLiteral("选择发布流查看网络端点和数据集成员。"));
 }
 
 void SclConnectionView::SetContext(std::shared_ptr<const SclSnapshot> snapshot, Scl::NodeId scope)
@@ -357,6 +460,12 @@ void SclConnectionView::SetContext(std::shared_ptr<const SclSnapshot> snapshot, 
     m_list = {};
     m_tree->clear();
     ClearDetail();
+    if (m_publication)
+    {
+        m_control = Scl::NoNode;
+        m_summary->setText(QStringLiteral("选择发布流查看网络端点和数据集成员。"));
+        return;
+    }
     Schedule();
 }
 
@@ -368,6 +477,11 @@ void SclConnectionView::SetService(const QString& service)
 void SclConnectionView::showEvent(QShowEvent* event)
 {
     QWidget::showEvent(event);
+    if (m_publication)
+    {
+        LoadMembers();
+        return;
+    }
     if (m_dirty)
     {
         const auto restore = m_restore;
@@ -467,15 +581,20 @@ void SclConnectionView::SelectConnection(int index)
 
 void SclConnectionView::LoadMembers()
 {
-    if (m_current < 0 || m_current >= int(m_list.rows.size()) || !m_snapshot) return;
+    if (!m_snapshot || (m_publication ? m_control == Scl::NoNode
+        : m_current < 0 || m_current >= int(m_list.rows.size()))) return;
+    CancelGraph();
     if (m_selection) m_selection->cancelled = true;
     const auto snapshot = m_snapshot;
-    const auto connection = m_list.rows[m_current];
+    const auto connection = m_publication ? SclConnection{} : m_list.rows[m_current];
+    const auto control = m_control;
+    const bool publication = m_publication;
     const auto offset = m_offset;
     const bool mapped = m_mappedOnly->isChecked();
     const auto task = m_selection = std::make_shared<Scl::TaskControl>();
     m_detail = {};
     m_members->setRowCount(0);
+    m_endpoints->setRowCount(0);
     m_graphMember->clear();
     m_source->setEnabled(false);
     m_input->setEnabled(false);
@@ -500,15 +619,38 @@ void SclConnectionView::LoadMembers()
             + crumb(connection.sender, connection.sourceName) + QStringLiteral(" → ")
             + crumb(connection.receiver, connection.targetName));
         m_summary->setText(m_detail.description);
-        for (const auto& item : m_detail.evidence) m_evidence->addItem(item.label, item.node);
+        if (m_publication)
+        {
+            if (m_detail.endpoints.empty())
+                m_summary->setText(m_summary->text() + QStringLiteral("\n网络端点未解析。"));
+            if (m_detail.endpointsLimited)
+                m_summary->setText(m_summary->text() + QStringLiteral("\n端点超过展示上限，完整配置见原文。"));
+            m_endpoints->setRowCount(int(m_detail.endpoints.size()));
+            for (int row = 0; row < m_endpoints->rowCount(); ++row)
+                for (int col = 0; col < m_endpoints->columnCount(); ++col)
+                {
+                    const auto& value = m_detail.endpoints[row].cells[col];
+                    auto* cell = new QTableWidgetItem(value.size() > SclTableInteraction::PreviewLimit
+                        ? tr("完整值 %1 字符（右键查看）").arg(value.size())
+                        : value.isEmpty() ? QStringLiteral("未声明") : value);
+                    cell->setData(SclTableInteraction::FullValueRole, value);
+                    m_endpoints->setItem(row, col, cell);
+                }
+        }
+        for (const auto& item : m_detail.evidence)
+            m_evidence->addItem(item.label, item.node);
         m_members->setRowCount(int(m_detail.members.size()));
         for (int row = 0; row < int(m_detail.members.size()); ++row)
         {
             const auto& member = m_detail.members[row];
             for (int col = 0; col < member.cells.size(); ++col)
             {
-                auto* cell = new QTableWidgetItem(member.cells[col]);
-                cell->setToolTip(member.cells[col].toHtmlEscaped());
+                const auto& value = member.cells[col];
+                const auto display = value.size() > SclTableInteraction::PreviewLimit
+                    ? tr("完整值 %1 字符（右键查看）").arg(value.size()) : value;
+                auto* cell = new QTableWidgetItem(display);
+                cell->setData(SclTableInteraction::FullValueRole, value);
+                cell->setToolTip(display.toHtmlEscaped());
                 if (col == 5 && member.candidate)
                     cell->setIcon(style()->standardIcon(QStyle::SP_MessageBoxQuestion));
                 m_members->setItem(row, col, cell);
@@ -521,13 +663,21 @@ void SclConnectionView::LoadMembers()
             .arg(m_offset + m_detail.members.size()).arg(m_detail.total));
         m_previous->setEnabled(m_offset > 0);
         m_next->setEnabled(m_offset + int(m_detail.members.size()) < m_detail.total);
-        const int selected = m_restore ? m_restore->member : 0;
+        int selected = m_restore ? m_restore->member : 0;
+        if (m_publication && m_restore && m_restore->memberNode != Scl::NoNode)
+        {
+            const auto found = std::find_if(m_detail.members.cbegin(), m_detail.members.cend(), [this](const auto& row) {
+                return row.member == m_restore->memberNode;
+            });
+            selected = found == m_detail.members.cend() ? 0 : int(found - m_detail.members.cbegin());
+        }
         m_restore.reset();
         if (!m_detail.members.empty()) m_members->setCurrentCell(qBound(0, selected, int(m_detail.members.size()) - 1), 0);
         else SelectMember(-1);
     });
-    watcher->setFuture(QtConcurrent::run([snapshot, connection, offset, mapped, task]() -> std::optional<SclConnectionDetail> {
-        try { return DescribeSclConnection(*snapshot, connection, offset, mapped, task.get()); }
+    watcher->setFuture(QtConcurrent::run([snapshot, connection, control, publication, offset, mapped, task]() -> std::optional<SclConnectionDetail> {
+        try { return publication ? DescribeSclPublication(*snapshot, control, offset, task.get())
+            : DescribeSclConnection(*snapshot, connection, offset, mapped, task.get()); }
         catch (const Scl::TaskCancelled&) { return {}; }
         catch (const std::exception&) { return {}; }
     }));
@@ -535,58 +685,153 @@ void SclConnectionView::LoadMembers()
 
 void SclConnectionView::SelectMember(int row)
 {
-    if (row < 0 || row >= int(m_detail.members.size()) || m_current < 0) return;
+    if (row < 0 || row >= int(m_detail.members.size()) || (!m_publication && m_current < 0)) return;
     const auto& member = m_detail.members[row];
-    const auto& connection = m_list.rows[m_current];
     { const QSignalBlocker blocker(m_graphMember); m_graphMember->setCurrentIndex(row); }
     m_source->setEnabled(member.member != Scl::NoNode);
     m_input->setEnabled(member.input != Scl::NoNode);
-    m_inspector->setPlainText(QStringLiteral("发送装置：%1\n发送成员：%2\n描述：%3\n接收装置：%4\n内部地址：%5\n证据：%6\n\n%7")
-        .arg(connection.sourceName, member.cells.value(1), member.cells.value(2), member.cells.value(3),
-            member.cells.value(4), member.cells.value(5), m_detail.description));
-    auto* scene = m_graph->scene();
-    scene->clear();
-    const auto base = palette().color(QPalette::Base);
-    const auto color = base.lightness() > 128 ? ServiceColor(connection.service) : palette().color(QPalette::Text);
-    const auto ink = palette().color(QPalette::Text);
-    const auto card = [&](int x, const QString& heading, const QString& body, int node) {
-        auto* box = scene->addRect(x, 12, 260, 145, QPen(color, 2), base);
-        box->setData(0, node);
-        box->setFlag(QGraphicsItem::ItemIsSelectable);
-        box->setToolTip((heading + '\n' + body).toHtmlEscaped());
-        auto* title = new QGraphicsTextItem(box);
-        title->setDefaultTextColor(ink);
-        auto font = title->font(); font.setBold(true); title->setFont(font);
-        title->setPlainText(heading.left(40));
-        title->setPos(x + 12, 22);
-        title->setTextWidth(234);
-        auto* text = new QGraphicsTextItem(box);
-        text->setDefaultTextColor(ink);
-        text->setPlainText(body.left(120));
-        text->setTextWidth(234);
-        text->setPos(x + 12, 55);
-    };
-    card(0, QStringLiteral("↑ 发端 · ") + connection.sourceName, member.cells.value(1), member.member);
-    card(320, connection.service + QStringLiteral(" · 发布流"), connection.identifier + '\n' + connection.addresses, connection.control);
-    card(640, QStringLiteral("↓ 收端 · ") + connection.targetName,
-        member.cells.value(4).isEmpty() ? QStringLiteral("本文件未见该成员的接收内部地址") : member.cells.value(4), member.input);
-    for (int x : {260, 580})
+    m_evidence->clear();
+    for (const auto& item : m_detail.evidence)
+        m_evidence->addItem(item.label, item.node);
+    QStringList descriptions;
+    for (const auto& field : member.description.fields)
     {
-        QPainterPath path;
-        path.moveTo(x, 85); path.lineTo(x + 60, 85);
-        const bool uncertain = (x == 580 && (member.candidate || member.input == Scl::NoNode))
-            || connection.control == Scl::NoNode;
-        QPen pen(color, 2, uncertain ? Qt::DashLine : Qt::SolidLine);
-        scene->addPath(path, pen);
-        scene->addPolygon(QPolygonF({QPointF(x + 60, 85), QPointF(x + 51, 80), QPointF(x + 51, 90)}), QPen(color), color);
+        const auto label = SclDescriptionLabel(field.source);
+        descriptions << label + QStringLiteral("  ") + SclDescriptionText(field).left(512);
+        if (field.node != Scl::NoNode)
+            m_evidence->addItem(label, field.node);
+        for (int i = 0; i < field.candidates.size(); ++i)
+            m_evidence->addItem(label + QStringLiteral(" · 候选 %1").arg(i + 1), field.candidates[i]);
     }
-    auto* status = scene->addText(member.cells.value(5));
-    status->setDefaultTextColor(ink);
-    status->setPos(320, 175);
-    scene->setSceneRect(-15, 0, 930, 230);
-    static_cast<ConnectionGraph*>(m_graph)->Fit();
+    if (m_publication)
+    {
+        for (const auto& item : member.reception)
+            m_evidence->addItem(item.label, item.node);
+        m_inspector->setPlainText(member.cells.value(1) + '\n' + descriptions.join('\n')
+            + QStringLiteral("\n%1\nMMS Domain（推导） · %2\nMMS Item（推导） · %3\n数组索引 · %4")
+                .arg(member.cells.value(5), member.mmsDomain.isEmpty() ? QStringLiteral("未确认") : member.mmsDomain,
+                    member.mmsItem.isEmpty() ? QStringLiteral("未确认") : member.mmsItem,
+                    member.arrayIndex < 0 ? QStringLiteral("未指定") : QString::number(member.arrayIndex)));
+        return;
+    }
+    const auto& connection = m_list.rows[m_current];
+    m_inspector->setPlainText(QStringLiteral("发送装置：%1\n发送成员：%2\n接收装置：%3\n内部地址：%4\n证据：%5\n\n%6\n\n%7")
+        .arg(connection.sourceName, member.cells.value(1), member.cells.value(3),
+            member.cells.value(4), member.cells.value(5), descriptions.join('\n'), m_detail.description));
+    LoadGraph();
 }
 
+void SclConnectionView::CancelGraph()
+{
+    if (m_graphRequest)
+        m_graphRequest->cancelled = true;
+    m_graphRequest.reset();
+    if (m_graph)
+        m_graph->scene()->clear();
+    m_graphStatus->clear();
+}
+
+void SclConnectionView::LoadGraph()
+{
+    CancelGraph();
+    const int row = m_members->currentRow();
+    const auto* modes = findChild<QTabWidget*>("SclConnectionModes");
+    if (m_publication || !m_snapshot || !isVisible() || !modes || modes->currentIndex() != 1 || m_current < 0
+        || row < 0 || row >= int(m_detail.members.size()))
+        return;
+    m_graphStatus->setText(QStringLiteral("正在整理关系…"));
+    const auto snapshot = m_snapshot;
+    const auto connection = m_list.rows[m_current];
+    const auto member = m_detail.members[row];
+    const auto task = m_graphRequest = std::make_shared<Scl::TaskControl>();
+    auto* watcher = new QFutureWatcher<std::optional<SclRelationGraph>>(this);
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, snapshot, task, service = connection.service] {
+        watcher->deleteLater();
+        if (m_graphRequest != task || m_snapshot != snapshot)
+            return;
+        const auto graph = watcher->future().takeResult();
+        if (!graph)
+        {
+            m_graphStatus->setText(QStringLiteral("无法生成当前关系图。"));
+            return;
+        }
+        m_graphStatus->setText(QStringLiteral("%1 个节点 · %2 条关系 · 隐藏映射 %3%4")
+            .arg(graph->nodes.size()).arg(graph->edges.size()).arg(graph->hiddenMappings)
+            .arg(graph->limited ? QStringLiteral(" · 达到展示上限") : QString{}));
+        m_expandGraph->setText(m_graphExpanded ? QStringLiteral("收起扩展") : QStringLiteral("展开更多"));
+        auto* scene = m_graph->scene();
+        const auto base = palette().color(QPalette::Base);
+        const auto ink = palette().color(QPalette::Text);
+        const auto color = base.lightness() > 128 ? ServiceColor(service) : ink;
+        QList<QPointF> positions;
+        int layers[5]{};
+        for (const auto& node : graph->nodes)
+        {
+            const QPointF position(node.layer * 255, layers[node.layer]++ * 98);
+            positions.push_back(position);
+            auto* card = scene->addRect(QRectF(position, QSizeF(200, 75)), QPen(color), base);
+            card->setZValue(1);
+            card->setData(0, node.evidence);
+            if (node.member != Scl::NoNode)
+            {
+                card->setData(1, node.member);
+                card->setData(2, node.input);
+            }
+            const auto role = [kind = node.role] {
+                switch (kind)
+                {
+                case SclGraphRole::Sender: return QStringLiteral("发送 IED");
+                case SclGraphRole::Publication: return QStringLiteral("发布流");
+                case SclGraphRole::Member: return QStringLiteral("数据集成员");
+                case SclGraphRole::Input: return QStringLiteral("接收声明");
+                case SclGraphRole::Receiver: return QStringLiteral("接收 IED");
+                case SclGraphRole::Definition: return QStringLiteral("描述依据");
+                }
+                return QString{};
+            }();
+            card->setToolTip((role + '\n' + node.label).toHtmlEscaped());
+            auto* label = new QGraphicsTextItem(card);
+            label->setDefaultTextColor(ink);
+            label->setPos(position + QPointF(5, 3));
+            label->setTextWidth(190);
+            label->setPlainText(role + '\n' + node.label.simplified().left(64));
+        }
+        for (const auto& edge : graph->edges)
+        {
+            const auto from = positions[edge.from] + QPointF(200, 37);
+            const auto to = positions[edge.to] + QPointF(0, 37);
+            const bool candidate = edge.relation == SclGraphRelation::Candidate
+                || edge.relation == SclGraphRelation::ContainmentCandidate;
+            const bool bound = edge.relation == SclGraphRelation::Bound;
+            const QPen pen(color, bound ? 2 : 1, candidate ? Qt::DashLine
+                : bound ? Qt::SolidLine : Qt::DotLine);
+            auto* line = scene->addLine(QLineF(from, to), pen);
+            line->setData(0, edge.evidence);
+            const auto delta = to - from;
+            const auto length = std::hypot(delta.x(), delta.y());
+            if (length > 0)
+            {
+                const auto axis = delta / length;
+                const QPointF normal(-axis.y(), axis.x());
+                scene->addPolygon(QPolygonF{to, to - 9 * axis + 4 * normal, to - 9 * axis - 4 * normal},
+                    Qt::NoPen, color)->setData(0, edge.evidence);
+            }
+            if (candidate)
+                line->setToolTip(edge.relation == SclGraphRelation::ContainmentCandidate
+                    ? QStringLiteral("对象包含候选") : QStringLiteral("成员匹配候选"));
+            else if (bound)
+                line->setToolTip(QStringLiteral("明确绑定"));
+        }
+        scene->setSceneRect(scene->itemsBoundingRect().adjusted(-12, -12, 12, 12));
+        static_cast<ConnectionGraph*>(m_graph)->Fit();
+    });
+    const int depth = m_graphExpanded ? 1 : 0;
+    watcher->setFuture(QtConcurrent::run([snapshot, connection, member, depth, task]() -> std::optional<SclRelationGraph> {
+        try { return ProjectSclRelation(*snapshot, connection, member, depth, task.get()); }
+        catch (const Scl::TaskCancelled&) { return {}; }
+        catch (const std::exception&) { return {}; }
+    }));
+}
 SclConnectionView::Location SclConnectionView::CurrentLocation() const
 {
     Location location;
@@ -598,6 +843,12 @@ SclConnectionView::Location SclConnectionView::CurrentLocation() const
     location.filter = m_filter->text(); location.service = m_service->currentData().toString();
     location.offset = m_offset; location.member = m_members->currentRow();
     location.mappedOnly = m_mappedOnly->isChecked();
+    if (m_publication)
+    {
+        location.control = m_control;
+        if (location.member >= 0 && location.member < int(m_detail.members.size()))
+            location.memberNode = m_detail.members[location.member].member;
+    }
     return location;
 }
 

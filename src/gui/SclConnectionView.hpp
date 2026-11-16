@@ -27,6 +27,7 @@ public:
         QString filter, service;
         int offset = 0, member = 0;
         bool mappedOnly = false;
+        Scl::NodeId memberNode = Scl::NoNode;
     };
     explicit SclConnectionView(QWidget* parent = nullptr);
     ~SclConnectionView() override;
@@ -35,6 +36,8 @@ public:
     QSize minimumSizeHint() const override { return {660, 360}; }
     void SetContext(std::shared_ptr<const SclSnapshot> snapshot, Scl::NodeId scope);
     void SetService(const QString& service);
+    void SetPublicationMode();
+    void SetPublication(Scl::NodeId control, const std::optional<Location>& restore = {});
     Location CurrentLocation() const;
     void RestoreLocation(const Location& location);
 
@@ -52,15 +55,20 @@ private:
     void SelectConnection(int index);
     void LoadMembers();
     void SelectMember(int row);
+    void LoadGraph();
+    void CancelGraph();
     void Cancel();
     void ClearDetail();
     std::shared_ptr<const SclSnapshot> m_snapshot;
     Scl::NodeId m_scope = Scl::NoNode;
     std::shared_ptr<Scl::TaskControl> m_query, m_selection;
+    std::shared_ptr<Scl::TaskControl> m_graphRequest;
     SclConnectionList m_list;
     SclConnectionDetail m_detail;
     int m_current = -1, m_offset = 0;
     bool m_dirty = true;
+    bool m_publication = false;
+    Scl::NodeId m_control = Scl::NoNode;
     std::optional<Location> m_restore;
     QTimer m_delay;
     QLineEdit* m_filter;
@@ -68,7 +76,11 @@ private:
     QLabel *m_stats, *m_breadcrumb, *m_summary, *m_paging;
     QTreeWidget* m_tree;
     QTableWidget* m_members;
+    QTableWidget* m_endpoints;
     QGraphicsView* m_graph;
+    QLabel* m_graphStatus;
+    QPushButton* m_expandGraph;
+    bool m_graphExpanded = false;
     QTextBrowser* m_inspector;
     QCheckBox* m_mappedOnly;
     QPushButton *m_previous, *m_next, *m_source, *m_input;

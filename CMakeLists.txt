@@ -44,7 +44,9 @@ target_link_libraries(SclAnalysis PUBLIC Qt${QT_VERSION_MAJOR}::Core)
 
 add_library(SclApplication STATIC src/core/SclAnalysisService.cpp src/core/SclAnalysisService.hpp
     src/core/SclConnections.cpp src/core/SclConnections.hpp
+    src/core/SclRelationGraph.cpp src/core/SclRelationGraph.hpp
     src/core/SclTaskIndex.cpp src/core/SclTaskIndex.hpp src/core/SclTaskQuery.cpp src/core/SclTaskDetails.cpp
+    src/core/SclDescriptionResolver.cpp src/core/SclDescriptionResolver.hpp
     src/core/SclBrowseIndex.cpp src/core/SclBrowseIndex.hpp
     src/core/SclSearch.cpp src/core/SclSearch.hpp
     src/core/SclIssueExport.cpp src/core/SclIssueExport.hpp
@@ -79,6 +81,7 @@ add_executable(${AppTarget}
     src/gui/SclWorkspace.cpp
     src/gui/SclWorkspace.hpp
     src/gui/SclTaskPages.cpp src/gui/SclTaskPages.hpp
+    src/gui/SclTableInteraction.cpp src/gui/SclTableInteraction.hpp
     src/gui/SclTaskBrowser.cpp src/gui/SclTaskBrowser.hpp
     src/gui/SclConnectionView.cpp src/gui/SclConnectionView.hpp
     src/gui/SclSourcePreview.cpp
@@ -203,6 +206,7 @@ if(BUILD_TESTING)
 
     if(TARGET Qt${QT_VERSION_MAJOR}::QOffscreenIntegrationPlugin)
         add_executable(SclTaskPagesTest tests/integration/SclTaskPagesTest.cpp
+            src/gui/SclTableInteraction.cpp src/gui/SclTableInteraction.hpp
             src/gui/SclConnectionView.cpp src/gui/SclConnectionView.hpp
             src/gui/SclTaskPages.cpp src/gui/SclTaskPages.hpp)
         target_include_directories(SclTaskPagesTest PRIVATE src/gui)
@@ -211,6 +215,7 @@ if(BUILD_TESTING)
         add_test(NAME SclTaskPagesTest COMMAND SclTaskPagesTest)
         set_tests_properties(SclTaskPagesTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
         add_executable(MainWindowBaselineTest
+            src/gui/SclTableInteraction.cpp src/gui/SclTableInteraction.hpp
             res/Application.qrc
             tests/integration/MainWindowBaselineTest.cpp
             src/gui/SclConnectionView.cpp src/gui/SclConnectionView.hpp

@@ -64,6 +64,18 @@ SclTaskDetail DescribeSclTaskRow(const SclSnapshot& snapshot, SclTaskRow row, Sc
         if (node != NoNode)
             detail.evidence.push_back({label, node});
     };
+    const auto descriptions = [&](const QString& context, SclDescription projection) {
+        for (const auto& item : projection.fields)
+        {
+            const auto label = context + SclDescriptionLabel(item.source);
+            if (row.kind != SclTaskKind::Signal)
+                field(label, SclDescriptionText(item).left(512));
+            evidence(label, item.node);
+            for (int i = 0; i < item.candidates.size(); ++i)
+                evidence(label + QStringLiteral(" · 候选 %1").arg(i + 1), item.candidates[i]);
+        }
+        detail.descriptions.push_back({context, std::move(projection)});
+    };
     const auto truncated = [&](size_t count) {
         if (count > displayLimit)
             lines << QStringLiteral("另有 %1 项，可在高级视图浏览").arg(count - displayLimit);
@@ -78,19 +90,12 @@ SclTaskDetail DescribeSclTaskRow(const SclSnapshot& snapshot, SclTaskRow row, Sc
         const auto cells = SclTaskCells(snapshot, row);
         lines << QStringLiteral("这是什么") << cells[2] << cells[1];
         field(QStringLiteral("CDC"), definition.cdc);
-        field(QStringLiteral("模板描述"), attr(definition.declaration, "desc"));
         lines << QStringLiteral("分类规则 v0.1 · 根据 LN / DO 语义、CDC 与属性功能分组给出建议。");
         evidence(QStringLiteral("逻辑节点实例"), instance.logicalNode);
-        auto object = definition.hasUnexpandedArray ? NoNode : instance.logicalNode;
-        const auto segments = definition.path.split('.');
-        for (int i = 0; i < segments.size() && object != NoNode; ++i)
-            object = UniqueChild(doc, object, i == 0 ? QStringLiteral("DOI") : QStringLiteral("SDI"),
-                segments[i], task);
-        if (object != NoNode)
-        {
-            field(QStringLiteral("实例 desc"), attr(object, "desc"));
-            evidence(QStringLiteral("对象实例声明"), object);
-        }
+        const auto description = DescribeSclSignal(snapshot.analysis, instance.logicalNode, definition.path, task);
+        const auto object = description.objectInstance;
+        descriptions({}, description);
+        evidence(QStringLiteral("对象实例声明"), object);
         evidence(QStringLiteral("对象模板声明"), definition.declaration);
         evidence(QStringLiteral("CDC 类型定义"), definition.type);
         if (definition.capabilities & Scl::ControlCandidate)
@@ -138,6 +143,7 @@ SclTaskDetail DescribeSclTaskRow(const SclSnapshot& snapshot, SclTaskRow row, Sc
             int count = 0;
             QSet<NodeId> ancestry;
             bool limited = false;
+            QList<NodeId> declarations;
             const auto expand = [&](auto&& self, NodeId type, const QString& prefix, const QString& fc, int depth) -> void {
                 Scl::checkpoint(task);
                 if (depth >= 16 || ancestry.contains(type))
@@ -165,9 +171,13 @@ SclTaskDetail DescribeSclTaskRow(const SclSnapshot& snapshot, SclTaskRow row, Sc
                     if (!arrayCount.isNull())
                         field(QStringLiteral("数组声明 count"), arrayCount);
                     evidence(QStringLiteral("属性定义 %1").arg(name), child);
+                    declarations.push_back(child);
+                    descriptions(name + QStringLiteral(" · "),
+                        DescribeSclAttribute(snapshot.analysis, description, name, grouping, declarations, task));
                     const auto nested = dataType == "Struct" ? MemberType(snapshot.analysis, child) : NoNode;
                     if (nested != NoNode)
                         self(self, nested, name + '.', grouping, depth + 1);
+                    declarations.pop_back();
                 }
                 ancestry.remove(type);
             };
@@ -175,7 +185,9 @@ SclTaskDetail DescribeSclTaskRow(const SclSnapshot& snapshot, SclTaskRow row, Sc
             if (limited)
                 lines << QStringLiteral("属性展开达到预算或遇到类型环，可打开类型原文。");
         }
+        detail.signalFields = lines.mid(3);
         lines << QString() << QStringLiteral("如何使用");
+        const auto usageStart = lines.size();
         const auto uses = index.usages.find({instance.logicalNode, definition.path});
         if (uses == index.usages.end())
             lines << QStringLiteral("未找到此对象路径的已解析数据集成员。");
@@ -190,11 +202,6 @@ SclTaskDetail DescribeSclTaskRow(const SclSnapshot& snapshot, SclTaskRow row, Sc
                 const auto label = QStringLiteral("%1 · 成员 %2").arg(attr(use.dataSet, "name")).arg(ref.memberOrdinal);
                 lines << label + QStringLiteral(" · ") + ref.declared.left(512);
                 evidence(label, ref.source);
-                if (ref.instanceDescription != NoNode && i == 0)
-                {
-                    field(QStringLiteral("实例描述 dU"), doc.nodes[ref.instanceDescription].text.left(512));
-                    evidence(QStringLiteral("实例描述 dU"), ref.instanceDescription);
-                }
                 field(QStringLiteral("MMS Domain"), ref.mmsDomain.left(512));
                 field(QStringLiteral("MMS Item"), ref.mmsItem.left(512));
                 const auto controls = index.controlsByDataSet.constFind(use.dataSet);
@@ -238,6 +245,7 @@ SclTaskDetail DescribeSclTaskRow(const SclSnapshot& snapshot, SclTaskRow row, Sc
             }
             truncated(inputs->second.size());
         }
+        detail.signalUsage = lines.mid(usageStart);
         break;
     }
     case SclTaskKind::Goose:
@@ -290,6 +298,7 @@ SclTaskDetail DescribeSclTaskRow(const SclSnapshot& snapshot, SclTaskRow row, Sc
             lines << QStringLiteral("%1 · %2.%3 · FC %4").arg(label, attr(member, "doName"),
                 attr(member, "daName"), attr(member, "fc"));
             evidence(label, member);
+            descriptions(label + QStringLiteral(" · "), DescribeSclMember(snapshot.analysis, member, task));
         }
         truncated(members.count);
         lines << QStringLiteral("有发布流证据的接收声明 %1 条").arg(stream.receivers.size());

@@ -14,10 +14,47 @@ SclTaskIndex SclTaskIndex::Build(const Scl::ReferenceAnalysis& analysis, const S
     SclTaskIndex index;
     index.catalog = SignalCatalog::Build(analysis, task);
     const auto& doc = *analysis.document;
+    index.signalDescriptionNodes.reserve(index.catalog.instances.size());
+    std::vector<NodeId> templateTitles(index.catalog.definitions.size(), NoNode);
+    std::vector<bool> templateTitlesKnown(index.catalog.definitions.size());
+    std::vector<QString> rootNames;
+    rootNames.reserve(index.catalog.definitions.size());
+    for (const auto& definition : index.catalog.definitions)
+        rootNames.push_back(definition.path.section('.', 0, 0));
+    NodeId previousLn = NoNode;
+    QSet<QString> instanceNames;
     for (int row = 0; row < int(index.catalog.instances.size()); ++row)
     {
         checkpoint(task);
-        index.signalsByIed[browse.iedOwners[index.catalog.instances[row].logicalNode]].push_back(row);
+        const auto& instance = index.catalog.instances[row];
+        index.signalsByIed[browse.iedOwners[instance.logicalNode]].push_back(row);
+        if (instance.logicalNode != previousLn)
+        {
+            previousLn = instance.logicalNode;
+            instanceNames.clear();
+            for (auto child = doc.nodes[previousLn].firstChild; child != NoNode; child = doc.nodes[child].nextSibling)
+            {
+                checkpoint(task);
+                if (doc.nodes[child].isScl() && doc.nodes[child].name == "DOI")
+                    instanceNames.insert(doc.attribute(child, QStringLiteral("name")));
+            }
+        }
+        const bool hasInstance = instanceNames.contains(rootNames[instance.definition]);
+        if (!hasInstance && templateTitlesKnown[instance.definition])
+        {
+            index.signalDescriptionNodes.push_back(templateTitles[instance.definition]);
+            continue;
+        }
+        const auto description = DescribeSclSignal(analysis, instance.logicalNode,
+            index.catalog.definitions[instance.definition].path, task);
+        const auto* title = description.ObjectTitle();
+        const auto node = title ? title->node : NoNode;
+        index.signalDescriptionNodes.push_back(node);
+        if (!hasInstance)
+        {
+            templateTitles[instance.definition] = node;
+            templateTitlesKnown[instance.definition] = true;
+        }
     }
     constexpr int relationLimit = 250000;
     int relations = 0;

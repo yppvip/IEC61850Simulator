@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SclSignalCatalog.hpp"
+#include "SclDescriptionResolver.hpp"
 #include <QHash>
 #include <map>
 
@@ -20,8 +21,12 @@ struct SclTaskRow
 struct SclTaskDetail
 {
     struct Evidence { QString label; Scl::NodeId node; };
+    struct Descriptions { QString label; SclDescription projection; };
     QString text;
     std::vector<Evidence> evidence;
+    std::vector<Descriptions> descriptions;
+    QStringList signalFields;
+    QStringList signalUsage;
 };
 
 struct SclTaskIndex
@@ -58,6 +63,7 @@ struct SclTaskIndex
     };
 
     Scl::SignalCatalog catalog;
+    std::vector<Scl::NodeId> signalDescriptionNodes; // Parallel to catalog.instances.
     QHash<Scl::NodeId, std::vector<int>> signalsByIed;
     std::map<std::pair<Scl::NodeId, QString>, std::vector<Usage>> usages;
     QHash<Scl::NodeId, std::vector<Scl::NodeId>> controlsByDataSet;
@@ -76,7 +82,7 @@ struct SclTaskIndex
 
 QString SclTaskPath(const Scl::Document& document, Scl::NodeId node);
 QString SclSignalCategory(const Scl::SignalDefinition& definition);
-QStringList SclTaskCells(const SclSnapshot& snapshot, SclTaskRow row);
+QStringList SclTaskCells(const SclSnapshot& snapshot, SclTaskRow row, bool fullSignal = false);
 std::vector<SclTaskRow> FilterSclTaskRows(const SclSnapshot& snapshot, SclTaskKind kind, Scl::NodeId ied,
                                          const QString& text, Scl::TaskControl* task);
 SclTaskDetail DescribeSclTaskRow(const SclSnapshot& snapshot, SclTaskRow row, Scl::TaskControl* task);

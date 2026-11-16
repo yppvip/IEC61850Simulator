@@ -7,10 +7,10 @@ namespace iec61850sim
 using Scl::NodeId;
 using Scl::NoNode;
 
-QString SclTaskPath(const Scl::Document& doc, NodeId node)
+static QString TaskPath(const Scl::Document& doc, NodeId node, bool full)
 {
     QStringList path;
-    for (int depth = 0; node != NoNode && depth < 32; ++depth)
+    for (int depth = 0; node != NoNode && (full || depth < 32); ++depth)
     {
         const auto& element = doc.nodes[node];
         QString label;
@@ -24,10 +24,15 @@ QString SclTaskPath(const Scl::Document& doc, NodeId node)
         else if (element.name != "SCL")
             label = doc.attribute(node, QStringLiteral("name"));
         if (!label.isEmpty())
-            path.prepend(label.left(512));
+            path.prepend(full ? label : label.left(512));
         node = element.parent;
     }
     return path.join('/');
+}
+
+QString SclTaskPath(const Scl::Document& doc, NodeId node)
+{
+    return TaskPath(doc, node, false);
 }
 
 QString SclSignalCategory(const Scl::SignalDefinition& definition)
@@ -46,7 +51,7 @@ QString SclSignalCategory(const Scl::SignalDefinition& definition)
     return labels.join(QStringLiteral(" · "));
 }
 
-QStringList SclTaskCells(const SclSnapshot& snapshot, SclTaskRow row)
+QStringList SclTaskCells(const SclSnapshot& snapshot, SclTaskRow row, bool fullSignal)
 {
     const auto& doc = *snapshot.analysis.document;
     const auto& task = snapshot.tasks;
@@ -59,15 +64,12 @@ QStringList SclTaskCells(const SclSnapshot& snapshot, SclTaskRow row)
     {
         const auto& instance = task.catalog.instances[row.index];
         const auto& definition = task.catalog.definitions[instance.definition];
-        auto description = attr(definition.declaration, "desc");
-        const auto uses = task.usages.find({instance.logicalNode, definition.path});
-        if (uses != task.usages.end() && !uses->second.empty())
-        {
-            const auto source = snapshot.analysis.references[uses->second.front().reference].instanceDescription;
-            if (source != NoNode && !doc.nodes[source].text.isEmpty())
-                description = doc.nodes[source].text.left(512);
-        }
-        const auto path = SclTaskPath(doc, instance.logicalNode) + '.' + definition.path;
+        const auto source = task.signalDescriptionNodes[row.index];
+        auto description = source == NoNode ? QString{} : doc.nodes[source].name == "Val"
+            ? doc.nodes[source].text : doc.attribute(source, QStringLiteral("desc"));
+        if (!fullSignal)
+            description = description.left(source != NoNode && doc.nodes[source].name == "Val" ? 512 : 2048);
+        const auto path = TaskPath(doc, instance.logicalNode, fullSignal) + '.' + definition.path;
         return {description.isEmpty() ? definition.path : description, SclSignalCategory(definition),
                 path, definition.cdc, definition.hasUnexpandedArray ? QStringLiteral("数组未展开")
                     : definition.type == NoNode ? QStringLiteral("类型未解析") : QString{}};
@@ -131,7 +133,7 @@ std::vector<SclTaskRow> FilterSclTaskRows(const SclSnapshot& snapshot, SclTaskKi
         if (!text.isEmpty())
         {
             bool matched = false;
-            for (const auto& field : SclTaskCells(snapshot, item))
+            for (const auto& field : SclTaskCells(snapshot, item, true))
                 matched |= field.contains(text, Qt::CaseInsensitive);
             if (!matched && (kind == SclTaskKind::Goose || kind == SclTaskKind::Sv))
             {
