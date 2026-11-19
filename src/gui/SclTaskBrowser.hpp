@@ -3,6 +3,7 @@
 #include "SclAnalysisService.hpp"
 #include "SclTaskPages.hpp"
 #include "SclConnectionView.hpp"
+#include "SclMmsView.hpp"
 #include <QTimer>
 #include <optional>
 
@@ -28,6 +29,7 @@ public:
         std::optional<SclTaskRow> top;
         int topOffset = 0;
         SclConnectionView::Location publication;
+        SclMmsView::Location mms;
     };
 
     explicit SclTaskBrowser(QWidget* parent);
@@ -39,6 +41,7 @@ public:
     void RestoreLocation(const Location& location);
     bool IsSignalPage() const;
     bool IsPublicationPage() const;
+    bool IsMmsPage() const { return m_page == SclTaskPages::Mms; }
     QString SignalPath() const;
     void LocateSignal();
     void OpenSignalEvidence(int index);

@@ -231,6 +231,7 @@ void SclTaskBrowser::SetSnapshot(std::shared_ptr<const SclSnapshot> snapshot)
     m_view->SetPage(SclTaskPages::Overview);
     m_view->ConnectionsView()->SetContext(m_snapshot, m_ied);
     m_view->PublicationView()->SetContext(m_snapshot, m_ied);
+    m_view->MmsView()->SetContext(m_snapshot, m_ied);
     UpdateOverview();
     Schedule();
 }
@@ -244,6 +245,7 @@ void SclTaskBrowser::SetScope(Scl::NodeId ied)
     m_view->SetScope(ied);
     m_view->ConnectionsView()->SetContext(m_snapshot, m_ied);
     m_view->PublicationView()->SetContext(m_snapshot, m_ied);
+    m_view->MmsView()->SetContext(m_snapshot, m_ied);
     UpdateOverview();
     Schedule();
 }
@@ -255,7 +257,7 @@ SclTaskBrowser::Location SclTaskBrowser::CurrentLocation() const
     return {m_page, m_filter, m_inputs, IsSignalPage() ? m_signal : m_model->Row(table->currentIndex()),
         table->verticalScrollBar()->value(), m_view->ConnectionsView()->CurrentLocation(),
         m_model->Row(m_model->index(top, 0)), top < 0 ? 0 : -table->rowViewportPosition(top),
-        m_view->PublicationView()->CurrentLocation()};
+        m_view->PublicationView()->CurrentLocation(), m_view->MmsView()->CurrentLocation()};
 }
 
 void SclTaskBrowser::RestoreLocation(const Location& location)
@@ -272,6 +274,7 @@ void SclTaskBrowser::RestoreLocation(const Location& location)
     emit SignalPageChanged();
     if (location.page == SclTaskPages::Connections)
         m_view->ConnectionsView()->RestoreLocation(location.connection);
+    if (location.page == SclTaskPages::Mms) m_view->MmsView()->RestoreLocation(location.mms);
 }
 
 bool SclTaskBrowser::IsSignalPage() const
@@ -377,7 +380,7 @@ void SclTaskBrowser::Schedule()
     m_view->SetEvidence({});
     m_view->SetDetail({}, false);
     PresentSignal(m_signal ? QStringLiteral("正在检查筛选范围…") : QString{});
-    if (!m_snapshot || m_page == SclTaskPages::Overview || m_page == SclTaskPages::Connections)
+    if (!m_snapshot || m_page == SclTaskPages::Overview || m_page == SclTaskPages::Connections || m_page == SclTaskPages::Mms)
         return;
     m_view->SetStatus(QStringLiteral("正在准备当前范围…"));
     m_delay.start();

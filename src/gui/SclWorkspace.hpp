@@ -20,6 +20,7 @@ class QTabWidget;
 class QStackedWidget;
 class QTableView;
 class QTreeView;
+class QTreeWidget;
 namespace ads { class CDockManager; class CDockWidget; }
 
 namespace iec61850sim
@@ -84,6 +85,7 @@ private:
     void ApplyTableFilter(QTableView* table, std::optional<std::vector<int>> rows);
     void SaveIssues();
     void ShowTaskView(bool show, bool remember = false);
+    void PushTaskHistory();
     void CreateTopologyControls(QVBoxLayout* layout);
     void AddTopologyAction(QAbstractItemView* view);
     void UpdateTopologyControls();
@@ -99,6 +101,7 @@ private:
     Scl::NodeId m_ied = Scl::NoNode;
     QComboBox* m_browseScope;
     QWidget* m_advancedScope;
+    QWidget* m_advancedSearch;
     QCheckBox* m_allTemplates;
     QHash<int, Scl::NodeId> m_tabNodes;
     int m_tabFinding = -1;
@@ -112,6 +115,9 @@ private:
     QByteArray m_defaultLayout;
     SclTreeModel* m_treeModel;
     QTreeView* m_tree;
+    QStackedWidget* m_navigationModes;
+    QComboBox* m_navigationKind;
+    QTreeWidget* m_tasks;
     QTabWidget* m_tables;
     QStackedWidget* m_tableModes;
     SclTaskBrowser* m_taskBrowser;

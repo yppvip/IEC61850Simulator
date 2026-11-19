@@ -16,6 +16,7 @@
 #include <QPropertyAnimation>
 #include <QPushButton>
 #include <QShortcut>
+#include <QStackedWidget>
 #include <QSignalBlocker>
 #include <QStyle>
 #include <QTabWidget>
@@ -152,6 +153,11 @@ private:
 
 void SclWorkspace::CreateSearchBar(QVBoxLayout* layout)
 {
+    m_advancedSearch = new QWidget(this);
+    auto* searchLayout = new QVBoxLayout(m_advancedSearch);
+    searchLayout->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(m_advancedSearch);
+    layout = searchLayout;
     auto* row = new QHBoxLayout;
     m_searchMode = new QComboBox(this);
     m_searchMode->setObjectName("SclSearchMode");
@@ -228,7 +234,11 @@ void SclWorkspace::CreateSearchBar(QVBoxLayout* layout)
     connect(m_export, &QPushButton::clicked, this, &SclWorkspace::SaveIssues);
     auto* find = new QShortcut(QKeySequence::Find, this);
     find->setContext(Qt::WidgetWithChildrenShortcut);
-    connect(find, &QShortcut::activated, m_query, [this] { m_query->setFocus(); });
+    connect(find, &QShortcut::activated, m_query, [this] {
+        if (m_tableModes->currentIndex() == 1 && m_taskBrowser->IsMmsPage())
+            m_taskBrowser->View()->MmsView()->findChild<QLineEdit*>("SclMmsGlobalSearch")->setFocus();
+        else { ShowTaskView(false, true); m_query->setFocus(); }
+    });
     auto* escape = new QShortcut(QKeySequence(Qt::Key_Escape), this);
     escape->setContext(Qt::WidgetWithChildrenShortcut);
     connect(escape, &QShortcut::activated, this, [this] {

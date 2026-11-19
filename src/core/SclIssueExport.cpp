@@ -68,14 +68,18 @@ bool WriteJson(QSaveFile& file, const SclSnapshot& snapshot)
 {
     const auto& analysis = snapshot.analysis;
     auto metadata = Json({{"fileName", QFileInfo(snapshot.path).fileName()},
-                          {"sha256", QString::fromLatin1(analysis.sha256)}, {"ruleSetVersion", analysis.ruleSetVersion}});
+                          {"sha256", QString::fromLatin1(analysis.sha256)}, {"ruleSetVersion", analysis.ruleSetVersion},
+                          {"mmsRuleSetVersion", snapshot.mms.ruleSetVersion}, {"mmsComplete", snapshot.mms.complete},
+                          {"mmsResourceLimited", snapshot.mms.resourceLimited}, {"mmsLimitation", snapshot.mms.limitation}});
     metadata.chop(1);
     if (!Write(file, metadata + ",\"coverage\":["))
         return false;
     bool first = true;
-    for (const auto& rule : analysis.coverage)
+    for (int source = 0; source < 2; ++source)
+    for (const auto& rule : source ? snapshot.mms.coverage : analysis.coverage)
     {
         if ((!first && !Write(file, ",")) || !Write(file, Json({{"rule", rule.id},
+            {"ruleSetVersion", source ? snapshot.mms.ruleSetVersion : analysis.ruleSetVersion},
             {"state", CoverageName(rule.state)}, {"evaluated", rule.evaluated}, {"limited", rule.limited}})))
             return false;
         first = false;
@@ -83,10 +87,12 @@ bool WriteJson(QSaveFile& file, const SclSnapshot& snapshot)
     if (!Write(file, "],\"findings\":["))
         return false;
     first = true;
-    for (const auto& issue : analysis.findings)
+    for (int source = 0; source < 2; ++source)
+    for (const auto& issue : source ? snapshot.mms.findings : analysis.findings)
     {
         if ((!first && !Write(file, ",")) || !Write(file, Json({
-            {"rule", issue.rule}, {"severity", SeverityName(issue.severity)}, {"node", issue.node},
+            {"rule", issue.rule}, {"ruleSetVersion", source ? snapshot.mms.ruleSetVersion : analysis.ruleSetVersion},
+            {"severity", SeverityName(issue.severity)}, {"node", issue.node},
             {"line", issue.location.line}, {"byteOffset", issue.location.byteOffset}, {"objectPath", issue.objectPath},
             {"detail", issue.detail}, {"suggestion", issue.suggestion}, {"scope", issue.scope}})))
             return false;
@@ -106,12 +112,16 @@ bool WriteCsv(QSaveFile& file, const SclSnapshot& snapshot)
         return false;
     if (!Write(file, Csv({"metadata", name, hash, version, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}})))
         return false;
-    for (const auto& rule : analysis.coverage)
-        if (!Write(file, Csv({"coverage", name, hash, version, rule.id, CoverageName(rule.state),
+    if (!Write(file, Csv({"metadata", name, hash, snapshot.mms.ruleSetVersion, {}, snapshot.mms.complete ? "complete" : "blocked",
+        {}, snapshot.mms.resourceLimited ? "true" : "false", {}, {}, {}, {}, {}, snapshot.mms.limitation, {}, {}}))) return false;
+    for (int source = 0; source < 2; ++source)
+    for (const auto& rule : source ? snapshot.mms.coverage : analysis.coverage)
+        if (!Write(file, Csv({"coverage", name, hash, source ? snapshot.mms.ruleSetVersion : version, rule.id, CoverageName(rule.state),
             QString::number(rule.evaluated), QString::number(rule.limited), {}, {}, {}, {}, {}, {}, {}, {}})))
             return false;
-    for (const auto& issue : analysis.findings)
-        if (!Write(file, Csv({"finding", name, hash, version, issue.rule, {}, {}, {}, SeverityName(issue.severity),
+    for (int source = 0; source < 2; ++source)
+    for (const auto& issue : source ? snapshot.mms.findings : analysis.findings)
+        if (!Write(file, Csv({"finding", name, hash, source ? snapshot.mms.ruleSetVersion : version, issue.rule, {}, {}, {}, SeverityName(issue.severity),
             issue.node < 0 ? QString() : QString::number(issue.node), QString::number(issue.location.line),
             issue.location.byteOffset < 0 ? QString() : QString::number(issue.location.byteOffset),
             issue.objectPath, issue.detail, issue.suggestion, issue.scope})))

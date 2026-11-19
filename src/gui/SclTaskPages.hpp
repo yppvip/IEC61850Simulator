@@ -16,11 +16,12 @@ namespace iec61850sim
 {
 class SclConnectionView;
 class SclTableInteraction;
+class SclMmsView;
 class SclTaskPages final : public QWidget
 {
     Q_OBJECT
 public:
-    enum Page { Overview, Signals, Goose, SampledValues, Checks, Connections, PageCount };
+    enum Page { Overview, Signals, Goose, SampledValues, Checks, Connections, Mms, PageCount };
     explicit SclTaskPages(QWidget* parent = nullptr);
     void SetScopeOptions(const QList<QPair<int, QString>>& options, int current);
     void SetScope(int id);
@@ -37,6 +38,8 @@ public:
     QTableView* Table() const { return m_table; }
     SclConnectionView* ConnectionsView() const { return m_connections; }
     SclConnectionView* PublicationView() const { return m_publication; }
+    SclMmsView* MmsView() const { return m_mms; }
+    void SetExternalNavigation(bool external);
 
 signals:
     void ScopeChanged(int id);
@@ -69,5 +72,6 @@ private:
     QString m_rules;
     SclConnectionView* m_connections;
     SclConnectionView* m_publication;
+    SclMmsView* m_mms;
 };
 }

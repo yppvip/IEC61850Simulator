@@ -240,6 +240,8 @@ void SclTableInteraction::Measure()
     auto* scroll = m_view->verticalScrollBar();
     scroll->setValue(header->sectionPosition(top) + qBound(0, offset, m_view->rowHeight(top) - 1));
     m_measuring = false;
+    const auto elapsedUs = budget.nsecsElapsed() / 1000;
+    m_view->setProperty("SclMaxMeasureUs", qMax(m_view->property("SclMaxMeasureUs").toLongLong(), elapsedUs));
     if (m_cursor <= visibleEnd())
         Schedule();
 }

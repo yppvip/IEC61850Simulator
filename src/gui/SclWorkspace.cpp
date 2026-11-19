@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <DockManager.h>
 #include <DockWidget.h>
+#include <QTreeWidget>
 #include <DockAreaWidget.h>
 
 namespace iec61850sim
@@ -707,6 +708,7 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     m_tree->setModel(m_treeModel);
     m_tableModes = new QStackedWidget(this);
     m_taskBrowser = new SclTaskBrowser(m_tableModes);
+    m_taskBrowser->View()->SetExternalNavigation(true);
     auto* tablePane = new QWidget(m_tableModes);
     m_tableModes->addWidget(tablePane);
     m_tableModes->addWidget(m_taskBrowser->View());
@@ -757,7 +759,48 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     auto* tableArea = m_docks->addDockWidget(ads::CenterDockWidgetArea, m_tableDock);
     m_inspectorDock = dock(QStringLiteral("属性与依据"), "SclInspectorDock", m_inspector);
     m_docks->addDockWidget(ads::BottomDockWidgetArea, m_inspectorDock, tableArea);
-    m_treeDock = dock(QStringLiteral("工程导航"), "SclTreeDock", m_tree);
+    auto* navigationPane = new QWidget(this);
+    auto* navigationLayout = new QVBoxLayout(navigationPane);
+    navigationLayout->setContentsMargins(0, 0, 0, 0);
+    m_navigationKind = new QComboBox(navigationPane); m_navigationKind->setObjectName("SclNavigationKind");
+    m_navigationKind->addItems({QStringLiteral("任务导航"), QStringLiteral("XML 结构")});
+    navigationLayout->addWidget(m_navigationKind);
+    m_navigationModes = new QStackedWidget(navigationPane);
+    m_tasks = new QTreeWidget(m_navigationModes); m_tasks->setObjectName("SclTaskTree");
+    m_tasks->setHeaderHidden(true); m_tasks->setMinimumSize(0, 0);
+    m_navigationModes->addWidget(m_tasks); m_navigationModes->addWidget(m_tree);
+    navigationLayout->addWidget(m_navigationModes, 1);
+    const auto task = [&](QTreeWidgetItem* parent, const QString& title, int page, int route = -1) {
+        auto* item = parent ? new QTreeWidgetItem(parent) : new QTreeWidgetItem(m_tasks);
+        item->setText(0, title); item->setData(0, Qt::UserRole, page); item->setData(0, Qt::UserRole + 1, route);
+        item->setIcon(0, style()->standardIcon(page == SclTaskPages::Mms ? QStyle::SP_DriveNetIcon : QStyle::SP_FileDialogListView)); return item;
+    };
+    task(nullptr, QStringLiteral("工程概览"), SclTaskPages::Overview);
+    task(nullptr, QStringLiteral("信号查阅"), SclTaskPages::Signals);
+    auto* mmsTask = task(nullptr, QStringLiteral("MMS 查阅"), SclTaskPages::Mms, int(SclMmsQueryKind::Reports));
+    task(mmsTask, QStringLiteral("报告上送"), SclTaskPages::Mms, int(SclMmsQueryKind::Reports));
+    task(mmsTask, QStringLiteral("信号地址"), SclTaskPages::Mms, int(SclMmsQueryKind::Signals));
+    task(mmsTask, QStringLiteral("连接配置"), SclTaskPages::Mms, int(SclMmsQueryKind::Endpoints));
+    task(mmsTask, QStringLiteral("作为客户端的文件声明"), SclTaskPages::Mms, int(SclMmsQueryKind::ReverseClients));
+    task(nullptr, QStringLiteral("GOOSE"), SclTaskPages::Goose);
+    task(nullptr, QStringLiteral("SV"), SclTaskPages::SampledValues);
+    task(nullptr, QStringLiteral("双向收发关系"), SclTaskPages::Connections);
+    task(nullptr, QStringLiteral("文件检查"), SclTaskPages::Mms, int(SclMmsQueryKind::Findings));
+    mmsTask->setExpanded(true);
+    connect(m_navigationKind, &QComboBox::currentIndexChanged, m_navigationModes, &QStackedWidget::setCurrentIndex);
+    connect(m_tasks, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem* item) {
+        if (!item || m_restoring || !m_snapshot) return;
+        RememberView();
+        {
+            QScopedValueRollback<bool> guard(m_restoring, true);
+            ShowTaskView(true);
+            const auto page = static_cast<SclTaskPages::Page>(item->data(0, Qt::UserRole).toInt());
+            m_taskBrowser->View()->SetPage(page);
+            if (page == SclTaskPages::Mms) m_taskBrowser->View()->MmsView()->Open(static_cast<SclMmsQueryKind>(item->data(0, Qt::UserRole + 1).toInt()));
+        }
+        PushTaskHistory();
+    });
+    m_treeDock = dock(QStringLiteral("工程导航"), "SclTreeDock", navigationPane);
     m_treeDock->setFeature(ads::CDockWidget::DockWidgetClosable, false);
     m_docks->addDockWidget(ads::LeftDockWidgetArea, m_treeDock);
     m_docks->setSplitterSizes(m_tableDock->dockAreaWidget(), {360, 230});
@@ -1010,6 +1053,33 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     signalLayout->addWidget(signalDetail);
     const int signalTab = m_inspector->addTab(m_signalInspector, QStringLiteral("所选信号"));
     m_inspector->setTabVisible(signalTab, false);
+    auto* mmsView = m_taskBrowser->View()->MmsView();
+    const int mmsTab = m_inspector->addTab(mmsView->Inspector(), QStringLiteral("MMS 字段与依据"));
+    m_inspector->setTabVisible(mmsTab, false);
+    connect(mmsView, &SclMmsView::BeforeNavigate, this, &SclWorkspace::RememberView);
+    connect(mmsView, &SclMmsView::Navigated, this, &SclWorkspace::PushTaskHistory);
+    connect(mmsView, &SclMmsView::LocationUpdated, this, &SclWorkspace::RememberView);
+    connect(mmsView, &SclMmsView::SelectedNode, this, [this](int node) {
+        QScopedValueRollback<bool> guard(m_restoring, true); Select(node);
+    });
+    connect(mmsView, &SclMmsView::ScopeRequested, this, [this](int ied) {
+        QScopedValueRollback<bool> guard(m_restoring, true); SetIedScope(ied);
+    });
+    connect(mmsView, &SclMmsView::OpenEvidence, this, [this](int node, const QString& label) {
+        RememberView(); m_inspectorDock->toggleView(true); Select(node, false, -1, true);
+        m_signalEvidence = label; RefreshSourcePreview(); RememberView();
+    });
+    connect(mmsView, &SclMmsView::ShowInspector, this, [this, mmsView] {
+        m_inspectorDock->toggleView(true); m_inspector->setCurrentWidget(mmsView->Inspector());
+    });
+    connect(mmsView, &SclMmsView::ExportIssues, this, &SclWorkspace::SaveIssues);
+    const auto showMms = [this, mmsView, mmsTab] {
+        const bool visible = m_tableModes->currentIndex() == 1 && m_taskBrowser->IsMmsPage();
+        m_inspector->setTabVisible(mmsTab, visible);
+        if (visible && !m_restoring) { m_inspectorDock->toggleView(true); m_inspector->setCurrentWidget(mmsView->Inspector()); }
+    };
+    connect(m_taskBrowser, &SclTaskBrowser::SignalPageChanged, this, showMms);
+    connect(m_tableModes, &QStackedWidget::currentChanged, this, showMms);
     connect(m_locateSignal, &QPushButton::clicked, m_taskBrowser, &SclTaskBrowser::LocateSignal);
     connect(copySignal, &QPushButton::clicked, this, [this] {
         const auto path = m_taskBrowser->SignalPath();
@@ -1072,6 +1142,8 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
             if (signal)
                 RememberView();
             Select(SclTreeModel::Node(index), true, -1, signal);
+            if (m_taskBrowser->IsMmsPage() && m_tableModes->currentIndex() == 1)
+                m_taskBrowser->View()->MmsView()->OpenNode(SclTreeModel::Node(index));
             if (signal)
             {
                 m_signalEvidence.clear();
@@ -1128,6 +1200,7 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
 
 SclWorkspace::~SclWorkspace()
 {
+    for (auto* object : findChildren<QObject*>()) QObject::disconnect(object, nullptr, this, nullptr);
     QSettings settings(QSettings::defaultFormat(), QSettings::UserScope,
         QStringLiteral("IEC61850Simulator"), QStringLiteral("IEC61850Simulator"));
     const auto state = m_docks->saveState(2);
@@ -1308,8 +1381,9 @@ void SclWorkspace::Select(NodeId id, bool route, int finding, bool openSource)
         const QScopedValueRollback<bool> guard(m_restoring, true);
         m_showingFailure = false;
         const auto owner = m_snapshot->browse.iedOwners[id];
-        const bool signalSource = openSource && m_tableModes->currentIndex() == 1
-            && (m_taskBrowser->IsSignalPage() || m_taskBrowser->IsPublicationPage());
+        const bool mmsSelection = m_tableModes->currentIndex() == 1 && m_taskBrowser->IsMmsPage() && !route;
+        const bool signalSource = mmsSelection || (openSource && m_tableModes->currentIndex() == 1
+            && (m_taskBrowser->IsSignalPage() || m_taskBrowser->IsPublicationPage()));
         if (!restoring && !signalSource && (id == 0 || owner != NoNode))
             SetIedScope(id == 0 ? NoNode : owner);
         m_selected = id;
@@ -1327,7 +1401,7 @@ void SclWorkspace::Select(NodeId id, bool route, int finding, bool openSource)
         if (refreshDetails)
         {
             m_sourceDirty = true;
-            UpdateDetails();
+            if (!mmsSelection) UpdateDetails(); else UpdateOverview();
         }
         else
             UpdateOverview();
@@ -1499,12 +1573,30 @@ void SclWorkspace::ShowTaskView(bool show, bool remember)
         if (show)
             m_advancedInspectorVisible = !m_inspectorDock->isClosed();
         m_tableModes->setCurrentIndex(show ? 1 : 0);
-        m_inspectorDock->toggleView(show ? m_taskBrowser->IsSignalPage() : m_advancedInspectorVisible);
+        m_inspectorDock->toggleView(show ? m_taskBrowser->IsSignalPage() || m_taskBrowser->IsMmsPage() : m_advancedInspectorVisible);
+        if (!show && m_snapshot && m_selected >= 0) {
+            const QScopedValueRollback<bool> guard(m_restoring, true);
+            Select(m_selected, true, m_finding);
+            UpdateDetails();
+        }
     }
     m_advancedScope->setVisible(!show);
+    m_advancedSearch->setVisible(!show);
+    m_navigationKind->setCurrentIndex(show ? 0 : 1);
     m_taskSwitch->setText(show ? QStringLiteral("高级视图") : QStringLiteral("任务视图"));
+    if (!show && m_snapshot) LocateTableRow();
+    if (show && remember && m_taskBrowser->IsMmsPage() && m_snapshot && m_snapshot->mmsIndex.reports.contains(m_selected)) {
+        auto* mms = m_taskBrowser->View()->MmsView();
+        if (!mms->Selected() || mms->Selected()->node != m_selected) mms->OpenNode(m_selected);
+    }
     if (remember)
         RememberView();
+}
+void SclWorkspace::PushTaskHistory()
+{
+    if (m_restoring || !m_snapshot) return;
+    m_history.resize(size_t(m_historyIndex + 1)); m_history.push_back({});
+    m_historyIndex = int(m_history.size()) - 1; RememberView(); UpdateHistoryButtons();
 }
 
 void SclWorkspace::UpdateHistoryButtons()
@@ -1789,9 +1881,11 @@ void SclWorkspace::UpdateReferencePath(const QModelIndex& index)
 
 void SclWorkspace::RefreshSourcePreview()
 {
+    const bool mms = m_snapshot && !m_showingFailure && m_tableModes->currentIndex() == 1 && m_taskBrowser->IsMmsPage();
     const bool signal = m_snapshot && !m_showingFailure && m_selected != NoNode
         && m_tableModes->currentIndex() == 1 && m_taskBrowser->IsSignalPage();
-    m_structureTitle->setVisible(signal);
+    m_structureTitle->setVisible(signal || mms);
+    if (mms) m_structureTitle->setText(QStringLiteral("MMS 字段与依据 → ") + m_signalEvidence);
     if (signal)
     {
         const auto& node = m_snapshot->analysis.document->nodes[m_selected];

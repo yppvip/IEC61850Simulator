@@ -133,12 +133,15 @@ SclAnalysisService::Completion SclAnalysisService::Run(const QString& path, Scl:
         SclBrowseIndex browse(*analysis.document, task);
         browse.BuildScopes(analysis, task);
         auto tasks = SclTaskIndex::Build(analysis, browse, task);
+        auto mms = Scl::MmsProjector::Build(analysis, task);
+        auto mmsIndex = SclMmsIndex::Build(mms, analysis, task);
         Scl::checkpoint(task);
         const QFileInfo after(path);
         if (!after.isFile() || after.size() != size || after.lastModified() != modified)
             return {{}, {{}, {}, {Scl::Error::File, QStringLiteral("文件在分析期间发生变化，请重新加载。")}}};
         return {std::make_shared<const SclSnapshot>(
-            SclSnapshot{path, std::move(analysis), std::move(browse), std::move(tasks)}), {}};
+            SclSnapshot{path, std::move(analysis), std::move(browse), std::move(tasks),
+                        std::move(mms), std::move(mmsIndex)}), {}};
     }
     catch (const Scl::TaskCancelled&)
     {

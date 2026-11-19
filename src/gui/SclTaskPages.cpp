@@ -1,6 +1,7 @@
 #include "SclTaskPages.hpp"
 #include "SclTableInteraction.hpp"
 #include "SclConnectionView.hpp"
+#include "SclMmsView.hpp"
 
 #include <QComboBox>
 #include <QCompleter>
@@ -56,6 +57,7 @@ SclTaskPages::SclTaskPages(QWidget* parent) : QWidget(parent)
     addPage(QStyle::SP_BrowserReload, QStringLiteral("SV"));
     addPage(QStyle::SP_FileDialogDetailedView, QStringLiteral("文件检查"));
     addPage(QStyle::SP_ComputerIcon, QStringLiteral("收发关系"));
+    addPage(QStyle::SP_DriveNetIcon, QStringLiteral("MMS 查阅"));
     layout->addWidget(m_pages);
 
     m_body = new QStackedWidget(this);
@@ -158,6 +160,8 @@ SclTaskPages::SclTaskPages(QWidget* parent) : QWidget(parent)
     relationScroll->setFrameShape(QFrame::NoFrame);
     relationScroll->setWidget(m_connections);
     m_body->addWidget(relationScroll);
+    m_mms = new SclMmsView(m_body);
+    m_body->addWidget(m_mms);
     auto* relations = new QPushButton(style()->standardIcon(QStyle::SP_FileLinkIcon),
         QStringLiteral("查看双向收发与成员映射 →"), this);
     relations->setObjectName("SclOpenConnections");
@@ -172,7 +176,7 @@ SclTaskPages::SclTaskPages(QWidget* parent) : QWidget(parent)
     connect(m_pages, &QTabBar::currentChanged, this, [this](int index) {
         UpdateResultLayout();
         m_tableInteraction->SetEnabled(index == Signals && m_direction->currentIndex() == 0);
-        m_body->setCurrentIndex(index == Connections ? 2 : index == Overview ? 0 : 1);
+        m_body->setCurrentIndex(index == Mms ? 3 : index == Connections ? 2 : index == Overview ? 0 : 1);
         const bool communication = index == Goose || index == SampledValues;
         m_direction->setItemText(0, communication ? QStringLiteral("发送配置") : QStringLiteral("本机对象"));
         m_direction->setItemText(1, communication ? QStringLiteral("接收声明") : QStringLiteral("外部输入"));
@@ -228,6 +232,7 @@ void SclTaskPages::SetPage(Page page)
 {
     m_pages->setCurrentIndex(page);
 }
+void SclTaskPages::SetExternalNavigation(bool external) { m_pages->setVisible(!external); }
 
 void SclTaskPages::SetModel(QAbstractItemModel* model)
 {

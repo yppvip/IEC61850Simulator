@@ -3,6 +3,7 @@
 #include "SclReferenceResolver.hpp"
 #include "SclBrowseIndex.hpp"
 #include "SclTaskIndex.hpp"
+#include "SclMmsQuery.hpp"
 
 #include <QFileSystemWatcher>
 #include <QFutureWatcher>
@@ -18,6 +19,8 @@ struct SclSnapshot
     Scl::ReferenceAnalysis analysis;
     SclBrowseIndex browse;
     SclTaskIndex tasks;
+    Scl::MmsProjection mms;
+    SclMmsIndex mmsIndex;
 };
 
 // Call from the owning event-loop thread. Each successful request publishes a
