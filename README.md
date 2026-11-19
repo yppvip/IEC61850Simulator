@@ -46,7 +46,15 @@ SCL 工作台优化见 [Task2](docs/Tasks/Task2.md)。树表双向定位和历�
 
 打开 SCL 后，任务视图提供概览、信号查阅、GOOSE、SV 和文件检查。选 IED 后可筛选本机对象或查阅外部输入。选中一行可查看分类证据、数据集用法、接收声明和原文。顶部保留全工程搜索，可用「高级视图」进入原有技术表格与引用拓扑。完整 XSD 由 Task1 P7 独立交付。阶段记录见 [Task4](docs/Tasks/Task4.md)。
 
-本次构建使用 `C:/Code/IEC61850Simulator`。独立依赖程序管理路径为 `E:/Code/IEC61850Simulator/tools/`，库源码在仓库 `third_party/` 中管理。
+当前仓库为 `D:/Code/IEC61850Simulator`。独立依赖程序管理路径已由用户修订为 `D:/Code/IEC61850Simulator/tools/`，库源码在仓库 `third_party/` 中管理。
+
+### MMS 离线查阅规划（Task6）
+
+[Task6](docs/Tasks/Task6.md) 规划 MMS 报告、信号地址、客户端声明与连接配置，主流程按“装置 → 报告 → 数据集成员 → 信号/原文”逐级查阅，技术表保留在高级视图。[T6.0](docs/Tasks/Task6T6.0.md) 已完成独立 Debug、9/9 CTest、自建正反例及修订后 D 盘 SCD 的只读基线；新 MMS 任务页尚未实施。文件中 687 个报告均未声明 indexed，根版本也缺失，因此不会把定义映射当成已确认的设备实例。完整 XSD 仍属 Task1 P7，Task5 未通过项继续保留。
+
+[T6.1](docs/Tasks/Task6T6.1.md) 已完成独立合成数据原型，可运行 `build/task6-t61/bin/MmsInteractionPrototype.exe` 评审任务导航、报告/成员、信号地址、客户端反查、统一详情及原文返回。构建时显式开启 `IEC61850_BUILD_MMS_PROTOTYPE=ON`（默认关闭）；清洁 PATH CTest 10/10 和原生 100%/150%/200% 流程通过。原型不读取真实 SCD，也未接入正式主程序，其预置数据不作为领域解析结果。
+
+[T6.2](docs/Tasks/Task6T6.2.md) 已交付纯 Qt Core 的 MMS 领域投影：报告参数/数据集、保守版本化预期实例、客户端声明、ServerAt/端点、能力原文及增量检查。清洁 PATH 回归 11/11（含独立原型）；指定真实文件只读核对得到 687 个报告定义，未知版本下确定实例为 0。能力一致性、默认 RptID、非索引关联及完整 XSD 等明确保留未实现；后台查询与正式工作台接入分别在 T6.3/T6.4，当前主界面尚无新 MMS 页面。
 
 ## 技术栈
 

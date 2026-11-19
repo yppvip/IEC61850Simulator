@@ -1,4 +1,5 @@
 #include "SclReferenceResolver.hpp"
+#include "SclSignalCatalog.hpp"
 
 #include <QtTest>
 #include <algorithm>
@@ -45,6 +46,59 @@ class SclReferenceResolverTest : public QObject {
     Q_OBJECT
 
 private slots:
+    void mmsPreparationContract()
+    {
+        const auto model = fixture("Task6Mms.scd");
+        QVERIFY(model.document);
+        QCOMPARE(model.reports.size(), size_t(4));
+        QCOMPARE(model.document->attribute(0, "release"), QStringLiteral("4"));
+        QCOMPARE(model.reports[0].rptId, QStringLiteral("CustomReport01"));
+        // Existing output is a definition mapping, not the future indexed instance.
+        QCOMPARE(model.reports[0].definitionReference, QStringLiteral("DemoDomain/LLN0.BR.brStatus"));
+        QCOMPARE(model.reports[0].mmsItem, QStringLiteral("LLN0$BR$brStatus"));
+        QCOMPARE(model.reports[0].dataSetReference, QStringLiteral("DemoDomain/LLN0$Events"));
+        QCOMPARE(model.reports[1].mmsItem, QStringLiteral("LLN0$RP$urStatus"));
+        QVERIFY(model.reports[2].rptId.isNull());
+        QVERIFY(!model.reports[3].rptId.isNull() && model.reports[3].rptId.isEmpty());
+        const auto& doc = *model.document;
+        QVERIFY(doc.attribute(model.reports[2].source, "indexed").isNull());
+        QCOMPARE(doc.attribute(model.reports[0].source, "indexed"), QStringLiteral("true"));
+        const auto members = links(model, LinkKind::Fcda);
+        QCOMPARE(members.size(), size_t(3));
+        QCOMPARE(members[0].state, LinkState::Resolved);
+        QCOMPARE(members[0].mmsItem, QStringLiteral("GGIO1$ST$Ind1$stVal"));
+        QCOMPARE(members[0].candidates, members[1].candidates);
+        QCOMPARE(members[0].memberOrdinal, 1);
+        QCOMPARE(members[1].memberOrdinal, 2);
+        QCOMPARE(members[2].mmsItem, QStringLiteral("GGIO1$ST$Ind1"));
+        const auto catalog = SignalCatalog::Build(model, nullptr);
+        QCOMPARE(catalog.instances.size(), size_t(6));
+        QVERIFY(std::any_of(catalog.definitions.cbegin(), catalog.definitions.cend(),
+            [](const SignalDefinition& definition) { return definition.path == "Unlisted"; }));
+        QStringList clients;
+        for (size_t i = 0; i < doc.nodes.size(); ++i)
+            if (doc.nodes[i].isScl() && doc.nodes[i].name == "ClientLN")
+                clients.push_back(doc.attribute(NodeId(i), "iedName"));
+        QCOMPARE(clients, QStringList({QStringLiteral("SinkZ"), QStringLiteral("SinkA")}));
+        const auto endpoints = links(model, LinkKind::ConnectedAp);
+        QCOMPARE(endpoints.size(), size_t(2));
+        for (const auto& endpoint : endpoints)
+            QCOMPARE(endpoint.state, LinkState::Resolved);
+
+        const auto limited = fixture("Task6MmsLimited.scd");
+        QVERIFY(hasFinding(limited, "VER001"));
+        QVERIFY(hasFinding(limited, "KEY001"));
+        QVERIFY(hasFinding(limited, "REF001"));
+        QCOMPARE(limited.reports.size(), size_t(3));
+        QVERIFY(limited.reports[0].mmsItem.isEmpty()); // Illegal buffered value is not silently false.
+        QVERIFY(limited.reports[0].dataSetReference.isEmpty());
+        QVERIFY(limited.reports[1].declaredDataSet.isNull());
+        QVERIFY(limited.reports[2].dataSetReference.isEmpty());
+        QCOMPARE(links(limited, LinkKind::ControlDataSet).back().state, LinkState::Ambiguous);
+        // These checks freeze raw evidence. They do not implement max/client/default validation.
+        QCOMPARE(limited.document->attribute(limited.reports[1].source, "indexed"), QStringLiteral("false"));
+    }
+
     void baselineMappings()
     {
         const auto model = fixture("NamespaceCollision.scd");

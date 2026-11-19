@@ -17,6 +17,7 @@ private slots:
     void ObjectBudget();
     void MemberConnections();
     void LocalConnections();
+    void LocalMmsStages();
     void MemberPagination();
 };
 
@@ -347,6 +348,35 @@ void SclTaskIndexTest::MemberConnections()
     const auto ambiguousIndex = SclTaskIndex::Build(refs, ambiguousBrowse, nullptr);
     QCOMPARE(ambiguousIndex.goose.size(), 2);
     QVERIFY(ambiguousIndex.linksByInput.value(ambiguousIndex.inputs.front().node).size() > 6);
+}
+
+void SclTaskIndexTest::LocalMmsStages()
+{
+    using namespace Scl;
+    using namespace iec61850sim;
+    const auto path = qEnvironmentVariable("IEC61850_LOCAL_SCL");
+    if (path.isEmpty() || !QCoreApplication::arguments().contains("LocalMmsStages"))
+        QSKIP("Run LocalMmsStages explicitly with IEC61850_LOCAL_SCL");
+    QElapsedTimer timer;
+    timer.start();
+    const auto parsed = Reader::readFile(path);
+    const auto readMs = timer.restart();
+    QVERIFY(parsed.document);
+    const auto analysis = ReferenceResolver::analyze(parsed);
+    const auto referenceMs = timer.restart();
+    SclBrowseIndex browse(*parsed.document, nullptr);
+    const auto browseMs = timer.restart();
+    browse.BuildScopes(analysis, nullptr);
+    const auto scopeMs = timer.restart();
+    const auto index = SclTaskIndex::Build(analysis, browse, nullptr);
+    const auto taskMs = timer.elapsed();
+    qInfo() << "MMS worker baseline Reader/References/Browse/Scopes/TaskIndex ms:"
+            << readMs << referenceMs << browseMs << scopeMs << taskMs;
+    qInfo() << "MMS worker baseline reports/signals/definitions/limited/sha256:"
+            << analysis.reports.size() << index.catalog.instances.size() << index.catalog.definitions.size()
+            << (index.catalog.limited || index.relationsLimited) << analysis.sha256;
+    QVERIFY(!analysis.reports.empty());
+    QVERIFY(!index.catalog.instances.empty());
 }
 
 void SclTaskIndexTest::LocalConnections()

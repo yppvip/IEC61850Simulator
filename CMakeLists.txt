@@ -34,6 +34,8 @@ add_library(SclAnalysis STATIC
     src/iec61850/scl/SclReader.hpp
     src/iec61850/scl/SclReferenceResolver.cpp
     src/iec61850/scl/SclReferenceResolver.hpp
+    src/iec61850/scl/SclMmsProjection.cpp
+    src/iec61850/scl/SclMmsProjection.hpp
     src/iec61850/scl/SclSignalCatalog.cpp
     src/iec61850/scl/SclSignalCatalog.hpp
     src/iec61850/scl/SclSourceIndex.cpp
@@ -175,6 +177,7 @@ install(FILES $<TARGET_FILE:qtadvanceddocking-qt${QT_VERSION_MAJOR}>
 install(FILES config/Redis.json DESTINATION ${CMAKE_INSTALL_BINDIR}/config)
 install(FILES third_party/hiredis-1.3.0/COPYING DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/hiredis)
 
+option(IEC61850_BUILD_MMS_PROTOTYPE "Build the synthetic T6.1 MMS interaction prototype" OFF)
 include(CTest)
 if(BUILD_TESTING)
     add_executable(SclReaderTest tests/unit/SclReaderTest.cpp)
@@ -186,6 +189,12 @@ if(BUILD_TESTING)
     target_link_libraries(SclReferenceResolverTest PRIVATE SclAnalysis Qt${QT_VERSION_MAJOR}::Test)
     target_compile_definitions(SclReferenceResolverTest PRIVATE SCL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/scl")
     add_test(NAME SclReferenceResolverTest COMMAND SclReferenceResolverTest)
+
+    add_executable(SclMmsProjectionTest tests/unit/SclMmsProjectionTest.cpp)
+    target_link_libraries(SclMmsProjectionTest PRIVATE SclAnalysis Qt${QT_VERSION_MAJOR}::Test)
+    target_compile_definitions(SclMmsProjectionTest PRIVATE SCL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/scl")
+    add_test(NAME SclMmsProjectionTest COMMAND SclMmsProjectionTest)
+    set_tests_properties(SclMmsProjectionTest PROPERTIES TIMEOUT 30)
 
     add_executable(SclTaskIndexTest tests/unit/SclTaskIndexTest.cpp)
     target_link_libraries(SclTaskIndexTest PRIVATE SclApplication Qt${QT_VERSION_MAJOR}::Test)
@@ -213,7 +222,9 @@ if(BUILD_TESTING)
         target_link_libraries(SclTaskPagesTest PRIVATE SclApplication Qt${QT_VERSION_MAJOR}::Concurrent
             Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Test)
         add_test(NAME SclTaskPagesTest COMMAND SclTaskPagesTest)
-        set_tests_properties(SclTaskPagesTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        set_tests_properties(SclTaskPagesTest PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORM_PLUGIN_PATH=$<TARGET_FILE_DIR:${AppTarget}>/platforms"
+            TIMEOUT 30)
         add_executable(MainWindowBaselineTest
             src/gui/SclTableInteraction.cpp src/gui/SclTableInteraction.hpp
             res/Application.qrc
@@ -273,4 +284,8 @@ if(BUILD_TESTING)
     target_include_directories(RedisConfigurationTest PRIVATE src/core)
     target_link_libraries(RedisConfigurationTest PRIVATE Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Test)
     add_test(NAME RedisConfigurationTest COMMAND RedisConfigurationTest)
+endif()
+
+if(IEC61850_BUILD_MMS_PROTOTYPE)
+    add_subdirectory(tests/prototypes)
 endif()

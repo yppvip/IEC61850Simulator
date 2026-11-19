@@ -303,6 +303,24 @@
       },
       "plannedRules": [],
       "validationStatus": "Synthetic multi-IED navigation; not XSD validated"
+    },
+    {
+      "file": "Task6Mms.scd",
+      "wellFormed": true,
+      "root": "SCL",
+      "namespace": "http://www.iec.ch/61850/2003/SCL",
+      "counts": { "IED": 3, "Server": 3, "ServerAt": 1, "ReportControl": 4, "DataSet": 1, "FCDA": 3, "ClientLN": 2 },
+      "plannedRules": [],
+      "validationStatus": "T6.0 raw field and existing reference baseline; MMS instance/client semantics deferred to T6.2; not XSD validated"
+    },
+    {
+      "file": "Task6MmsLimited.scd",
+      "wellFormed": true,
+      "root": "SCL",
+      "namespace": "http://www.iec.ch/61850/2003/SCL",
+      "counts": { "IED": 1, "ReportControl": 3, "DataSet": 2, "ClientLN": 1 },
+      "plannedRules": ["REF001", "KEY001", "VER001"],
+      "validationStatus": "T6.0 intentional unknown version, ambiguity and lexical failures; future MMS-specific validation not implemented; not XSD validated"
     }
   ]
 }

@@ -364,6 +364,7 @@ private slots:
     void SclLocalAcceptance();
     void SclLocalCycles();
     void SclNativeTiming();
+    void SclMmsBaseline();
     void SclTaskViewFlow();
     void SclTaskLocal();
     void SclConnectionsFlow();
@@ -764,6 +765,121 @@ void MainWindowBaselineTest::SclTaskLocal()
     QTRY_COMPARE(table->model()->rowCount(), int(index.sv.size()));
     service->Close();
     QCOMPARE(table->model()->rowCount(), 0);
+}
+
+void MainWindowBaselineTest::SclMmsBaseline()
+{
+    using Service = iec61850sim::SclAnalysisService;
+    const auto path = qEnvironmentVariable("IEC61850_LOCAL_SCL");
+    if (path.isEmpty() || !QCoreApplication::arguments().contains("SclMmsBaseline"))
+        QSKIP("Run SclMmsBaseline explicitly with IEC61850_LOCAL_SCL");
+    QCOMPARE(QGuiApplication::platformName(), QStringLiteral("windows"));
+    QTemporaryDir settings;
+    QVERIFY(settings.isValid());
+    IsolateSettings(settings.path());
+    iec61850sim::MainWindow window;
+    window.resize(1280, 800);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    auto* service = window.findChild<Service*>();
+    auto* reports = window.findChild<QTableView*>("SclReports");
+    auto* members = window.findChild<QTableView*>("SclMembers");
+    auto* tree = window.findChild<QTreeView*>("SclTree");
+    auto* tabs = window.findChild<QTabWidget*>("SclTables");
+    auto* inspector = window.findChild<QTabWidget*>("SclInspector");
+    auto* properties = window.findChild<QTextBrowser*>("SclProperties");
+    auto* source = window.findChild<QPlainTextEdit*>("SclSource");
+    QVERIFY(service && reports && members && tree && tabs && inspector && properties && source);
+    QElapsedTimer clock;
+    clock.start();
+    QTimer heartbeat;
+    heartbeat.setTimerType(Qt::PreciseTimer);
+    heartbeat.setInterval(16);
+    qint64 lastTick = 0, maxGap = 0;
+    connect(&heartbeat, &QTimer::timeout, &window, [&] {
+        const auto now = clock.elapsed();
+        maxGap = std::max(maxGap, now - lastTick);
+        lastTick = now;
+    });
+    connect(service, &Service::Changed, &window, [&] {
+        // Observed through the existing 40 ms progress poll; not exact worker stage timings.
+        qInfo() << "MMS observed stage/state/elapsed ms:" << int(service->stage())
+                << int(service->state()) << clock.elapsed();
+    });
+    heartbeat.start();
+    service->Open(path);
+    QTRY_VERIFY_WITH_TIMEOUT(service->state() != Service::State::Loading, 60000);
+    QVERIFY2(service->snapshot(), qPrintable(service->failure().diagnostic.detail));
+    const auto snapshot = service->snapshot();
+    const auto& analysis = snapshot->analysis;
+    QVERIFY(!analysis.reports.empty());
+    qInfo() << "MMS Ready ms, load heartbeat gap ms, peak bytes, window, DPR:"
+            << clock.elapsed() << maxGap << Memory().peakWorkingSet << window.size() << window.devicePixelRatioF();
+    const auto treeIndex = [&](Scl::NodeId id) {
+        QList<int> rows;
+        for (; id != Scl::NoNode; id = analysis.document->nodes[id].parent)
+            rows.prepend(snapshot->browse.branches[id].row);
+        QModelIndex index;
+        for (int row : rows)
+            index = tree->model()->index(row, 0, index);
+        return index;
+    };
+    QElapsedTimer elapsed;
+    elapsed.start();
+    tabs->setCurrentWidget(reports);
+    reports->setCurrentIndex(reports->model()->index(0, 0));
+    QApplication::processEvents();
+    const auto report = tree->currentIndex().data(Qt::UserRole).toInt();
+    QCOMPARE(report, analysis.reports.front().source);
+    QVERIFY(properties->toPlainText().contains(QStringLiteral("rptID")));
+    QVERIFY(!reports->model()->index(0, 0).data().toString().isEmpty());
+    qInfo() << "MMS first existing report readable ms since Ready:" << elapsed.nsecsElapsed() / 1e6;
+    Scl::NodeId dataSet = Scl::NoNode;
+    for (const auto& ref : analysis.references)
+        if (ref.kind == Scl::LinkKind::ControlDataSet && ref.source == report
+            && ref.state == Scl::LinkState::Resolved && ref.candidates.size() == 1)
+            dataSet = ref.candidates.front();
+    QVERIFY(dataSet != Scl::NoNode);
+    elapsed.restart();
+    tree->setCurrentIndex(treeIndex(dataSet));
+    tabs->setCurrentWidget(members);
+    QApplication::processEvents();
+    QVERIFY(members->model()->rowCount() > 0);
+    QVERIFY(!members->model()->index(0, 1).data().toString().isEmpty());
+    qInfo() << "MMS first existing members readable ms, rows:" << elapsed.nsecsElapsed() / 1e6
+            << members->model()->rowCount();
+    QList<qint64> navigation, detail;
+    maxGap = 0;
+    for (int i = 0; i < 100; ++i)
+    {
+        const auto target = analysis.reports[size_t(i) * (analysis.reports.size() - 1) / 99].source;
+        elapsed.restart();
+        tree->setCurrentIndex(treeIndex(target));
+        tabs->setCurrentWidget(reports);
+        QApplication::processEvents();
+        navigation.push_back(elapsed.nsecsElapsed());
+        QCOMPARE(tree->currentIndex().data(Qt::UserRole).toInt(), target);
+        QCOMPARE(reports->currentIndex().data(Qt::UserRole).toInt(), target);
+        elapsed.restart();
+        inspector->setCurrentIndex(2);
+        QApplication::processEvents();
+        QVERIFY(!source->toPlainText().isEmpty());
+        detail.push_back(elapsed.nsecsElapsed());
+        inspector->setCurrentIndex(0);
+        QTest::qWait(16);
+    }
+    std::sort(navigation.begin(), navigation.end());
+    std::sort(detail.begin(), detail.end());
+    qInfo() << "MMS existing report navigation P50/P95/P99/max ms:"
+            << navigation[49] / 1e6 << navigation[94] / 1e6 << navigation[98] / 1e6 << navigation.back() / 1e6;
+    qInfo() << "MMS source detail P50/P95/P99/max ms:"
+            << detail[49] / 1e6 << detail[94] / 1e6 << detail[98] / 1e6 << detail.back() / 1e6;
+    qInfo() << "MMS interaction heartbeat max gap ms, peak bytes, sha256:"
+            << maxGap << Memory().peakWorkingSet << analysis.sha256;
+    const auto artifact = qEnvironmentVariable("IEC61850_TASK6_ARTIFACT");
+    if (!artifact.isEmpty())
+        QVERIFY(window.grab().save(artifact));
+    // Dispatch/paint opportunity is measured; physical input and DWM present time are not.
 }
 
 void MainWindowBaselineTest::SclNativeTiming()

@@ -44,3 +44,24 @@ P0 仅验证了样本清单、命名空间敏感的计数和 XML 良构性预期
 P1 的安全、编码和原文映射测试见 [P1 验收记录](Task1P1.md)。
 
 P2 的 `ReferenceResolver` 执行 XML001～004、STR001、KEY001、TYP001～003、REF001～004、ENG001、VER001 和 EXT001 的项目规则子集。规则区分已执行、不适用、前置失败及尚未实现。已执行的规则单列覆盖受限的个案。ENG002～004 和完整 XSD 标记为尚未实现。规则范围、明确的作用域假设和正反例见 [P2 验收记录](Task1P2.md)。
+
+## Task6 增量：MMS 投影规则集 mms-0.1
+
+2026-11-19 的 [T6.2](Task6T6.2.md) 已在纯 Qt Core 的 `MmsProjector::Build` 实施下表。**它尚未接入正式快照服务、检查页或导出**；上文基础解析器的 `0.2` 覆盖状态不变。调用方后续须同时保留两份规则集身份及覆盖，不能只因增量实现而把旧解析器的 ENG004 标成已执行。
+
+投影与诊断共同持有源文档、SourceIndex、SHA-256 和规则集版本；Finding 的节点、路径、元素位置及字段证据均属于该快照。虚拟实例只有 `(ReportControl NodeId, ordinal)`，其原文证据仍是定义/RptEnabled 节点。全局记录预算失败返回 Blocked 且不发布部分记录；ServerAt 路径预算受限保留声明及分支 Blocked，并置 `resourceLimited`。取消抛出 TaskCancelled，不交付结果。
+
+| ID | 本阶段已执行范围 | 依据、级别及限制 |
+| --- | --- | --- |
+| MMS001 | 显式 buffered/indexed、TrgOps/OptFields 已识别布尔字段；confRev/bufTime/intgPd、RptEnabled/max 及 ConfReportControl/DynAssociation 的显式 max 整数词法；重复参数子元素 | 项目词法检查，警告。接受 XML boolean true/false/1/0；解释时去首尾空白，原值不改。数字解释为 0..4294967295；缺失/空/非法分别记录，不应用缺省值。这里不是全部 SCL 属性或完整 XSD 校验；能力 max 的词法成功不表示能力适用性已确认。bufTime/intgPd 的展示单位为 ms。 |
+| MMS002 | 根属性恰为 2007/B/4，唯一模型/LD 域/LN/报告名、显式有效 buffered、indexed=true、单个 RptEnabled 且显式 max=1..99 时生成两位后缀预期实例；已知索引档案的 max 越界提示 | 沿用 [T6.0 准入档案](Task6T6.0.md)。两位索引依据 [IEC Tissue 243](https://iec61850.tissue-db.com/tissues/243)，ClientLN 位置依据 [Tissue 198](https://iec61850.tissue-db.com/tissues/198)。只启用已确认的索引子集，不照搬历史提案中的非索引描述。未知版本、缺省字段、重复 RptEnabled、非索引及关联专用 URCB均不生成确定实例。名称含未支持字符时受限。 |
+| MMS003 | ClientLN 按 IED/AP/Server/LD/LN 定位，保留外部、未绑定、歧义及阻断；重复客户端、已知索引配置的列表位置超过 max 提示；Association 独立解析客户端 LN；Report ExtRef 复用已有对象/控制块证据 | 项目作用域检查，明确缺项/文件内悬空/歧义/重复/分配溢出为警告；外部或纯客户端 AP 未覆盖保留限制。ClientLN 原始位置从 1 开始；前一项无法解析也不将后一项移到 01。位置分配与目标解析分开。Association 不绑定报告实例。缺 serviceType 不计为 Report；显式源冲突不回退成员猜测，不重复 REF004 诊断。 |
+| MMS004 | ServerAt 链、环、目标歧义及路径预算；ConnectedAP 只消费现有 REF003 的 AP 引用；只检查直接 Address/P 中 IP/IP-SUBNET/IP-GATEWAY 的 IPv4 格式及掩码连续性 | 项目检查，警告。保留多端点、重复 P、原始 OSI/selector/未知类型；IPv6 和其他类型值域受限。不读取 GSE/SMV Address，不填端口。不因缺 Communication 或纯客户端 AP 无 Server 而报工程缺失；不重复 REF003 根因。 |
+| ENG004（增量子集） | 已确认预期实例地址按 Server 比较；可唯一定位的不同报告定义在同一 Server 重复声明非空原始 rptID 时给“疑似重复”提示 | 默认警告，**不是协议唯一性或在线订阅错误的证明**。同定义的多实例只检查一次原始 rptID；跨 Server/AP/IED 复用不报；空/缺失 rptID 不报；不确定实例地址不参与地址冲突。非索引关联语境不纳入确认比较。 |
+| MMS005 | 汇总报告未解释字段、未知标准子元素/扩展属性、参数缺省及原始能力声明的覆盖限制 | 覆盖计数，不制造每条默认值的错误。Services 的 IED/AP 原始归属与全部直接声明保留；不选择全工程第一条或臆定优先级。原始字段仍可凭节点查阅。 |
+| MMS006 | **NotImplemented**：能力适用性/覆盖优先级、能力与配置兼容性、跨版本参数组合、默认 RptID、非索引关联规则及其他 Services 的语义校验 | 不根据能力上限推断实际实例或连接数量；不强制 intgPd 非零必须 period=true。未知/缺省保持限制。[Tissue 1771](https://iec61850.tissue-db.com/tissues/1771?workflow=show) 说明后续版本中数量与索引及关联的区别，本档案未启用其全部条件。 |
+| XSD | **NotImplemented** | 完整 XSD 仍归 Task1 P7，无在线 schema 下载或校验。 |
+
+缺省/原始字段的状态至少区分 Missing、Empty、Explicit、Invalid、Limited；Derived 只用于有证据的派生映射。自定义 rptID 不追加实例后缀；缺失/空 rptID 即使能推导实例也不给伪造的有效默认值。报告定义映射与实例分别存储，数据集 NodeId、原始 FCDA 数量共享，不按实例复制成员。FCDA 类型/数组/FC 仍由 REF002 提供，不另写解析器。
+
+正反例由 `Task6Mms.scd`、`Task6MmsLimited.scd` 与 `SclMmsProjectionTest` 的自建内存变体覆盖，详见阶段记录。新规则本阶段仅供领域调用；信号地址按需展开、查询/搜索、导出与正式 UI 接入依 T6.3/T6.4 门槛后实施。
