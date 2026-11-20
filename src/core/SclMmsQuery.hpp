@@ -61,6 +61,7 @@ struct SclMmsRequest {
     int graphLimit = 128; // Hard ceiling: 128 nodes / 256 edges.
     bool presentation = false;
     SclMmsKey key;
+    std::optional<SclMmsKey> locate; // Locate a stable identity's page in the worker, after scope/filter.
 };
 struct SclMmsDetailField {
     QString key, label, value, explanation;
@@ -79,6 +80,7 @@ struct SclMmsResult {
     std::vector<SclMmsEdge> edges;
     int total = 0; // Exact when !limited; otherwise observed lower bound.
     bool limited = false, hasMore = false;
+    bool locateFound = false;
     QString limitation;
     QString title, summary;
     std::vector<SclMmsDetailField> fields;

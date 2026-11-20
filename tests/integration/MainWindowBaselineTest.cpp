@@ -379,6 +379,11 @@ private slots:
     void SclMmsStress_data();
     void SclMmsStress();
     void SclMmsLongFields();
+    void SclNavigationFixture();
+    void SclNavigationBaseline();
+    void SclNavigationReview();
+    void SclMmsNavigation();
+    void SclMmsNavigationPaging();
 };
 
 void MainWindowBaselineTest::SclConnectionsFlow()
@@ -2676,6 +2681,9 @@ void MainWindowBaselineTest::ResetLayoutAndHelp()
     help->trigger();
     QVERIFY(helpText.contains("Ctrl+F") && helpText.contains(QStringLiteral("关闭 SCL 文档")));
 }
+
+#include "SclNavigationBaseline.hpp"
+#include "SclMmsNavigationTest.hpp"
 
 int main(int argc, char** argv)
 {

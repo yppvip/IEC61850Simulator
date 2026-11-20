@@ -321,6 +321,15 @@
       "counts": { "IED": 1, "ReportControl": 3, "DataSet": 2, "ClientLN": 1 },
       "plannedRules": ["REF001", "KEY001", "VER001"],
       "validationStatus": "T6.0 intentional unknown version, ambiguity and lexical failures; future MMS-specific validation not implemented; not XSD validated"
+    },
+    {
+      "file": "Task7Navigation.scd",
+      "wellFormed": true,
+      "root": "SCL",
+      "namespace": "http://www.iec.ch/61850/2003/SCL",
+      "counts": { "IED": 2, "AccessPoint": 2, "Server": 2, "LDevice": 3, "LN0": 3, "LN": 3, "ReportControl": 3, "DataSet": 2, "FCDA": 5, "GSEControl": 1, "ClientLN": 1 },
+      "plannedRules": ["REF001"],
+      "validationStatus": "T7.0 navigation contract: shared and scoped datasets, repeated/object/unresolved members; not XSD validated"
     }
   ]
 }

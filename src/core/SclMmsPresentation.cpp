@@ -61,12 +61,14 @@ void PresentSclMms(const SclSnapshot& s, SclMmsResult& result, TaskControl* task
         case SclMmsRecordKind::Instance:
             name = row.cells.value(0); desc = row.cells.value(2); type = QStringLiteral("预期实例（不是在线实例）"); parent = row.cells.value(1); break;
         case SclMmsRecordKind::Member: {
-            const auto& ref = s.analysis.references.at(row.key.record);
-            name = QStringLiteral("%1 · %2").arg(row.key.ordinal).arg(Attr(s, ref.source, "doName"));
-            desc = Attr(s, ref.source, "daName");
+            if (!row.description) row.description = DescribeSclMember(s.analysis, row.key.node, task);
+            name = QStringLiteral("%1 · %2").arg(row.key.ordinal).arg(Attr(s, row.key.node, "doName"));
+            desc = Attr(s, row.key.node, "daName");
             if (row.description) for (const auto& f : row.description->fields)
                 if (!f.value.isEmpty()) desc += '\n' + SclDescriptionLabel(f.source) + ": " + f.value;
-            type = Shape(row.shape); parent = ref.objectReference;
+            type = Shape(row.shape);
+            if (row.key.record >= 0 && row.key.record < int(s.analysis.references.size()))
+                parent = s.analysis.references[row.key.record].objectReference;
             break;
         }
         case SclMmsRecordKind::Client:
@@ -211,9 +213,20 @@ SclMmsResult DescribeSclMms(const SclSnapshot& s, const SclMmsRequest& request, 
             rawNode(ref.source); description(DescribeSclMember(s.analysis, ref.source, task));
             mapping(ref.mmsDomain, ref.mmsItem, ref.source);
             field("object", "对象引用", ref.objectReference, {ref.source, {}, {}}, SclMmsStateText(ref.state));
+            field("resolution", "引用解析状态与原因", SclMmsStateText(ref.state) + " · " + ref.detail, {ref.source, {}, {}});
+            for (int i = 0; i < std::min(64, int(ref.candidates.size())); ++i) {
+                checkpoint(task); const auto node = ref.candidates[i];
+                field("candidate." + QString::number(i), ref.state == LinkState::Resolved ? "解析目标" : "目标候选",
+                    SclTaskPath(doc, node), {node, {}, {}}, SclMmsStateText(ref.state));
+            }
+            if (ref.candidates.size() > 64) { out.limited = true; out.limitation = QStringLiteral("目标候选最多展示 64 项；请查看原文与引用依据。"); }
             field("array", "数组下标（-1 为未指定）", QString::number(ref.arrayIndex), {ref.source, "ix", {}});
             field("component", "alternate access 组件", ref.mmsComponent, {ref.source, {}, {}});
             field("parent", "父报告定义", Attr(s, request.report, "name"), {request.report, {}, {}});
+        } else if (key.kind == SclMmsRecordKind::Member) {
+            rawNode(key.node);
+            field("resolution", "引用解析状态与原因", QStringLiteral("成员引用索引未覆盖；仅显示文件声明。"), {key.node, {}, {}});
+            out.limited = true; out.limitation = QStringLiteral("成员引用索引资源受限；未推导目标或地址。");
         }
         break;
     case SclMmsRecordKind::Finding: {

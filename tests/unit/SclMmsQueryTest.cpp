@@ -51,6 +51,34 @@ SclMmsRequest Request(SclMmsQueryKind kind, NodeId report = NoNode) {
 class SclMmsQueryTest : public QObject {
     Q_OBJECT
 private slots:
+    void LocateIdentityAndDirectDataSet() {
+        auto bytes = Bytes(); const int begin = bytes.indexOf("<FCDA "), end = bytes.indexOf("/>", begin) + 2;
+        bytes.insert(end, bytes.mid(begin, end - begin).repeated(250));
+        const auto s = Snapshot(bytes); const auto report = Named(*s, "ReportControl", "brStatus");
+        auto r = Request(SclMmsQueryKind::Members, report); r.offset = 200;
+        const auto secondPage = QuerySclMms(*s, r, nullptr); QCOMPARE(secondPage.rows.size(), size_t(53));
+        const auto key = secondPage.rows[17].key;
+        r.offset = 0; r.locate = key; r.presentation = true;
+        auto found = QuerySclMms(*s, r, nullptr); QVERIFY(found.locateFound); QCOMPARE(found.request.offset, 200);
+        QCOMPARE(found.total, 253); QCOMPARE(found.rows[17].key.node, key.node); QVERIFY(found.rows[17].description.has_value());
+        r.report = NoNode; r.target = s->mms.reports.front().dataSet.target();
+        found = QuerySclMms(*s, r, nullptr); QVERIFY(found.locateFound); QCOMPARE(found.rows[17].report, NoNode);
+        QCOMPARE(found.rows[17].dataSet, r.target); QCOMPARE(found.rows[17].key.ordinal, 218);
+        r.text = "never-matches"; found = QuerySclMms(*s, r, nullptr);
+        QVERIFY(!found.locateFound); QVERIFY(found.rows.empty()); QVERIFY(!found.limitation.isEmpty());
+        r.text.clear(); r.workLimit = 5; found = QuerySclMms(*s, r, nullptr);
+        QVERIFY(found.limited); QVERIFY(!found.locateFound); QVERIFY(found.rows.empty());
+        r.workLimit = 100000; r.scope.ied = Named(*s, "IED", "SinkA");
+        found = QuerySclMms(*s, r, nullptr); QVERIFY(!found.locateFound); QVERIFY(found.rows.empty());
+        // An index budget may omit this member even though its declaration remains browsable.
+        auto limited = *s; limited.mmsIndex.memberReferences.remove(key.node); limited.mmsIndex.limited = true;
+        r.locate.reset(); r.scope = {}; r.offset = 200;
+        found = QuerySclMms(limited, r, nullptr); QVERIFY(found.limited);
+        QCOMPARE(found.rows[17].key.record, -1); QCOMPARE(found.rows[17].state, LinkState::Blocked);
+        QVERIFY(found.rows[17].cells[0].contains("218")); QVERIFY(!found.rows[17].limitation.isEmpty());
+        r.kind = SclMmsQueryKind::Detail; r.key = found.rows[17].key;
+        const auto detail = QuerySclMms(limited, r, nullptr); QVERIFY(detail.limited); QVERIFY(!detail.fields.empty());
+    }
     void SnapshotService() {
         SclAnalysisService service;
         service.Open(QStringLiteral(SCL_FIXTURE_DIR "/Task6Mms.scd"));

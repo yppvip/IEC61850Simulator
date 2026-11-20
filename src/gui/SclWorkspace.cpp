@@ -16,6 +16,8 @@
 #include <QMenu>
 #include <QPushButton>
 #include <QScopedValueRollback>
+#include <QScrollBar>
+#include <QSplitter>
 #include <QShortcut>
 #include <QSignalBlocker>
 #include <QSettings>
@@ -707,6 +709,7 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     m_treeModel = new SclTreeModel(m_tree);
     m_tree->setModel(m_treeModel);
     m_tableModes = new QStackedWidget(this);
+    m_tableModes->setMinimumSize(0, 0); m_tableModes->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     m_taskBrowser = new SclTaskBrowser(m_tableModes);
     m_taskBrowser->View()->SetExternalNavigation(true);
     auto* tablePane = new QWidget(m_tableModes);
@@ -747,6 +750,7 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     m_tables->setObjectName("SclTables");
     m_tables->setUsesScrollButtons(true);
     m_inspector = new QTabWidget(this);
+    m_inspector->setMinimumSize(0, 0); m_inspector->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     m_inspector->setObjectName("SclInspector");
     const auto dock = [this](const QString& title, const char* name, QWidget* widget) {
         auto* result = new ads::CDockWidget(m_docks, title);
@@ -1028,8 +1032,10 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     sourceLayout->addWidget(m_structureTitle);
     sourceLayout->addWidget(returnSignal);
     m_source = new SclSourcePreview(sourcePage);
+    m_source->setMinimumSize(0, 0);
+    m_source->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     sourceLayout->addWidget(m_sourceLabel);
-    sourceLayout->addWidget(m_source);
+    sourceLayout->addWidget(m_source, 1);
     m_inspector->addTab(sourcePage, QStringLiteral("原文"));
     m_signalInspector = new QWidget(m_inspector);
     auto* signalLayout = new QVBoxLayout(m_signalInspector);
@@ -1059,7 +1065,20 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     connect(mmsView, &SclMmsView::BeforeNavigate, this, &SclWorkspace::RememberView);
     connect(mmsView, &SclMmsView::Navigated, this, &SclWorkspace::PushTaskHistory);
     connect(mmsView, &SclMmsView::LocationUpdated, this, &SclWorkspace::RememberView);
+    connect(mmsView, &SclMmsView::HistoryRequested, this, &SclWorkspace::Navigate);
+    connect(mmsView, &SclMmsView::LocationUpdated, this, &SclWorkspace::BalanceMmsPanels, Qt::QueuedConnection);
+    connect(mmsView, &SclMmsView::GeometryChanged, this, &SclWorkspace::BalanceMmsPanels, Qt::QueuedConnection);
+    for (auto* scroll : {m_source->horizontalScrollBar(), m_source->verticalScrollBar(),
+        mmsView->Table()->horizontalScrollBar(), mmsView->Fields()->horizontalScrollBar()})
+        connect(scroll, &QScrollBar::rangeChanged, this, &SclWorkspace::BalanceMmsPanels, Qt::QueuedConnection);
+    connect(m_inspectorDock, &ads::CDockWidget::viewToggled, mmsView, &SclMmsView::SetInspectorVisible);
+    connect(mmsView, &SclMmsView::RestoreInspector, this, [this, mmsView](bool visible) {
+        m_inspectorDock->toggleView(visible);
+        if (visible) m_inspector->setCurrentWidget(mmsView->Inspector());
+    });
     connect(mmsView, &SclMmsView::SelectedNode, this, [this](int node) {
+        // History has already restored this XML node; avoid rebuilding its scope twice.
+        if (node == m_selected && m_finding < 0 && !m_showingFailure) return;
         QScopedValueRollback<bool> guard(m_restoring, true); Select(node);
     });
     connect(mmsView, &SclMmsView::ScopeRequested, this, [this](int ied) {
@@ -1200,6 +1219,7 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
 
 SclWorkspace::~SclWorkspace()
 {
+    m_closing = true;
     for (auto* object : findChildren<QObject*>()) QObject::disconnect(object, nullptr, this, nullptr);
     QSettings settings(QSettings::defaultFormat(), QSettings::UserScope,
         QStringLiteral("IEC61850Simulator"), QStringLiteral("IEC61850Simulator"));
@@ -1566,6 +1586,10 @@ void SclWorkspace::RememberView()
 
 void SclWorkspace::ShowTaskView(bool show, bool remember)
 {
+    const bool changed = show != (m_tableModes->currentIndex() == 1);
+    if (remember) RememberView();
+    {
+    const QScopedValueRollback<bool> restoring(m_restoring, true);
     if (remember)
         m_preferTaskView = show;
     if (show != (m_tableModes->currentIndex() == 1))
@@ -1585,12 +1609,13 @@ void SclWorkspace::ShowTaskView(bool show, bool remember)
     m_navigationKind->setCurrentIndex(show ? 0 : 1);
     m_taskSwitch->setText(show ? QStringLiteral("高级视图") : QStringLiteral("任务视图"));
     if (!show && m_snapshot) LocateTableRow();
-    if (show && remember && m_taskBrowser->IsMmsPage() && m_snapshot && m_snapshot->mmsIndex.reports.contains(m_selected)) {
+    if (show && remember && m_taskBrowser->IsMmsPage() && m_snapshot && (m_snapshot->mmsIndex.reports.contains(m_selected)
+        || m_snapshot->browse.dataSetMembers.contains(m_selected) || m_snapshot->mmsIndex.memberReferences.contains(m_selected))) {
         auto* mms = m_taskBrowser->View()->MmsView();
         if (!mms->Selected() || mms->Selected()->node != m_selected) mms->OpenNode(m_selected);
     }
-    if (remember)
-        RememberView();
+    }
+    if (remember) { if (changed) PushTaskHistory(); else RememberView(); }
 }
 void SclWorkspace::PushTaskHistory()
 {
@@ -1599,10 +1624,35 @@ void SclWorkspace::PushTaskHistory()
     m_historyIndex = int(m_history.size()) - 1; RememberView(); UpdateHistoryButtons();
 }
 
+void SclWorkspace::BalanceMmsPanels()
+{
+    if (m_closing || window()->height() >= 650 || !isVisible() || !m_snapshot || m_tableModes->currentIndex() != 1
+        || !m_taskBrowser->IsMmsPage() || m_inspectorDock->isClosed()) return;
+    auto* view = m_taskBrowser->View()->MmsView();
+    const bool source = m_inspector->currentIndex() == 2 && m_source->isVisible();
+    if (!view->Table()->isVisible() || (!source && !view->Fields()->isVisible())) return;
+    auto* area = m_tableDock->dockAreaWidget();
+    if (!area || !m_inspectorDock->dockAreaWidget() || area->parentWidget() != m_inspectorDock->dockAreaWidget()->parentWidget()) return;
+    auto* splitter = qobject_cast<QSplitter*>(area->parentWidget());
+    if (!splitter || splitter->orientation() != Qt::Vertical || splitter->widget(0) != area) return;
+    const auto sizes = m_docks->splitterSizes(area);
+    if (sizes.size() != 2) return; // Custom/tabbed/floating layouts retain their own arrangement.
+    const int available = sizes[0] + sizes[1];
+    const auto scrollbar = [](QAbstractScrollArea* view) { return view->horizontalScrollBar()->sizeHint().height(); };
+    // Reserve the scrollbar before its deferred range/layout update and the bottom frame/margins.
+    const int row = view->Table()->viewport()->mapTo(area, QPoint()).y() + view->Table()->fontMetrics().height() + scrollbar(view->Table()) + 18;
+    const int field = source ? m_source->viewport()->mapTo(m_inspectorDock->dockAreaWidget(), QPoint()).y() + m_source->fontMetrics().height() + scrollbar(m_source) + 18
+        : view->Fields()->viewport()->mapTo(m_inspectorDock->dockAreaWidget(), QPoint()).y() + view->Fields()->fontMetrics().height() + scrollbar(view->Fields()) + 18;
+    const int target = std::min(std::max(sizes[0], row), std::max(40, available - field));
+    if (std::abs(target - sizes[0]) > 1) m_docks->setSplitterSizes(area, {target, available - target});
+    if (source) m_source->ensureCursorVisible();
+}
+
 void SclWorkspace::UpdateHistoryButtons()
 {
     m_back->setEnabled(m_historyIndex > 0);
     m_forward->setEnabled(m_historyIndex + 1 < int(m_history.size()));
+    m_taskBrowser->View()->MmsView()->SetHistoryEnabled(m_back->isEnabled(), m_forward->isEnabled());
 }
 
 void SclWorkspace::Navigate(int direction)
@@ -1610,6 +1660,7 @@ void SclWorkspace::Navigate(int direction)
     const int next = m_historyIndex + direction;
     if (next < 0 || next >= int(m_history.size()))
         return;
+    RememberView();
     const auto location = m_history[next];
     const auto previousTable = m_tables->currentIndex();
     const auto previousScope = m_dataSet;
@@ -1885,7 +1936,12 @@ void SclWorkspace::RefreshSourcePreview()
     const bool signal = m_snapshot && !m_showingFailure && m_selected != NoNode
         && m_tableModes->currentIndex() == 1 && m_taskBrowser->IsSignalPage();
     m_structureTitle->setVisible(signal || mms);
-    if (mms) m_structureTitle->setText(QStringLiteral("MMS 字段与依据 → ") + m_signalEvidence);
+    if (mms) {
+        const auto label = QStringLiteral("MMS 字段与依据 → ") + m_signalEvidence;
+        m_structureTitle->setText(label); m_structureTitle->setToolTip(label.toHtmlEscaped());
+        m_structureTitle->setMaximumHeight(window()->height() < 650 ? m_structureTitle->fontMetrics().lineSpacing() + 4 : QWIDGETSIZE_MAX);
+        QTimer::singleShot(0, this, &SclWorkspace::BalanceMmsPanels);
+    } else m_structureTitle->setMaximumHeight(QWIDGETSIZE_MAX);
     if (signal)
     {
         const auto& node = m_snapshot->analysis.document->nodes[m_selected];

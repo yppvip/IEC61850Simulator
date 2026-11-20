@@ -143,6 +143,17 @@ bool Query::Add(SclMmsRow row)
     Tick();
     if (!Matches(row)) return false;
     const auto pos = out.total++;
+    if (r.locate) {
+        if (!out.locateFound && pos % r.pageSize == 0) out.rows.clear();
+        if (!out.locateFound || pos < out.request.offset + r.pageSize) out.rows.push_back(row);
+        const auto& key = *r.locate;
+        if (row.key.kind == key.kind && row.key.node == key.node && row.key.record == key.record
+            && row.key.ordinal == key.ordinal && row.key.field == key.field) {
+            out.locateFound = true;
+            out.request.offset = (pos / r.pageSize) * r.pageSize;
+        }
+        return true;
+    }
     if (pos >= r.offset && int(out.rows.size()) < r.pageSize) out.rows.push_back(std::move(row));
     return true;
 }
@@ -234,9 +245,12 @@ SclMmsAddressShape Query::Shape(const Reference& ref)
 
 void Query::Members(NodeId report)
 {
-    if (!ReportAllowed(report)) return;
-    const auto& definition = p.reports[s.mmsIndex.reports.value(report)];
-    const auto ds = definition.dataSet.target();
+    NodeId ds = NoNode;
+    if (report != NoNode) {
+        if (!ReportAllowed(report)) return;
+        ds = p.reports[s.mmsIndex.reports.value(report)].dataSet.target();
+    } else if (Valid(r.target) && doc.nodes[r.target].isScl()
+        && doc.nodes[r.target].name == "DataSet" && InScope(r.target)) ds = r.target;
     const auto members = s.browse.dataSetMembers.value(ds);
     for (int i = 0; i < members.count; ++i) {
         Tick();
@@ -254,11 +268,14 @@ void Query::Members(NodeId report)
             row.arrayIndex = ref.arrayIndex; row.component = ref.mmsComponent;
             row.limitation = ref.detail;
             row.shape = Shape(ref);
+        } else {
+            row.state = LinkState::Blocked;
+            row.limitation = QStringLiteral("成员引用索引未覆盖；请查看成员声明原文。");
         }
         row.evidence = {{member, {}, {}}};
         row.cells << row.domain << row.item << row.component << row.limitation;
         // Resolve descriptions only for the page delivered, never every member.
-        if (Matches(row) && out.total >= r.offset && int(out.rows.size()) < r.pageSize)
+        if (!r.locate && Matches(row) && out.total >= r.offset && int(out.rows.size()) < r.pageSize)
             row.description = DescribeSclMember(s.analysis, member, task);
         Add(std::move(row));
     }
@@ -644,7 +661,11 @@ SclMmsResult Query::Run()
         out.limited = true; out.limitation = QStringLiteral("查询工作预算 %1 已用尽；总量为已观察下界。").arg(r.workLimit);
     }
     if (s.mmsIndex.limited) { out.limited = true; out.limitation += QStringLiteral(" MMS 引用索引资源受限。"); }
-    out.hasMore = out.total > qint64(r.offset) + qint64(out.rows.size()) || out.limited;
+    if (r.locate && !out.locateFound) {
+        out.rows.clear();
+        out.limitation += QStringLiteral(" 未定位到所选身份；可能被范围或筛选遮挡，或查询已受限。");
+    }
+    out.hasMore = out.total > qint64(out.request.offset) + qint64(out.rows.size()) || out.limited;
     checkpoint(task);
     return std::move(out);
 }

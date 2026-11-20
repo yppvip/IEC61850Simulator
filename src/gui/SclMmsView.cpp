@@ -1,12 +1,14 @@
 #include "SclMmsView.hpp"
 #include "SclTableInteraction.hpp"
 #include <QAbstractTableModel>
+#include <QClipboard>
 #include <QComboBox>
 #include <QGraphicsView>
 #include <QElapsedTimer>
 #include <QGraphicsScene>
 #include <QGraphicsRectItem>
 #include <QHeaderView>
+#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -15,6 +17,7 @@
 #include <QPushButton>
 #include <QScrollBar>
 #include <QScopedValueRollback>
+#include <QStyle>
 #include <QSignalBlocker>
 #include <QToolButton>
 #include <QTableView>
@@ -86,21 +89,59 @@ SclMmsView::SclMmsView(QWidget* parent) : QWidget(parent), m_list(this), m_detai
     m_global->setPlaceholderText(QStringLiteral("MMS 全局搜索（整个工程，回车执行）"));
     m_global->setAccessibleName(QStringLiteral("MMS 全局搜索整个工程"));
     nav->addWidget(m_global, 1); layout->addLayout(nav);
-    m_title = new QLabel(this); m_title->setObjectName("SclMmsBreadcrumb"); m_title->setTextFormat(Qt::PlainText);
-    m_title->setWordWrap(true); layout->addWidget(m_title);
-    auto* controls = new QHBoxLayout;
+    m_back = new QPushButton(style()->standardIcon(QStyle::SP_ArrowBack), QStringLiteral("后退"), this);
+    m_forward = new QPushButton(style()->standardIcon(QStyle::SP_ArrowForward), QStringLiteral("前进"), this);
+    m_up = new QPushButton(QStringLiteral("上一级"), this);
+    m_searchReturn = new QPushButton(QStringLiteral("返回搜索结果"), this);
+    m_back->setObjectName("SclMmsBack"); m_forward->setObjectName("SclMmsForward");
+    m_up->setObjectName("SclMmsUp"); m_searchReturn->setObjectName("SclMmsSearchReturn");
+    m_back->setEnabled(false); m_forward->setEnabled(false); m_up->setEnabled(false); m_searchReturn->hide();
+    for (auto* button : {m_back, m_forward, m_up, m_searchReturn}) {
+        button->setMinimumWidth(0); button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    }
+    m_route->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    nav->insertWidget(0, m_back); nav->insertWidget(1, m_forward); nav->insertWidget(2, m_up);
+    m_compactSearch = new QToolButton(this); m_compactSearch->setObjectName("SclMmsCompactSearch");
+    m_compactSearch->setText(QStringLiteral("搜索")); m_compactSearch->setToolTip(QStringLiteral("MMS 全工程搜索"));
+    m_compactSearch->setAccessibleName(QStringLiteral("MMS 全工程搜索")); nav->addWidget(m_compactSearch); m_compactSearch->hide();
+    connect(m_compactSearch, &QToolButton::clicked, this, [this] {
+        bool ok = false;
+        const auto text = QInputDialog::getText(this, QStringLiteral("MMS 全工程搜索"), QStringLiteral("搜索整个工程"),
+            QLineEdit::Normal, m_global->text(), &ok);
+        if (ok) { m_global->setText(text); SclMmsRequest r; r.kind = SclMmsQueryKind::Search; r.text = text; Navigate(r); }
+    });
+    connect(m_back, &QPushButton::clicked, this, [this] { emit HistoryRequested(-1); });
+    connect(m_forward, &QPushButton::clicked, this, [this] { emit HistoryRequested(1); });
+    connect(m_up, &QPushButton::clicked, this, [this] { OpenAncestor(m_parent); });
+    connect(m_searchReturn, &QPushButton::clicked, this, [this] { OpenAncestor(m_searchOrigin); });
+    auto* path = new QHBoxLayout; m_pathLayout = path;
+    m_title = new QLabel(this); m_title->setObjectName("SclMmsBreadcrumb"); m_title->setTextFormat(Qt::RichText);
+    m_title->setTextInteractionFlags(Qt::LinksAccessibleByMouse | Qt::LinksAccessibleByKeyboard);
+    m_title->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred); m_title->setWordWrap(true);
+    m_pathMenu = new QToolButton(this); m_pathMenu->setObjectName("SclMmsPathMenu"); m_pathMenu->setText(QStringLiteral("完整查阅路径"));
+    m_pathMenu->setPopupMode(QToolButton::InstantPopup); m_pathMenu->setMenu(new QMenu(m_pathMenu));
+    path->addWidget(m_title, 1); path->addWidget(m_searchReturn); path->addWidget(m_pathMenu); layout->addLayout(path);
+    connect(m_title, &QLabel::linkActivated, this, [this](const QString& link) {
+        const auto parts = link.split(':'); bool epochOk = false, indexOk = false;
+        const auto epoch = parts.value(0).toULongLong(&epochOk); const int index = parts.value(1).toInt(&indexOk);
+        if (parts.size() == 2 && epochOk && indexOk && epoch == m_pathEpoch && index >= 0 && index < int(m_ancestors.size()))
+            OpenAncestor(m_ancestors[index]);
+    });
+    auto* controls = new QHBoxLayout; m_controlsLayout = controls;
     m_filter = new QLineEdit(this); m_filter->setObjectName("SclMmsFilter");
     m_filter->setPlaceholderText(QStringLiteral("筛选当前范围与父对象")); m_filter->setClearButtonEnabled(true);
     m_filter->setAccessibleName(QStringLiteral("筛选当前MMS列表")); controls->addWidget(m_filter, 1);
-    m_previous = new QPushButton(QStringLiteral("上一页"), this); m_previous->setObjectName("SclMmsPrevious");
-    m_next = new QPushButton(QStringLiteral("下一页"), this); m_next->setObjectName("SclMmsNext");
+    m_previous = new QPushButton(QStringLiteral("上一页数据"), this); m_previous->setObjectName("SclMmsPrevious");
+    m_next = new QPushButton(QStringLiteral("下一页数据"), this); m_next->setObjectName("SclMmsNext");
     m_open = new QPushButton(QStringLiteral("继续查阅"), this); m_open->setObjectName("SclMmsOpen");
     m_actions = new QToolButton(this); m_actions->setText(QStringLiteral("更多")); m_actions->setObjectName("SclMmsActions");
     m_actions->setPopupMode(QToolButton::InstantPopup); m_actions->setMenu(new QMenu(m_actions));
-    for (auto* button : {m_previous, m_next, m_open}) controls->addWidget(button);
+    controls->addWidget(m_open);
     controls->addWidget(m_actions); layout->addLayout(controls);
     m_status = new QLabel(this); m_status->setObjectName("SclMmsStatus"); m_status->setTextFormat(Qt::PlainText);
-    m_status->setWordWrap(true); layout->addWidget(m_status);
+    m_status->setWordWrap(true); m_status->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    auto* paging = new QHBoxLayout; paging->addWidget(m_status, 1); paging->addWidget(m_previous); paging->addWidget(m_next);
+    layout->addLayout(paging);
     m_table = new QTableView(this); m_table->setObjectName("SclMmsResults");
     m_model = new SclMmsTableModel(this);
     m_model->headers = {QStringLiteral("对象"), QStringLiteral("说明 / 原值"), QStringLiteral("类别 / 证据"),
@@ -151,22 +192,30 @@ SclMmsView::SclMmsView(QWidget* parent) : QWidget(parent), m_list(this), m_detai
     connect(&m_delay, &QTimer::timeout, this, &SclMmsView::Run);
     connect(m_filter, &QLineEdit::textChanged, this, [this](const QString& text) {
         if (m_applying) return;
+        ++m_epoch;
         auto restore = CurrentLocation(); m_list.Cancel(); m_request.text = text; m_request.offset = 0;
         m_table->setEnabled(false); m_open->setEnabled(false);
-        restore.request = m_request; m_restore = restore; m_delay.start();
+        m_request.locate.reset(); restore.request = m_request; m_restore = restore;
+        emit LocationUpdated(); m_delay.start();
     });
     connect(m_route, &QComboBox::activated, this, [this](int i) { Open(static_cast<SclMmsQueryKind>(m_route->itemData(i).toInt())); });
     connect(m_global, &QLineEdit::returnPressed, this, [this] {
         SclMmsRequest r; r.kind = SclMmsQueryKind::Search; r.text = m_global->text(); Navigate(r);
     });
-    connect(m_previous, &QPushButton::clicked, this, [this] { auto r = m_request; r.offset = std::max(0, r.offset - 200); Navigate(r); });
-    connect(m_next, &QPushButton::clicked, this, [this] { auto r = m_request; r.offset += 200; Navigate(r); });
+    connect(m_previous, &QPushButton::clicked, this, [this] { ChangePage(std::max(0, m_request.offset - 200)); });
+    connect(m_next, &QPushButton::clicked, this, [this] { ChangePage(m_request.offset + 200); });
     connect(m_open, &QPushButton::clicked, this, [this] {
         if (!m_selected) return;
         switch (m_selected->kind) {
         case SclMmsRecordKind::Report: Continue(SclMmsQueryKind::Members); break;
         case SclMmsRecordKind::Signal: Continue(SclMmsQueryKind::Addresses); break;
-        case SclMmsRecordKind::Member: Continue(SclMmsQueryKind::Addresses); break;
+        case SclMmsRecordKind::Member:
+            if (m_result) {
+                const auto row = std::find_if(m_result->rows.begin(), m_result->rows.end(), [this](const auto& r) { return Same(r.key, *m_selected); });
+                if (row != m_result->rows.end() && row->state != Scl::LinkState::Resolved) { emit ShowInspector(); break; }
+            }
+            Continue(SclMmsQueryKind::Addresses); break;
+        case SclMmsRecordKind::Instance: Continue(SclMmsQueryKind::Members); break;
         case SclMmsRecordKind::Client: Continue(SclMmsQueryKind::Members); break;
         default: emit ShowInspector(); break;
         }
@@ -180,18 +229,20 @@ SclMmsView::SclMmsView(QWidget* parent) : QWidget(parent), m_list(this), m_detai
     m_request.kind = SclMmsQueryKind::Reports;
 }
 SclMmsView::~SclMmsView() { Cancel(); }
-void SclMmsView::Cancel() { m_delay.stop(); m_list.Cancel(); m_details.Cancel(); }
+void SclMmsView::Cancel() { ++m_epoch; m_delay.stop(); m_list.Cancel(); m_details.Cancel(); }
 void SclMmsView::hideEvent(QHideEvent* e) { Cancel(); QWidget::hideEvent(e); }
 void SclMmsView::showEvent(QShowEvent* e) { QWidget::showEvent(e); if (m_snapshot) { m_restore = CurrentLocation(); Run(); } }
 void SclMmsView::SetContext(std::shared_ptr<const SclSnapshot> snapshot, Scl::NodeId ied) {
     if (snapshot == m_snapshot && ied == m_ied) return;
     Cancel(); m_snapshot = std::move(snapshot); m_ied = ied; m_selected.reset(); m_restore.reset(); m_result.reset(); m_detail.reset();
+    m_parent.reset(); m_searchOrigin.reset(); m_ancestors.clear();
+    m_navigationSignature.clear(); m_renderedParent = nullptr; m_renderedOrigin = nullptr;
     m_list.SetContext(m_snapshot, {m_ied}); m_details.SetContext(m_snapshot, {m_ied});
     m_request = {}; m_request.scope.ied = ied;
     { QSignalBlocker block(m_filter); m_filter->clear(); }
     m_model->Reset(m_model->headers); m_fieldModel->Reset(m_fieldModel->headers);
     m_fieldTitle->setText(QStringLiteral("选择一个 MMS 对象以查看字段与依据")); m_source->setEnabled(false);
-    if (isVisible()) Run();
+    UpdateNavigation(); if (isVisible()) Run();
 }
 void SclMmsView::Open(SclMmsQueryKind kind) {
     SclMmsRequest request; request.kind = kind; request.scope = m_request.scope; request.scope.ied = m_ied;
@@ -199,24 +250,29 @@ void SclMmsView::Open(SclMmsQueryKind kind) {
     Navigate(request);
 }
 void SclMmsView::OpenNode(Scl::NodeId node) {
-    if (!m_snapshot || !m_snapshot->mmsIndex.reports.contains(node)) return;
-    auto request = SclMmsRequest{}; request.kind = SclMmsQueryKind::Reports; request.scope.ied = m_ied;
-    request.text = m_snapshot->mms.reports[m_snapshot->mmsIndex.reports.value(node)].fields.value("name").raw;
-    Navigate(request);
+    if (!m_snapshot || node < 0 || node >= int(m_snapshot->analysis.document->nodes.size())) return;
+    Location l; l.snapshot = m_snapshot; l.viewIed = m_snapshot->browse.iedOwners[node];
+    l.request.scope.ied = l.viewIed; l.inspectorVisible = m_inspectorVisible;
+    if (m_snapshot->mmsIndex.reports.contains(node)) {
+        l.selected = SclMmsKey{SclMmsRecordKind::Report, node, m_snapshot->mmsIndex.reports.value(node)};
+        l.request.locate = l.selected;
+    } else if (m_snapshot->browse.dataSetMembers.contains(node)) {
+        l.request.kind = SclMmsQueryKind::Members; l.request.target = node;
+    } else if (m_snapshot->mmsIndex.memberReferences.contains(node)) {
+        l.request.kind = SclMmsQueryKind::Signals; l.request.target = node;
+    } else return;
+    Commit(std::move(l));
 }
 void SclMmsView::Navigate(SclMmsRequest request) {
-    emit BeforeNavigate();
-    if (request.kind != SclMmsQueryKind::Search && request.scope.ied != m_ied) emit ScopeRequested(request.scope.ied);
-    Cancel(); m_restore.reset(); m_selected.reset(); m_detail.reset();
-    { QScopedValueRollback<bool> guard(m_applying, true); m_result.reset(); m_model->Reset(m_model->headers); }
-    m_request = std::move(request); m_request.presentation = true;
-    m_fieldModel->Reset(m_fieldModel->headers); m_source->setEnabled(false);
-    m_fieldTitle->setText(QStringLiteral("选择当前列表中的对象以查看字段与依据"));
-    { QSignalBlocker block(m_filter); m_filter->setText(m_request.text); }
-    if (isVisible()) Run(); emit Navigated();
+    Location location; location.snapshot = m_snapshot; location.request = std::move(request);
+    location.viewIed = location.request.kind == SclMmsQueryKind::Search ? m_ied : location.request.scope.ied;
+    location.inspectorVisible = m_inspectorVisible; Commit(std::move(location));
 }
 SclMmsView::Location SclMmsView::CurrentLocation() const {
+    if (m_restore) { auto l = *m_restore; l.request = m_request; l.selected = m_selected; return l; }
     Location l; l.snapshot = m_snapshot; l.request = m_request; l.selected = m_selected;
+    l.parent = m_parent; l.searchOrigin = m_searchOrigin; l.viewIed = m_ied; l.inspectorVisible = m_inspectorVisible;
+    l.horizontal = m_table->horizontalScrollBar()->value(); l.fieldHorizontal = m_fields->horizontalScrollBar()->value();
     l.column = m_table->currentIndex().column();
     const int top = m_table->rowAt(0);
     if (m_result && top >= 0 && top < int(m_result->rows.size())) { l.top = m_result->rows[top].key; l.topOffset = -m_table->rowViewportPosition(top); }
@@ -230,19 +286,27 @@ SclMmsView::Location SclMmsView::CurrentLocation() const {
 void SclMmsView::RestoreLocation(const Location& location) {
     if (location.snapshot != m_snapshot) return;
     Cancel(); m_request = location.request; m_selected = location.selected; m_restore = location;
+    // Keep the disabled previous page until the complete new page arrives. A model reset
+    // here would repeat layout/row measurement before ApplyList resets it again.
+    m_result.reset();
+    m_source->setEnabled(false);
+    m_parent = location.parent && location.parent->snapshot == m_snapshot ? location.parent : nullptr;
+    m_searchOrigin = location.searchOrigin && location.searchOrigin->snapshot == m_snapshot ? location.searchOrigin : nullptr;
+    m_navigationSignature.clear();
+    EnsureParent();
+    m_restore->parent = m_parent; m_restore->searchOrigin = m_searchOrigin;
     { QSignalBlocker block(m_filter); m_filter->setText(m_request.text); }
-    if (isVisible()) Run();
+    if (m_request.kind == SclMmsQueryKind::Search) { QSignalBlocker block(m_global); m_global->setText(m_request.text); }
+    UpdateNavigation(); if (isVisible()) Run();
 }
 void SclMmsView::Run() {
     if (!m_snapshot || !isVisible()) return;
     m_request.presentation = true;
     auto scope = m_request.kind == SclMmsQueryKind::Search ? SclMmsScope{} : m_request.scope;
     m_list.SetContext(m_snapshot, scope); m_list.Query(m_request);
-    const auto& doc = *m_snapshot->analysis.document;
-    const auto parent = m_request.report < 0 ? QString() : doc.attribute(m_request.report, "name");
-    m_title->setText((m_request.kind == SclMmsQueryKind::Search || m_ied < 0 ? QStringLiteral("整个工程") : doc.attribute(m_ied, "name"))
-        + " › MMS › " + Route(m_request.kind) + (parent.isEmpty() ? QString() : " › " + parent));
+    UpdateNavigation();
     m_status->setText(QStringLiteral("正在后台查询…"));
+    m_fields->setEnabled(false); m_source->setEnabled(false);
     m_table->setEnabled(false); m_actions->setEnabled(false); m_open->setEnabled(false);
     m_previous->setEnabled(false); m_next->setEnabled(false);
     const QSignalBlocker block(m_route);
@@ -255,7 +319,8 @@ void SclMmsView::ApplyList() {
     const auto result = m_list.result();
     if (!result || result->document != m_snapshot->analysis.document) return;
     const QScopedValueRollback<bool> guard(m_applying, true);
-    m_result = result;
+    m_result = result; m_request.offset = result->request.offset; m_request.locate.reset();
+    if (m_restore) m_restore->request = m_request;
     m_table->setEnabled(true); m_actions->setEnabled(true);
     QStringList headers{QStringLiteral("对象"), QStringLiteral("说明 / 原值"), QStringLiteral("类别 / 证据"),
         QStringLiteral("数据集 / 对象引用"), "FC", "MMS Domain", "MMS Item / 引用", QStringLiteral("解释状态 / 规则集")};
@@ -286,6 +351,7 @@ void SclMmsView::ApplyList() {
         : QStringLiteral("第 %1–%2 项 · %3%4 项 · 双击复制，Enter 查看原文")
             .arg(m_request.offset + 1).arg(m_request.offset + result->rows.size()).arg(result->limited ? QStringLiteral("至少 ") : QString()).arg(result->total));
     if (result->limited) m_status->setText(m_status->text() + '\n' + result->limitation + QStringLiteral(" 请缩小范围；结果不完整。"));
+    else if (!result->limitation.isEmpty()) m_status->setText(m_status->text() + '\n' + result->limitation);
     m_previous->setEnabled(m_request.offset > 0);
     m_next->setEnabled(result->total > m_request.offset + int(result->rows.size()) && !result->rows.empty());
     m_table->setVisible(m_request.kind != SclMmsQueryKind::Graph); m_graph->setVisible(m_request.kind == SclMmsQueryKind::Graph);
@@ -296,20 +362,28 @@ void SclMmsView::ApplyList() {
     if (selected >= 0) {
         m_table->setCurrentIndex(m_model->index(selected, m_restore ? std::max(0, m_restore->column) : 0));
         Select(selected, false);
-    } else if (m_selected) m_status->setText(m_status->text() + QStringLiteral("\n所选对象被筛选或分页遮挡；详情保留。"));
+    } else if (m_selected) {
+        m_table->selectionModel()->clear(); m_table->setCurrentIndex({});
+        m_status->setText(m_status->text() + QStringLiteral("\n所选对象被筛选或分页遮挡；详情保留。可清除当前筛选。"));
+        Detail();
+    } else {
+        m_detail.reset(); m_fieldModel->Reset(m_fieldModel->headers);
+        m_fieldTitle->setText(QStringLiteral("选择当前列表中的对象以查看字段与依据"));
+    }
     if (m_restore && m_restore->top) for (int i = 0; i < int(result->rows.size()); ++i) if (Same(*m_restore->top, result->rows[i].key)) {
         m_table->scrollTo(m_model->index(i, 0), QAbstractItemView::PositionAtTop);
         m_table->verticalScrollBar()->setValue(m_table->verticalScrollBar()->value() + m_restore->topOffset); break;
     }
-    UpdateActions(); setProperty("MmsListApplyUs", timing.nsecsElapsed() / 1000); emit LocationUpdated();
+    UpdateActions(); setProperty("MmsListApplyUs", timing.nsecsElapsed() / 1000);
+    if (!m_selected) CompleteRestore();
 }
 void SclMmsView::Select(int row, bool navigate) {
     if (!m_result || row < 0 || row >= int(m_result->rows.size())) return;
-    if (navigate) emit BeforeNavigate();
+    if (navigate) { ++m_epoch; m_restore.reset(); }
     m_selected = m_result->rows[row].key;
-    if (!m_restore) emit SelectedNode(m_selected->node);
+    emit SelectedNode(m_selected->node);
     Detail(); UpdateActions();
-    if (navigate) emit Navigated(); else emit LocationUpdated();
+    if (!m_restore) emit LocationUpdated();
 }
 void SclMmsView::Detail() {
     if (!m_selected) return;
@@ -327,6 +401,7 @@ void SclMmsView::ApplyDetail() {
     auto result = m_details.result();
     if (!result || !m_selected || !Same(*m_selected, result->request.key)) return;
     const QScopedValueRollback<bool> guard(m_applying, true); m_detail = result;
+    m_fields->setEnabled(true);
     m_fieldTitle->setText(result->title); m_fieldTitle->setToolTip((result->summary + '\n' + result->limitation).toHtmlEscaped());
     std::vector<QStringList> rows;
     for (const auto& f : result->fields) rows.push_back({f.label, f.value, (!f.present ? f.key == "runtime" ? QStringLiteral("离线未获取 · ") : QStringLiteral("未声明 · ") : f.value.isEmpty() ? QStringLiteral("已声明空值 · ") : QString()) + f.explanation});
@@ -338,7 +413,7 @@ void SclMmsView::ApplyDetail() {
         m_fields->scrollTo(m_fieldModel->index(i, 0), QAbstractItemView::PositionAtTop);
         m_fields->verticalScrollBar()->setValue(m_fields->verticalScrollBar()->value() + m_restore->fieldOffset); break;
     }
-    m_restore.reset(); setProperty("MmsDetailApplyUs", timing.nsecsElapsed() / 1000); emit LocationUpdated();
+    setProperty("MmsDetailApplyUs", timing.nsecsElapsed() / 1000); CompleteRestore();
 }
 void SclMmsView::OpenSource() {
     const int i = m_fields->currentIndex().row();
@@ -367,10 +442,29 @@ void SclMmsView::Continue(SclMmsQueryKind kind) {
         request.kind = SclMmsQueryKind::Signals; request.target = key.node;
         if (ref.logicalNode != Scl::NoNode) request.scope.ied = m_snapshot->browse.iedOwners[ref.logicalNode];
     }
-    Navigate(request);
+    Location next; next.snapshot = m_snapshot; next.request = request; next.viewIed = request.scope.ied;
+    next.inspectorVisible = m_inspectorVisible;
+    if (m_request.kind == SclMmsQueryKind::Search) {
+        next.searchOrigin = std::make_shared<const Location>(CurrentLocation());
+    } else {
+        next.parent = std::make_shared<const Location>(CurrentLocation()); next.searchOrigin = m_searchOrigin;
+    }
+    Commit(std::move(next));
 }
 void SclMmsView::UpdateActions() {
     m_open->setEnabled(bool(m_selected)); auto* menu = m_actions->menu(); menu->clear();
+    QString action = QStringLiteral("查看字段与依据");
+    if (m_selected) switch (m_selected->kind) {
+    case SclMmsRecordKind::Report: case SclMmsRecordKind::Instance: action = QStringLiteral("查看数据集成员"); break;
+    case SclMmsRecordKind::Member: action = QStringLiteral("查看信号对象"); break;
+    case SclMmsRecordKind::Signal: action = QStringLiteral("查看属性与地址"); break;
+    case SclMmsRecordKind::Client: action = QStringLiteral("查看报告成员"); break;
+    default: break;
+    }
+    if (m_selected && m_selected->kind == SclMmsRecordKind::Member && m_result)
+        for (const auto& row : m_result->rows) if (Same(row.key, *m_selected) && row.state != Scl::LinkState::Resolved)
+            action = QStringLiteral("查看候选与依据");
+    m_open->setText(action); UpdateNavigation();
     const bool report = m_selected && (m_selected->kind == SclMmsRecordKind::Report || m_selected->kind == SclMmsRecordKind::Instance);
     for (const auto kind : {SclMmsQueryKind::Members, SclMmsQueryKind::Instances, SclMmsQueryKind::Clients, SclMmsQueryKind::Graph}) {
         auto* action = menu->addAction(Route(kind), this, [this, kind] { Continue(kind); }); action->setEnabled(report);

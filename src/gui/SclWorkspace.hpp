@@ -85,6 +85,7 @@ private:
     void ApplyTableFilter(QTableView* table, std::optional<std::vector<int>> rows);
     void SaveIssues();
     void ShowTaskView(bool show, bool remember = false);
+    void BalanceMmsPanels();
     void PushTaskHistory();
     void CreateTopologyControls(QVBoxLayout* layout);
     void AddTopologyAction(QAbstractItemView* view);
@@ -92,6 +93,7 @@ private:
     void OpenTopology(Scl::NodeId id);
 
     std::shared_ptr<const SclSnapshot> m_snapshot;
+    bool m_closing = false;
     Scl::Result m_failure;
     Scl::NodeId m_selected = Scl::NoNode;
     int m_finding = -1;

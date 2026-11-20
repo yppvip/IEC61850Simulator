@@ -16,6 +16,7 @@
 | UnknownDialect.ccd | 人为构造的非 SCL 根与命名空间，只测试“不识别”分支，不代表任何厂商的 CCD 格式 |
 | Truncated.scd / Empty.scd | XML 不完整 / 零字节输入，预期 XML002 / XML001 |
 | IedBrowsing.scd | 两个业务 IED 与空 IED、共享/未使用模板、通信归属、跨 IED ExtRef；用于浏览范围、Tab/成员选择和历史回归 |
+| Task7Navigation.scd | T7.0 导航样本：两个报告共用数据集、不同 LD/LN 下同名数据集、重复 FCDA、DO 级与未解析成员、GOOSE 使用方及客户端声明；不作为 XSD 或在线行为证明 |
 
 正向基样包含显式 ldName、一个缺 daName 的 DO 级 FCDA、重复 FCDA（保留顺序）、前向类型引用、配置初值、BRCB/URCB、indexed 与缺省 rptID、GSE/SMV 配置。它不覆盖完整类型/数组/ExtRef/多 AP/编码矩阵。
 

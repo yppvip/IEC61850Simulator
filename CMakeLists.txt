@@ -71,7 +71,7 @@ set(BUILD_EXAMPLES OFF CACHE BOOL "Build QtADS examples" FORCE)
 add_subdirectory(third_party/Qt-Advanced-Docking-System-5.0.0)
 
 set(AppTarget IEC61850Simulator)
-set(SclMmsGuiSources src/gui/SclMmsView.cpp src/gui/SclMmsView.hpp)
+set(SclMmsGuiSources src/gui/SclMmsView.cpp src/gui/SclMmsView.hpp src/gui/SclMmsNavigation.cpp)
 add_executable(${AppTarget}
     ${SclMmsGuiSources}
     app/ui/Main.cpp
