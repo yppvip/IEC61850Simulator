@@ -35,6 +35,9 @@ class SclResultsModel;
 class SclSourcePreview;
 class SclTopologyFiles;
 class SclTableInteraction;
+class SclReferenceTraceView;
+struct SclReferenceTraceSelection;
+struct SclReferenceTraceLocation;
 struct SclReferenceMenuContext;
 struct SclReferenceRequest;
 
@@ -73,6 +76,7 @@ private:
         Relationship relationship;
         int reference = -1;
         Scl::NodeId candidate = Scl::NoNode;
+        std::shared_ptr<SclReferenceTraceLocation> trace;
     };
     void Select(Scl::NodeId id, bool route = false, int finding = -1, bool openSource = false, bool keepScope = false,
         std::optional<Relationship> relationship = {});
@@ -96,6 +100,8 @@ private:
     void UpdateHistoryButtons();
     void Preview(const Scl::SourceIndex* source, Scl::SourceLocation location, const QString& path);
     void RefreshSourcePreview();
+    void BalanceTraceSource();
+    QList<int> TraceSplitterSizes() const;
     void UpdatePath();
     void UpdateReferencePath(const QModelIndex& index);
     void UpdateDetails();
@@ -120,6 +126,9 @@ private:
     void OpenMmsAttributeTarget(Scl::NodeId node);
     void UpdateTopologyControls();
     void OpenTopology(Scl::NodeId id);
+    void OpenReferenceTrace(std::shared_ptr<const SclReferenceTraceSelection>);
+    bool IsReferenceTrace() const;
+    void LeaveReferenceTrace();
 
     std::shared_ptr<const SclSnapshot> m_snapshot;
     bool m_closing = false;
@@ -170,6 +179,8 @@ private:
     QPushButton* m_relationshipParent;
     QPushButton* m_relationshipUsers;
     QStackedWidget* m_tableModes;
+    QStackedWidget* m_centerPages;
+    SclReferenceTraceView* m_referenceTrace;
     SclTaskBrowser* m_taskBrowser;
     QPushButton* m_taskSwitch;
     bool m_preferTaskView = true;

@@ -50,6 +50,12 @@ QString SclReferenceLabel(Kind kind)
     return {};
 }
 
+bool CanTraceSclReference(Kind kind)
+{
+    return kind == Kind::ObjectReference || kind == Kind::FunctionalConstraint || kind == Kind::MmsDomain
+        || kind == Kind::MmsItem || kind == Kind::TypeReference;
+}
+
 namespace
 {
 std::optional<Kind> ParameterKind(const QString& type)
@@ -80,21 +86,22 @@ std::optional<Kind> AttributeKind(const QString& name, const QString& element)
 class Projection
 {
 public:
-    Projection(const SclSnapshot& snapshot, TaskControl* task)
-        : snapshot(snapshot), doc(*snapshot.analysis.document), task(task) {}
+    Projection(const SclSnapshot& snapshot, TaskControl* task, bool includeTrace)
+        : snapshot(snapshot), doc(*snapshot.analysis.document), task(task), includeTrace(includeTrace) {}
     SclReferenceValues Run(const SclReferenceRequest& request);
 
 private:
     const SclSnapshot& snapshot;
     const Document& doc;
     TaskControl* task;
+    bool includeTrace;
     SclReferenceValues out;
     bool Valid(NodeId node) const { return node >= 0 && node < int(doc.nodes.size()); }
     QString Attr(NodeId node, const char* attr) const { return Valid(node) ? doc.attribute(node, QLatin1String(attr)) : QString{}; }
     QString Ln(NodeId node) const {
         return doc.nodes[node].name == "LN0" ? QStringLiteral("LLN0") : Attr(node, "prefix") + Attr(node, "lnClass") + Attr(node, "inst");
     }
-    void Add(SclReferenceValue value);
+    void Add(SclReferenceValue value, bool allowTrace = true);
     void Derived(Kind kind, const QString& value, NodeId node);
     void Raw(Kind kind, const QString& value, NodeId node, const QString& attr = {});
     void Tag(Kind kind, NodeId node);
@@ -109,10 +116,36 @@ private:
     void Mms(const SclReferenceRequest& request);
 };
 
-void Projection::Add(SclReferenceValue value)
+void Projection::Add(SclReferenceValue value, bool allowTrace)
 {
     checkpoint(task);
-    if (value.value.isEmpty() || std::any_of(out.entries.cbegin(), out.entries.cend(), [&](const auto& entry) {
+    if (value.value.isEmpty()) return;
+    if (includeTrace && allowTrace && CanTraceSclReference(value.kind)) {
+        const auto source = std::find_if(out.traceEntries.begin(), out.traceEntries.end(), [&](const auto& entry) {
+            if (entry.kind != value.kind || entry.value != value.value || entry.evidence.node != value.evidence.node
+                || entry.evidence.attribute != value.evidence.attribute) return false;
+            if (!entry.basis || !value.basis) return true;
+            const auto& a = *entry.basis;
+            const auto& b = *value.basis;
+            // Menu providers may supplement a prepared member with its raw link.
+            // The same declaration can only add an alternate view when both contexts differ.
+            if (a.reference >= 0 && a.reference == b.reference
+                && (a.report == b.report || a.report == NoNode || b.report == NoNode)
+                && (a.scope == b.scope || a.scope == SclMmsScope{} || b.scope == SclMmsScope{}))
+                return true;
+            return a.scope == b.scope && a.logicalNode == b.logicalNode && a.path == b.path
+                && a.reference == b.reference && a.report == b.report && a.instance == b.instance
+                && a.arrayIndex == b.arrayIndex && a.selector == b.selector;
+        });
+        if (source != out.traceEntries.end()) {
+            if (!source->basis && value.basis) *source = value;
+        } else if (out.traceEntries.size() < 64) {
+            out.traceEntries.push_back(value);
+        } else {
+            out.traceLimited = true;
+        }
+    }
+    if (std::any_of(out.entries.cbegin(), out.entries.cend(), [&](const auto& entry) {
         return entry.kind == value.kind && entry.value == value.value;
     })) return;
     if (out.entries.size() >= 64) { out.limited = true; return; }
@@ -315,8 +348,16 @@ void Projection::Signal(int record)
         return !row.objectReference.isEmpty();
     });
     if (mapped != addresses.rows.cend()) {
-        Derived(Kind::ObjectReference, mapped->objectReference.chopped(mapped->key.field.size() + 1), definition.declaration);
-        Derived(Kind::MmsDomain, mapped->domain, mapped->domainEvidence.node);
+        auto basis = std::make_shared<SclReferenceBasis>();
+        basis->scope = mapped->addressScope;
+        basis->logicalNode = instance.logicalNode;
+        for (const auto node : mapped->templatePath) {
+            if (doc.nodes[node].name != "DO" && doc.nodes[node].name != "SDO") break;
+            basis->path.push_back(node);
+        }
+        Add({Kind::ObjectReference, mapped->objectReference.chopped(mapped->key.field.size() + 1),
+            {definition.declaration, {}, {}}, MmsValueState::Derived, basis});
+        Add({Kind::MmsDomain, mapped->domain, mapped->domainEvidence, MmsValueState::Derived, std::move(basis)});
     }
     out.limited |= addresses.limited;
 }
@@ -357,8 +398,10 @@ void Projection::Field(const SclReferenceRequest& request)
     const auto node = field.evidence.node;
     if (!field.present || field.value.isEmpty() || !Valid(node)) return;
     if (field.key.startsWith('@')) {
-        if (const auto kind = AttributeKind(field.evidence.attribute, doc.nodes[node].name))
-            Raw(*kind, field.value, node, field.evidence.attribute);
+        if (const auto kind = AttributeKind(field.evidence.attribute, doc.nodes[node].name)) {
+            const auto unqualified = field.key.lastIndexOf(':') <= 1;
+            Add({*kind, field.value, field.evidence, MmsValueState::Explicit}, unqualified);
+        }
     } else if (field.key.startsWith("candidate.")) {
         const auto index = request.mms.record;
         if (index >= 0 && index < int(snapshot.analysis.references.size())
@@ -424,8 +467,9 @@ SclReferenceValues Projection::Run(const SclReferenceRequest& request)
 }
 }
 
-SclReferenceValues CollectSclReferences(const SclSnapshot& snapshot, const SclReferenceRequest& request, TaskControl* task)
+SclReferenceValues CollectSclReferences(const SclSnapshot& snapshot, const SclReferenceRequest& request, TaskControl* task,
+    bool includeTrace)
 {
-    return Projection(snapshot, task).Run(request);
+    return Projection(snapshot, task, includeTrace).Run(request);
 }
 } // namespace iec61850sim

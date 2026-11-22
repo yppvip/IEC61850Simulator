@@ -58,7 +58,9 @@ void ConnectSclReferenceMenu(SclTableInteraction* interaction,
             auto* pending = menu.addAction(QStringLiteral("正在准备引用…"));
             pending->setEnabled(false);
             auto* watcher = new QFutureWatcher<SclReferenceValues>(&menu);
-            QObject::connect(watcher, &QFutureWatcherBase::finished, &menu, [&menu, pending, watcher, current] {
+            const auto handler = interaction->TraceHandler();
+            QObject::connect(watcher, &QFutureWatcherBase::finished, &menu,
+                [&menu, pending, watcher, current, handler, view, snapshot = context.snapshot] {
                 const auto result = watcher->result();
                 watcher->deleteLater();
                 if (current()) {
@@ -74,6 +76,22 @@ void ConnectSclReferenceMenu(SclTableInteraction* interaction,
                             if (current()) QApplication::clipboard()->setText(value);
                         });
                     }
+                    if (handler) {
+                        for (auto it = groups.cbegin(); it != groups.cend(); ++it) {
+                            if (!CanTraceSclReference(SclReferenceValueKind(it.key()))) continue;
+                            auto selection = std::make_shared<SclReferenceTraceSelection>();
+                            selection->snapshot = snapshot;
+                            selection->sourceView = view;
+                            selection->limited = result.limited || result.traceLimited;
+                            for (const auto& entry : result.traceEntries)
+                                if (int(entry.kind) == it.key()) selection->values.push_back(entry);
+                            if (selection->values.empty()) continue;
+                            auto* action = it.value()->addAction(QStringLiteral("查看关系"), &menu, [current, handler, selection] {
+                                if (current()) handler(selection);
+                            });
+                            action->setObjectName("SclShowReferenceTrace");
+                        }
+                    }
                     if (result.limited) menu.addAction(QStringLiteral("引用列表受限 · 可在详情逐条查阅"))->setEnabled(false);
                 }
                 menu.removeAction(pending);
@@ -81,8 +99,8 @@ void ConnectSclReferenceMenu(SclTableInteraction* interaction,
                 if (menu.isEmpty()) menu.close();
             });
             watcher->setFuture(QtConcurrent::run([snapshot = std::move(context.snapshot),
-                request = std::move(context.request), control] {
-                try { return CollectSclReferences(*snapshot, request, control.get()); }
+                request = std::move(context.request), control, includeTrace = bool(handler)] {
+                try { return CollectSclReferences(*snapshot, request, control.get(), includeTrace); }
                 catch (const Scl::TaskCancelled&) { return SclReferenceValues{}; }
             }));
         });

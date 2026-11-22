@@ -9,7 +9,7 @@ struct MenuTest {
     QStringList heads;
 };
 inline MenuTest ChooseMenu(QAbstractItemView* view, const QModelIndex& index, const QString& label,
-    Gesture gesture, const std::function<void()>& invalidate = {}) {
+    Gesture gesture, const std::function<void()>& invalidate = {}, const QString& leafName = {}) {
     MenuTest result;
     QPointer<QMenu> root, submenu;
     QTimer drive;
@@ -48,7 +48,13 @@ inline MenuTest ChooseMenu(QAbstractItemView* view, const QModelIndex& index, co
         }
         if (!submenu->isVisible() || submenu->actions().isEmpty()) return;
         result.expanded = true;
-        const QPointer<QAction> leaf = submenu->actions().front();
+        QPointer<QAction> leaf;
+        for (auto* action : submenu->actions()) {
+            if (!leafName.isEmpty() && action->text() != leafName) continue;
+            leaf = action;
+            break;
+        }
+        if (!leaf) { drive.stop(); root->close(); return; }
         result.preview = leaf->text();
         drive.stop();
         if (invalidate) {
@@ -145,9 +151,22 @@ QByteArray FileDigest(const QString& path)
 
 void MainWindowBaselineTest::SclTask8LocalAcceptance()
 {
-    const auto path = qEnvironmentVariable("IEC61850_LOCAL_SCL");
-    if (path.isEmpty() || !QCoreApplication::arguments().contains(QStringLiteral("SclTask8LocalAcceptance")))
+    if (!QCoreApplication::arguments().contains(QStringLiteral("SclTask8LocalAcceptance")))
         QSKIP("Run explicitly with a local read-only SCD");
+    RunPhaseLocalAcceptance(false);
+}
+
+void MainWindowBaselineTest::SclTask9LocalAcceptance()
+{
+    if (!QCoreApplication::arguments().contains(QStringLiteral("SclTask9LocalAcceptance")))
+        QSKIP("Run explicitly with a local read-only SCD");
+    RunPhaseLocalAcceptance(true);
+}
+
+void MainWindowBaselineTest::RunPhaseLocalAcceptance(bool verifyTrace)
+{
+    const auto path = qEnvironmentVariable("IEC61850_LOCAL_SCL");
+    if (path.isEmpty()) QSKIP("Set IEC61850_LOCAL_SCL to a local read-only SCD");
     using namespace Task8Acceptance;
 
     QTemporaryDir temp;
@@ -180,8 +199,26 @@ void MainWindowBaselineTest::SclTask8LocalAcceptance()
     auto* structure = window.findChild<QTreeView*>("SclTree");
     auto* sets = window.findChild<QTreeView*>("SclDataSets");
     auto* advancedScope = window.findChild<QComboBox*>("SclBrowseScope");
+    auto* trace = window.findChild<QWidget*>("SclReferenceTrace");
+    auto* evidence = window.findChild<QTreeWidget*>("SclTraceTree");
+    auto* switchEvidence = window.findChild<QPushButton*>("SclTraceSwitch");
+    auto* original = window.findChild<QPushButton*>("SclTraceSource");
+    auto* traceBack = window.findChild<QPushButton*>("SclTraceBack");
+    auto* choices = window.findChild<QComboBox*>("SclTraceChoices");
     QVERIFY(service && mms && tasks && scope && filter && status && detailToggle && inspector && source && sourceLabel
         && sourceButton && open && back && taskSwitch && structure && sets && advancedScope);
+    if (verifyTrace) QVERIFY(trace && evidence && switchEvidence && original && traceBack && choices);
+    const auto showTrace = [](auto* view, const auto& index, const QString& group) {
+        const auto item = ChooseMenu(view, index, group, Gesture::Mouse, {}, QStringLiteral("查看关系"));
+        return item.expanded && item.dispatched;
+    };
+    const auto branch = [&](const QString& label) -> QTreeWidgetItem* {
+        if (evidence->topLevelItemCount() != 1) return nullptr;
+        auto* root = evidence->topLevelItem(0);
+        for (int i = 0; i < root->childCount(); ++i)
+            if (root->child(i)->text(0) == label) return root->child(i);
+        return nullptr;
+    };
 
     QElapsedTimer elapsed;
     elapsed.start();
@@ -266,6 +303,46 @@ void MainWindowBaselineTest::SclTask8LocalAcceptance()
         QVERIFY(copy(table, index, QStringLiteral("对象引用"), expectedObject));
         QVERIFY(copy(table, index, QStringLiteral("MMS Item"), expectedItem));
         if (key == test->angle) {
+            if (verifyTrace) {
+                QVERIFY(showTrace(table, index, QStringLiteral("MMS Item")));
+                QTRY_VERIFY(trace->isVisible() && branch(QStringLiteral("LNName")) && branch(QStringLiteral("功能约束 FC")));
+                QVERIFY(evidence->topLevelItem(0)->text(1) == QApplication::clipboard()->text());
+                QVERIFY(branch(QStringLiteral("LNName"))->text(1) == lnName);
+                if (!switchEvidence->isChecked()) switchEvidence->click();
+                evidence->setCurrentItem(branch(QStringLiteral("LNName")));
+                original->click();
+                QTRY_VERIFY(sourceLabel->text().contains(QStringLiteral("第 %1 行（").arg(doc.nodes[ln].source.line)));
+                evidence->expandItem(branch(QStringLiteral("功能约束 FC")));
+                QTRY_VERIFY(branch(QStringLiteral("功能约束 FC"))->childCount() == 1);
+                evidence->setCurrentItem(branch(QStringLiteral("功能约束 FC"))->child(0));
+                original->click();
+                QTRY_VERIFY(sourceLabel->text().contains(QStringLiteral("第 %1 行（").arg(doc.nodes[entry.fcEvidence.node].source.line)));
+                QTRY_VERIFY(SclNavigationProbe::VisibleRect(source->viewport()).intersects(source->cursorRect()));
+                traceBack->click();
+                QTRY_VERIFY(page(SclMmsQueryKind::Attributes) && mms->Selected() == test->angle);
+
+                auto angleIndex = table->model()->index(rowFor(test->angle), 0);
+                QVERIFY(showTrace(table, angleIndex, QStringLiteral("MMS Domain")));
+                QTRY_VERIFY(branch(QStringLiteral("LDName")));
+                QVERIFY(branch(QStringLiteral("LDName"))->text(1) == domain);
+                if (!switchEvidence->isChecked()) switchEvidence->click();
+                evidence->expandItem(branch(QStringLiteral("LDName")));
+                QTRY_VERIFY(branch(QStringLiteral("LDName"))->childCount() >= 2);
+                const auto* nameSource = branch(QStringLiteral("LDName"))->child(0);
+                QVERIFY(nameSource->text(1) == (rawDomain.isEmpty() ? attr(test->ied, "name") : rawDomain));
+                traceBack->click();
+                QTRY_VERIFY(page(SclMmsQueryKind::Attributes) && mms->Selected() == test->angle);
+
+                angleIndex = table->model()->index(rowFor(test->angle), 0);
+                QVERIFY(showTrace(table, angleIndex, QStringLiteral("类型引用")));
+                QTRY_VERIFY(trace->isVisible());
+                if (choices->isVisible()) choices->setCurrentIndex(1);
+                QTRY_VERIFY(branch(QStringLiteral("类型声明")));
+                QVERIFY(evidence->topLevelItem(0)->childCount() >= 2);
+                QVERIFY(evidence->topLevelItem(0)->child(1)->text(2) == QStringLiteral("引用定义"));
+                traceBack->click();
+                QTRY_VERIFY(page(SclMmsQueryKind::Attributes) && mms->Selected() == test->angle);
+            }
             const auto detail = field(QStringLiteral("MMS Item"));
             mms->Fields()->setCurrentIndex(detail);
             mms->Fields()->scrollTo(detail);
@@ -299,6 +376,13 @@ void MainWindowBaselineTest::SclTask8LocalAcceptance()
     QVERIFY(field(QStringLiteral("在线报告")).data().toString() == QStringLiteral("未验证"));
     QVERIFY(copy(table, reportIndex, QStringLiteral("对象引用"), object));
     QVERIFY(copy(table, reportIndex, QStringLiteral("MMS Item"), memberItem));
+    if (verifyTrace) {
+        QVERIFY(showTrace(table, reportIndex, QStringLiteral("功能约束")));
+        QTRY_VERIFY(branch(QStringLiteral("FCDA 声明的 FC")));
+        QVERIFY(branch(QStringLiteral("FCDA 声明的 FC"))->text(1) == "MX");
+        traceBack->click();
+        QTRY_VERIFY(page(SclMmsQueryKind::AttributeReports));
+    }
     back->click();
     QTRY_VERIFY(page(SclMmsQueryKind::Attributes) && mms->Selected() == test->angle);
     QCOMPARE(scope->currentData().toInt(), test->ied);
@@ -317,12 +401,25 @@ void MainWindowBaselineTest::SclTask8LocalAcceptance()
         return QModelIndex{};
     };
     QTRY_VERIFY(memberIndex().isValid());
-    const auto member = memberIndex();
+    auto member = memberIndex();
     sets->scrollTo(member);
     QTRY_VERIFY(visible(sets, member));
     QVERIFY(copy(sets, member, QStringLiteral("对象引用"), object));
     QVERIFY(copy(sets, member, QStringLiteral("MMS Item"), memberItem));
     QVERIFY(copy(sets, member, QStringLiteral("原始 FCDA 声明"), snapshot->analysis.source->openingTag(doc.nodes[test->member].source)));
+    if (verifyTrace) {
+        QVERIFY(showTrace(sets, member, QStringLiteral("对象引用")));
+        QTRY_VERIFY(branch(QStringLiteral("FCDA 成员声明")));
+        QVERIFY(evidence->topLevelItem(0)->text(1) == object);
+        QVERIFY(!branch(QStringLiteral("属性 DA")));
+        if (!switchEvidence->isChecked()) switchEvidence->click();
+        evidence->setCurrentItem(branch(QStringLiteral("FCDA 成员声明")));
+        original->click();
+        QTRY_VERIFY(sourceLabel->text().contains(QStringLiteral("第 %1 行（").arg(doc.nodes[test->member].source.line)));
+        traceBack->click();
+        QTRY_VERIFY(sets->isVisible() && memberIndex().isValid());
+        member = memberIndex();
+    }
     QVERIFY(ChooseMenu(sets, member, QStringLiteral("在 MMS 中查阅属性"), Gesture::Mouse).dispatched);
     QTRY_VERIFY(page(SclMmsQueryKind::Attributes) && mms->Result()->request.target == test->member);
     const auto angleRow = rowFor(test->angle);
@@ -330,8 +427,15 @@ void MainWindowBaselineTest::SclTask8LocalAcceptance()
     const auto aggregateAttributes = mms->Result()->total;
     QVERIFY(!mms->Result()->limited);
     const auto angleIndex = table->model()->index(angleRow, 0);
+    table->setCurrentIndex(angleIndex);
     table->scrollTo(angleIndex);
-    QTRY_VERIFY(visible(table, angleIndex));
+    if (!SclNavigationProbe::Await([&] { return visible(table, angleIndex); }, 4000)) {
+        qInfo() << "Reopened attribute grid geometry" << table->isVisible() << table->viewport()->size()
+            << SclNavigationProbe::VisibleRect(table->viewport()) << table->visualRect(angleIndex);
+        for (auto* widget = table->viewport(); widget && widget != &window; widget = widget->parentWidget())
+            qInfo() << "Attribute ancestor" << widget->metaObject()->className() << widget->objectName() << widget->geometry();
+    }
+    QVERIFY(visible(table, angleIndex));
     QVERIFY(copy(table, angleIndex, QStringLiteral("对象引用"), object + '.' + test->angle.field));
     QVERIFY(copy(table, angleIndex, QStringLiteral("MMS Item"), memberItem + QStringLiteral("$cVal$ang$f")));
     back->click();
@@ -344,12 +448,13 @@ void MainWindowBaselineTest::SclTask8LocalAcceptance()
     service->Close();
     QTRY_VERIFY_WITH_TIMEOUT(released.expired(), 10000);
     QCOMPARE(FileDigest(path), before);
-    qInfo().noquote() << "TASK8_LOCAL" << QJsonDocument(QJsonObject{
+    qInfo().noquote() << (verifyTrace ? "TASK9_LOCAL" : "TASK8_LOCAL") << QJsonDocument(QJsonObject{
         {"sha256", QString::fromLatin1(before)}, {"ieds", qint64(ieds)}, {"readyMs", readyMs},
         {"scopedPhaseHits", count}, {"searchLimited", searchLimited}, {"searchWorkBudget", searchWorkBudget},
         {"reportUsesForAngle", reportUses},
         {"aggregateMemberAttributes", aggregateAttributes},
         {"explicitDomain", !rawDomain.isEmpty()}, {"sameLeafAndMemberCopies", true}, {"snapshotReleased", true},
+        {"referenceTraceVerified", verifyTrace},
         {"width", window.width()}, {"height", window.height()}, {"dpr", window.devicePixelRatioF()}
     }).toJson(QJsonDocument::Compact);
 }

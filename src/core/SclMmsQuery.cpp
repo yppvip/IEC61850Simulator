@@ -227,6 +227,7 @@ SclMmsRow Query::Report(int i)
     SclMmsRow row;
     row.key = {SclMmsRecordKind::Report, report.node, i};
     row.report = report.node; row.dataSet = report.dataSet.target(); row.state = report.dataSet.state;
+    row.addressScope = {report.ied, r.scope.accessPoint, report.server};
     row.domain = report.mmsDomain; row.item = report.definitionMmsItem;
     row.cells = {report.fields.value("name").raw, report.fields.value("rptID").raw,
         report.definitionReference, report.dataSetReference, report.dataSetMmsName,
@@ -243,6 +244,8 @@ SclMmsRow Query::Instance(int i)
     SclMmsRow row;
     row.key = {SclMmsRecordKind::Instance, instance.definition, i, instance.ordinal};
     row.report = instance.definition;
+    if (const auto report = s.mmsIndex.reports.constFind(instance.definition); report != s.mmsIndex.reports.cend())
+        row.addressScope = {p.reports[*report].ied, r.scope.accessPoint, p.reports[*report].server};
     row.domain = instance.mmsDomain; row.item = instance.mmsItem;
     row.cells = {instance.name, instance.reference, instance.rptId.raw};
     row.evidence = instance.evidence; row.state = LinkState::Resolved;
@@ -555,6 +558,7 @@ void Query::Addresses(int i)
             if (selected) {
                 row.arrayIndex = row.key.arrayIndex = index;
                 row.key.arrayDeclaration = axisNode;
+                row.arraySelector = selectedFromInstance ? r.target : r.arrayMember;
             }
             if (isArray && row.state == LinkState::Resolved) {
                 row.state = LinkState::Partial;

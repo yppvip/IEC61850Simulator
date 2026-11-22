@@ -49,6 +49,7 @@ add_library(SclApplication STATIC src/core/SclAnalysisService.cpp src/core/SclAn
     src/core/SclMmsQuery.cpp src/core/SclMmsQuery.hpp
     src/core/SclMmsPresentation.cpp
     src/core/SclReferenceValues.cpp src/core/SclReferenceValues.hpp
+    src/core/SclReferenceTrace.cpp src/core/SclReferenceTrace.hpp
     src/core/SclConnections.cpp src/core/SclConnections.hpp
     src/core/SclRelationGraph.cpp src/core/SclRelationGraph.hpp
     src/core/SclTaskIndex.cpp src/core/SclTaskIndex.hpp src/core/SclTaskQuery.cpp src/core/SclTaskDetails.cpp
@@ -89,6 +90,7 @@ add_executable(${AppTarget}
     src/gui/MainWindow.hpp
     src/gui/SclWorkspace.cpp
     src/gui/SclWorkspace.hpp
+    src/gui/SclReferenceTraceView.cpp src/gui/SclReferenceTraceView.hpp
     src/gui/SclDataSetView.cpp src/gui/SclDataSetView.hpp
     src/gui/SclTaskPages.cpp src/gui/SclTaskPages.hpp
     src/gui/SclTableInteraction.cpp src/gui/SclTableInteraction.hpp
@@ -258,6 +260,7 @@ if(BUILD_TESTING)
             src/gui/SclDataSetView.cpp src/gui/SclDataSetView.hpp
             src/gui/SclSearchSession.cpp src/gui/SclSearchSession.hpp src/gui/SclWorkspaceSearch.cpp
             src/gui/SclSourcePreview.cpp src/gui/SclSourcePreview.hpp src/gui/SclWorkspaceTopology.cpp)
+        target_sources(MainWindowBaselineTest PRIVATE src/gui/SclReferenceTraceView.cpp src/gui/SclReferenceTraceView.hpp)
         target_include_directories(MainWindowBaselineTest PRIVATE src/gui)
         target_link_libraries(MainWindowBaselineTest PRIVATE Qt${QT_VERSION_MAJOR}::Widgets
             Qt${QT_VERSION_MAJOR}::Test Qt${QT_VERSION_MAJOR}::Concurrent SclApplication ads::qtadvanceddocking-qt${QT_VERSION_MAJOR})
@@ -281,6 +284,8 @@ if(BUILD_TESTING)
         set_tests_properties(SclMmsAttributeWorkflow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
         add_test(NAME SclReferenceMenus COMMAND MainWindowBaselineTest SclTask8ReferenceMenus)
         set_tests_properties(SclReferenceMenus PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+        add_test(NAME SclReferenceTraceWorkflow COMMAND MainWindowBaselineTest SclTask9TraceWorkflow)
+        set_tests_properties(SclReferenceTraceWorkflow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 45)
         add_test(NAME SclMmsStressTest COMMAND MainWindowBaselineTest SclMmsStress)
         set_tests_properties(SclMmsStressTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
     endif()

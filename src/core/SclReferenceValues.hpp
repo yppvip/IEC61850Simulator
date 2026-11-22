@@ -25,9 +25,13 @@ struct SclReferenceValues
 {
     std::vector<SclReferenceValue> entries;
     bool limited = false;
+    std::vector<SclReferenceValue> traceEntries;
+    bool traceLimited = false;
 };
 
 // Worker-only projection for one row. Every value belongs to the supplied snapshot.
-SclReferenceValues CollectSclReferences(const SclSnapshot&, const SclReferenceRequest&, Scl::TaskControl*);
+SclReferenceValues CollectSclReferences(const SclSnapshot&, const SclReferenceRequest&, Scl::TaskControl*,
+    bool includeTrace = false);
 QString SclReferenceLabel(SclReferenceValueKind);
+bool CanTraceSclReference(SclReferenceValueKind);
 } // namespace iec61850sim

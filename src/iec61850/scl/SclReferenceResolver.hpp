@@ -76,6 +76,7 @@ struct ReferenceAnalysis {
     QMultiHash<NodeId, int> outgoing; // Values are indexes in references.
     QMultiHash<NodeId, int> incoming; // Resolved targets only.
     QHash<NodeId, FcdaTrace> fcdaTraces;
+    QHash<NodeId, FcdaTrace> extRefTraces;
     std::vector<ReportMapping> reports;
     std::vector<Finding> findings;
     std::vector<RuleCoverage> coverage;

@@ -1,6 +1,7 @@
 #include "SclAnalysisService.hpp"
 #include "SclMmsQuery.hpp"
 #include "SclReferenceValues.hpp"
+#include "SclReferenceTrace.hpp"
 #include "SclIssueExport.hpp"
 #include <QtTest>
 #include <QCryptographicHash>
@@ -530,6 +531,220 @@ private slots:
         const auto candidate = CollectSclReferences(*voltage, request, nullptr);
         QVERIFY(!RefValue(candidate.entries, Kind::ObjectReference));
         QVERIFY(RefValue(candidate.entries, Kind::CandidatePath));
+    }
+
+    void Task9ReferenceTrace() {
+        using Kind = SclReferenceValueKind;
+        using Branch = SclTraceBranch;
+        const auto root = [] {
+            SclTraceNode request;
+            request.branch = Branch::Root;
+            return request;
+        }();
+        const auto trace = [&](const SclSnapshot& s, const SclReferenceValue& value, const SclTraceNode& node) {
+            return TraceSclReference(s, value, node, nullptr);
+        };
+        const auto phase = [&](const SclSnapshot& s, const char* ied, const char* ap = nullptr) {
+            auto request = Request(SclMmsQueryKind::Attributes);
+            request.scope.ied = Named(s, "IED", ied);
+            request.text = "cVal.ang.f";
+            if (ap) request.scope.accessPoint = Named(s, "AccessPoint", ap);
+            return QuerySclMms(s, request, nullptr);
+        };
+        const auto s = Snapshot(Bytes("Task8Voltage.scd"));
+        const auto result = phase(*s, "DemoListed");
+        QCOMPARE(result.rows.size(), size_t(1));
+        SclReferenceRequest request;
+        request.anchor = SclReferenceAnchor::Mms;
+        request.mms = result.rows.front().key;
+        request.prepared = result.rows.front().references;
+        const auto values = CollectSclReferences(*s, request, nullptr, true);
+        for (const auto kind : {Kind::ObjectReference, Kind::FunctionalConstraint, Kind::MmsDomain, Kind::MmsItem, Kind::TypeReference}) {
+            const auto* copied = RefValue(values.entries, kind);
+            const auto* selected = RefValue(values.traceEntries, kind);
+            QVERIFY(copied && selected);
+            const auto graph = trace(*s, *selected, root);
+            QCOMPARE(graph.node.value, copied->value);
+            QVERIFY(!graph.children.empty());
+            QVERIFY(graph.children.front().source != NoNode);
+        }
+        const auto& item = *RefValue(values.traceEntries, Kind::MmsItem);
+        const auto graph = trace(*s, item, root);
+        QCOMPARE(graph.children.front().value, QStringLiteral("MMXU1"));
+        QCOMPARE(graph.children.front().location.line, 17);
+        const auto ln = trace(*s, item, graph.children[0]);
+        QVERIFY(ln.children[0].value.isNull());
+        QCOMPARE(ln.children[1].value, QStringLiteral("MMXU"));
+        const auto fc = trace(*s, item, graph.children[1]);
+        QCOMPARE(fc.children.front().location.line, 60);
+        QCOMPARE(fc.children.front().relation, QStringLiteral("继承 FC"));
+        QCOMPARE(graph.children.back().location.line, 71);
+
+        const auto& domain = *RefValue(values.traceEntries, Kind::MmsDomain);
+        const auto ld = trace(*s, domain, trace(*s, domain, root).children.front());
+        QCOMPARE(ld.children.front().attribute, QStringLiteral("ldName"));
+        QCOMPARE(ld.children.front().location.line, 7);
+        const auto unlisted = phase(*s, "DemoUnlisted");
+        QCOMPARE(unlisted.rows.size(), size_t(1));
+        const auto& derived = *RefValue(unlisted.rows.front().references, Kind::MmsDomain);
+        const auto derivedLd = trace(*s, derived, trace(*s, derived, root).children.front());
+        QCOMPARE(derivedLd.children[0].value, QStringLiteral("DemoUnlisted"));
+        QCOMPARE(derivedLd.children[1].value, QStringLiteral("LD0"));
+
+        request = {};
+        const auto dataSet = Named(*s, "DataSet", "Voltage");
+        request.node = s->browse.memberRows[s->browse.dataSetMembers.value(dataSet).first + 1];
+        const auto member = CollectSclReferences(*s, request, nullptr, true);
+        const auto* object = RefValue(member.traceEntries, Kind::ObjectReference);
+        QVERIFY(object);
+        const auto objectGraph = trace(*s, *object, root);
+        QCOMPARE(objectGraph.node.value, QStringLiteral("ListedMeasurements/MMXU1.PhV.phsA"));
+        QCOMPARE(objectGraph.children[3].value, QStringLiteral("phsA"));
+        QCOMPARE(objectGraph.children.back().location.line, 11);
+        const auto memberFc = trace(*s, *RefValue(member.traceEntries, Kind::FunctionalConstraint), root);
+        QCOMPARE(memberFc.children.size(), size_t(2));
+        QCOMPARE(memberFc.children.back().attribute, QStringLiteral("doName"));
+
+        auto usedBy = Request(SclMmsQueryKind::AttributeReports);
+        usedBy.scope.ied = Named(*s, "IED", "DemoListed");
+        usedBy.key = result.rows.front().key;
+        const auto usages = QuerySclMms(*s, usedBy, nullptr);
+        QCOMPARE(usages.rows.size(), size_t(1));
+        request = {};
+        request.anchor = SclReferenceAnchor::Mms;
+        request.mms = usages.rows.front().key;
+        request.prepared = usages.rows.front().references;
+        const auto reportMember = CollectSclReferences(*s, request, nullptr, true);
+        QCOMPARE(std::count_if(reportMember.traceEntries.begin(), reportMember.traceEntries.end(),
+            [](const auto& entry) { return entry.kind == Kind::FunctionalConstraint; }), 1);
+
+        request = {};
+        request.node = Named(*s, "ReportControl", "VoltageReport");
+        const auto report = CollectSclReferences(*s, request, nullptr, true);
+        const auto* reportItem = RefValue(report.traceEntries, Kind::MmsItem);
+        QVERIFY(reportItem);
+        const auto reportGraph = trace(*s, *reportItem, root);
+        QCOMPARE(reportGraph.children[0].value, QStringLiteral("LLN0"));
+        QCOMPARE(trace(*s, *reportItem, reportGraph.children[0]).children.front().value, QStringLiteral("LLN0"));
+        QCOMPARE(reportGraph.children[1].value, QStringLiteral("BR"));
+        QCOMPARE(reportGraph.children[2].value, QStringLiteral("VoltageReport"));
+        const auto* reportDomain = RefValue(report.traceEntries, Kind::MmsDomain);
+        QVERIFY(reportDomain);
+        QCOMPARE(trace(*s, *reportDomain, root).children.front().value, QStringLiteral("ListedMeasurements"));
+
+        auto xml = Bytes("Task8Voltage.scd");
+        xml.replace("<LN lnClass=\"MMXU\"", "<LN prefix=\"V\" lnClass=\"MMXU\"");
+        xml.replace("lnClass=\"MMXU\" lnInst=", "prefix=\"V\" lnClass=\"MMXU\" lnInst=");
+        xml.replace("cVal.mag.f\" fc=\"MX\"", "cVal.mag.f\" fc=\"ST\"");
+        xml.replace("<IED name=\"DemoListed\">", "<IED name=\"DemoListed\"><AccessPoint name='Alias'><ServerAt apName='AP1'/></AccessPoint>");
+        xml.replace("<LDevice inst=\"LD0\" ldName", "<LDevice inst=\"LD0\"\n        ldName");
+        const auto changed = Snapshot(xml);
+        const auto aliased = phase(*changed, "DemoListed", "Alias");
+        QCOMPARE(aliased.rows.size(), size_t(1));
+        const auto& aliasItem = *RefValue(aliased.rows.front().references, Kind::MmsItem);
+        const auto aliasGraph = trace(*changed, aliasItem, root);
+        QCOMPARE(aliasGraph.children.front().value, QStringLiteral("VMMXU1"));
+        QCOMPARE(trace(*changed, aliasItem, aliasGraph.children.front()).children.front().value, QStringLiteral("V"));
+        const auto& aliasDomain = *RefValue(aliased.rows.front().references, Kind::MmsDomain);
+        const auto aliasLd = trace(*changed, aliasDomain, trace(*changed, aliasDomain, root).children.front());
+        QCOMPARE(aliasLd.children.front().location.line, 7);
+        QVERIFY(!aliasLd.children.front().excerpt.contains(QStringLiteral("ldName")));
+        const auto aliasScope = trace(*changed, aliasDomain, aliasLd.children.back());
+        QVERIFY(std::any_of(aliasScope.children.begin(), aliasScope.children.end(), [](const auto& node) {
+            return node.attribute == "apName" && node.value == "AP1";
+        }));
+        const auto wrongDataSet = Named(*changed, "DataSet", "Voltage");
+        request.node = changed->browse.memberRows[changed->browse.dataSetMembers.value(wrongDataSet).first];
+        const auto conflict = CollectSclReferences(*changed, request, nullptr, true);
+        QVERIFY(!RefValue(conflict.traceEntries, Kind::MmsItem));
+        const auto* conflictFc = RefValue(conflict.traceEntries, Kind::FunctionalConstraint);
+        QVERIFY(conflictFc);
+        const auto conflictGraph = trace(*changed, *conflictFc, root);
+        QCOMPARE(conflictGraph.children.front().value, QStringLiteral("ST"));
+        QCOMPARE(conflictGraph.children.back().value, QStringLiteral("MX"));
+        QCOMPARE(conflictGraph.children.back().relation, QStringLiteral("候选依据"));
+        TaskControl cancelled;
+        cancelled.cancelled = true;
+        QVERIFY_EXCEPTION_THROWN(TraceSclReference(*s, item, root, &cancelled), TaskCancelled);
+    }
+
+    void Task9TypeAndArrayTrace() {
+        using Kind = SclReferenceValueKind;
+        using Branch = SclTraceBranch;
+        SclTraceNode root;
+        root.branch = Branch::Root;
+        auto xml = Bytes("Task8Voltage.scd");
+        xml.replace("name=\"phsA\" type=\"FullPhase\"", "name='phsA' type='FullPhase' count='3'");
+        xml.replace("daName=\"cVal.mag.f\" fc=\"MX\"", "daName=\"cVal.mag.f\" fc=\"MX\" ix=\"01\"");
+        const auto s = Snapshot(xml);
+        SclReferenceRequest request;
+        const auto dataSet = Named(*s, "DataSet", "Voltage");
+        request.node = s->browse.memberRows[s->browse.dataSetMembers.value(dataSet).first];
+        const auto values = CollectSclReferences(*s, request, nullptr, true);
+        const auto* item = RefValue(values.traceEntries, Kind::MmsItem);
+        QVERIFY(item);
+        const auto graph = TraceSclReference(*s, *item, root, nullptr);
+        const auto array = std::find_if(graph.children.begin(), graph.children.end(), [](const auto& node) {
+            return node.branch == Branch::Array;
+        });
+        QVERIFY(array != graph.children.end());
+        const auto indexed = TraceSclReference(*s, *item, *array, nullptr);
+        QCOMPARE(indexed.children[0].value, QStringLiteral("3"));
+        QCOMPARE(indexed.children[1].value, QStringLiteral("01"));
+        QCOMPARE(indexed.children[2].value, QStringLiteral("1"));
+        QCOMPARE(indexed.children[3].value, QStringLiteral("cVal$mag$f"));
+
+        auto address = Request(SclMmsQueryKind::Attributes);
+        address.scope.ied = Named(*s, "IED", "DemoListed");
+        address.text = "cVal.mag.f";
+        QVERIFY(!RefValue(QuerySclMms(*s, address, nullptr).rows.front().references, Kind::MmsItem));
+        address.arrayMember = request.node;
+        auto result = QuerySclMms(*s, address, nullptr);
+        QCOMPARE(result.rows.size(), size_t(1));
+        const auto& row = result.rows.front();
+        request = {};
+        request.anchor = SclReferenceAnchor::Mms;
+        request.mms = row.key;
+        request.prepared = row.references;
+        auto collected = CollectSclReferences(*s, request, nullptr, true);
+        auto sameText = [](const auto& value) { return value.kind == Kind::TypeReference && value.value == "AnalogFloat"; };
+        QCOMPARE(std::count_if(collected.entries.begin(), collected.entries.end(), sameText), 1);
+        // A node-based provider may legitimately deliver two declarations of the same ID.
+        const auto typed = *std::find_if(row.references.begin(), row.references.end(), sameText);
+        auto other = typed;
+        other.evidence.node = Named(*s, "BDA", "ang");
+        request.prepared.push_back(other);
+        collected = CollectSclReferences(*s, request, nullptr, true);
+        QCOMPARE(std::count_if(collected.entries.begin(), collected.entries.end(), sameText), 1);
+        QCOMPARE(std::count_if(collected.traceEntries.begin(), collected.traceEntries.end(), sameText), 2);
+        const auto type = TraceSclReference(*s, typed, root, nullptr);
+        QCOMPARE(type.children[1].relation, QStringLiteral("引用定义"));
+        QCOMPARE(type.children[1].attribute, QStringLiteral("id"));
+        const auto typeMember = TraceSclReference(*s, typed, type.children[1], nullptr);
+        QCOMPARE(typeMember.children.front().value, QStringLiteral("f"));
+
+        xml = Bytes("Task8Voltage.scd");
+        xml.replace("type=\"AnalogFloat\"", "type=\"MissingAnalog\"");
+        const auto missing = Snapshot(xml);
+        request = {};
+        request.node = Named(*missing, "BDA", "ang");
+        auto uncertain = CollectSclReferences(*missing, request, nullptr, true);
+        const auto* missingType = RefValue(uncertain.traceEntries, Kind::TypeReference);
+        QVERIFY(missingType);
+        const auto missingGraph = TraceSclReference(*missing, *missingType, root, nullptr);
+        QCOMPARE(missingGraph.children.back().value, QStringLiteral("缺失"));
+
+        xml = Bytes("Task8Voltage.scd");
+        xml.replace("</DataTypeTemplates>", QByteArray("<DAType id='AnalogFloat'/>").repeated(90) + "</DataTypeTemplates>");
+        const auto ambiguous = Snapshot(xml);
+        request.node = Named(*ambiguous, "BDA", "ang");
+        uncertain = CollectSclReferences(*ambiguous, request, nullptr, true);
+        const auto* ambiguousType = RefValue(uncertain.traceEntries, Kind::TypeReference);
+        QVERIFY(ambiguousType);
+        const auto ambiguousGraph = TraceSclReference(*ambiguous, *ambiguousType, root, nullptr);
+        QVERIFY(ambiguousGraph.limited);
+        QCOMPARE(ambiguousGraph.children.size(), size_t(SclReferenceTrace::VisibleLimit - 1));
+        QCOMPARE(ambiguousGraph.children.back().relation, QStringLiteral("候选"));
     }
 
     void LocateIdentityAndDirectDataSet() {

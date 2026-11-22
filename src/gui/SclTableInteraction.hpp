@@ -5,6 +5,8 @@
 #include <QSet>
 #include <QObject>
 #include <QTimer>
+#include <functional>
+#include <memory>
 
 class QAbstractItemDelegate;
 class QAbstractItemView;
@@ -14,6 +16,8 @@ class QTreeView;
 
 namespace iec61850sim
 {
+struct SclReferenceTraceSelection;
+
 class SclTableInteraction final : public QObject
 {
     Q_OBJECT
@@ -26,6 +30,9 @@ public:
     void SetModel(QAbstractItemModel* model);
     void SetEnabled(bool enabled);
     void EnableReferenceMenus() { m_referenceMenus = true; }
+    using ReferenceTraceHandler = std::function<void(std::shared_ptr<const SclReferenceTraceSelection>)>;
+    void SetReferenceTraceHandler(ReferenceTraceHandler handler) { m_traceHandler = std::move(handler); }
+    const ReferenceTraceHandler& TraceHandler() const { return m_traceHandler; }
     QAbstractItemView* View() const { return m_view; }
     quint64 ReferenceEpoch() const { return m_referenceEpoch; }
 
@@ -63,5 +70,6 @@ private:
     bool m_measuring = false;
     bool m_stale = false;
     bool m_swallowRelease = false;
+    ReferenceTraceHandler m_traceHandler;
 };
 }

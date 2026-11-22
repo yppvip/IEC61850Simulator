@@ -1,6 +1,7 @@
 #include "SclWorkspace.hpp"
 #include "SclTableInteraction.hpp"
 #include "SclReferenceMenu.hpp"
+#include "SclReferenceTraceView.hpp"
 #include "SclTiming.hpp"
 #include "SclTopology.hpp"
 #include <QStackedWidget>
@@ -765,6 +766,12 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     auto* tablePane = new QWidget(m_tableModes);
     m_tableModes->addWidget(tablePane);
     m_tableModes->addWidget(m_taskBrowser->View());
+    m_centerPages = new QStackedWidget(this);
+    m_centerPages->setMinimumSize(0, 0);
+    m_centerPages->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    m_centerPages->addWidget(m_tableModes);
+    m_referenceTrace = new SclReferenceTraceView(m_centerPages);
+    m_centerPages->addWidget(m_referenceTrace);
     m_taskSwitch = new QPushButton(QStringLiteral("任务视图"), this);
     m_taskSwitch->setObjectName("SclTaskViewSwitch");
     navigation->addWidget(m_taskSwitch);
@@ -802,13 +809,16 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     m_inspector = new QTabWidget(this);
     m_inspector->setMinimumSize(0, 0); m_inspector->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     m_inspector->setObjectName("SclInspector");
-    const auto dock = [this](const QString& title, const char* name, QWidget* widget) {
+    const auto dock = [this](const QString& title, const char* name, QWidget* widget,
+        ads::CDockWidget::eInsertMode mode = ads::CDockWidget::AutoScrollArea) {
         auto* result = new ads::CDockWidget(m_docks, title);
         result->setObjectName(QString::fromLatin1(name));
-        result->setWidget(widget);
+        result->setWidget(widget, mode);
         return result;
     };
-    m_tableDock = dock(QStringLiteral("概览与数据"), "SclTableDock", m_tableModes);
+    // Central pages already handle their own scrolling. A second viewport can
+    // clip rows the active table considers visible after a page switch.
+    m_tableDock = dock(QStringLiteral("概览与数据"), "SclTableDock", m_centerPages, ads::CDockWidget::ForceNoScrollArea);
     m_tableDock->setFeature(ads::CDockWidget::DockWidgetClosable, false);
     auto* tableArea = m_docks->addDockWidget(ads::CenterDockWidgetArea, m_tableDock);
     m_inspectorDock = dock(QStringLiteral("属性与依据"), "SclInspectorDock", m_inspector);
@@ -847,6 +857,7 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     connect(m_tasks, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem* item) {
         if (!item || m_restoring || !m_snapshot) return;
         RememberView();
+        LeaveReferenceTrace();
         {
             QScopedValueRollback<bool> guard(m_restoring, true);
             ShowTaskView(true);
@@ -1461,6 +1472,26 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
         RefreshSourcePreview();
         RememberView();
     });
+    connect(m_referenceTrace, &SclReferenceTraceView::ReturnToSource, this, [this] { Navigate(-1); });
+    connect(m_referenceTrace, &SclReferenceTraceView::OpenEvidence, this, [this](int id) {
+        if (!IsReferenceTrace() || !m_snapshot) return;
+        if (id == NoNode) {
+            m_inspectorDock->toggleView(false);
+            Preview(nullptr, {}, {});
+            return;
+        }
+        if (id < 0 || id >= int(m_snapshot->analysis.document->nodes.size())) return;
+        const auto& analysis = m_snapshot->analysis;
+        const auto source = analysis.document->nodes[id].source;
+        if (source.line < 1) return;
+        m_showingFailure = false;
+        m_sourceDirty = false;
+        m_inspectorDock->toggleView(true);
+        if (m_inspector->currentIndex() == 2) RefreshSourcePreview();
+        else m_inspector->setCurrentIndex(2);
+    });
+    for (auto* interaction : findChildren<SclTableInteraction*>())
+        interaction->SetReferenceTraceHandler([this](auto selection) { OpenReferenceTrace(std::move(selection)); });
     RestoreWorkspaceLayout();
     UpdateTabVisibility();
     connect(m_failedSource, &QPushButton::clicked, this, [this] {
@@ -1548,6 +1579,7 @@ bool SclWorkspace::UpdateSession(Snapshot snapshot, const Scl::Result& failure)
         return false;
     }
 
+    LeaveReferenceTrace();
     m_selected = NoNode;
     m_finding = -1;
     m_clearNavigationFilter->hide();
@@ -1662,6 +1694,7 @@ void SclWorkspace::Select(NodeId id, bool route, int finding, bool openSource, b
     const bool newHistory = changed || (openSource && m_inspector->currentIndex() != 2);
     if (newHistory)
         RememberView();
+    if (!m_restoring && route) LeaveReferenceTrace();
     const auto* previousTable = m_tables->currentWidget();
     const auto previousScope = m_dataSet;
     const bool restoring = m_restoring;
@@ -1940,14 +1973,18 @@ void SclWorkspace::RememberView()
             !m_inspectorDock->isClosed(), m_signalEvidence, m_dataSets->CurrentLocation(),
             m_dataSets->CurrentUsers(), m_relationship,
             link.isValid() ? static_cast<SclTableModel*>(m_links->model())->ReferenceIndex(link.row()) : -1,
-            candidate.isValid() ? candidate.data(Qt::UserRole).toInt() : NoNode};
+            candidate.isValid() ? candidate.data(Qt::UserRole).toInt() : NoNode,
+            IsReferenceTrace() ? m_referenceTrace->Location() : nullptr};
     }
 }
 
 void SclWorkspace::ShowTaskView(bool show, bool remember)
 {
     const bool changed = show != (m_tableModes->currentIndex() == 1);
-    if (remember) RememberView();
+    if (remember) {
+        RememberView();
+        LeaveReferenceTrace();
+    }
     {
     const QScopedValueRollback<bool> restoring(m_restoring, true);
     if (remember)
@@ -2072,6 +2109,32 @@ void SclWorkspace::Navigate(int direction)
         return;
     RememberView();
     const auto location = m_history[next];
+    if (direction == -1 && IsReferenceTrace() && !location.trace) {
+        const QPointer<QAbstractItemView> sourceView = m_referenceTrace->SourceView();
+        const auto sizes = m_referenceTrace->SourceSplitterSizes();
+        const QScopedValueRollback<bool> restoring(m_restoring, true);
+        m_historyIndex = next;
+        LeaveReferenceTrace();
+        m_inspectorDock->toggleView(location.inspectorVisible);
+        m_inspector->setCurrentIndex(location.inspector);
+        if (location.inspectorVisible && sizes.size() == 2 && TraceSplitterSizes().size() == 2)
+            m_docks->setSplitterSizes(m_tableDock->dockAreaWidget(), sizes);
+        RefreshSourcePreview();
+        UpdateHistoryButtons();
+        if (sourceView && sourceView->isVisible()) sourceView->setFocus();
+        return;
+    }
+    if (direction == 1 && location.trace && m_referenceTrace->Restore(location.trace, m_snapshot)) {
+        const QScopedValueRollback<bool> restoring(m_restoring, true);
+        m_historyIndex = next;
+        m_centerPages->setCurrentWidget(m_referenceTrace);
+        m_inspectorDock->toggleView(location.inspectorVisible);
+        m_inspector->setCurrentIndex(location.inspector);
+        RefreshSourcePreview();
+        UpdateHistoryButtons();
+        return;
+    }
+    LeaveReferenceTrace();
     const auto previousTable = m_tables->currentIndex();
     const auto previousScope = m_dataSet;
     {
@@ -2126,6 +2189,10 @@ void SclWorkspace::Navigate(int direction)
             m_dataSets->Restore(location.dataSets);
         }
         m_dataSets->RestoreUsers(location.taskView ? SclDataSetView::UsersLocation{} : location.users);
+        if (m_referenceTrace->Restore(location.trace, m_snapshot)) {
+            m_centerPages->setCurrentWidget(m_referenceTrace);
+            RefreshSourcePreview();
+        }
     }
     UpdateHistoryButtons();
     UpdateTopologyControls();
@@ -2465,6 +2532,20 @@ void SclWorkspace::UpdateReferencePath(const QModelIndex& index)
 
 void SclWorkspace::RefreshSourcePreview()
 {
+    if (IsReferenceTrace()) {
+        const auto id = m_referenceTrace->OpenedEvidence();
+        if (m_snapshot && m_inspector->currentIndex() == 2 && id >= 0
+            && id < int(m_snapshot->analysis.document->nodes.size())) {
+            Preview(m_snapshot->analysis.source.get(), m_snapshot->analysis.document->nodes[id].source,
+                QFileInfo(m_snapshot->path).fileName());
+            const std::weak_ptr<const SclSnapshot> snapshot = m_snapshot;
+            QTimer::singleShot(0, this, [this, snapshot, id] {
+                if (snapshot.lock() == m_snapshot && IsReferenceTrace() && m_referenceTrace->OpenedEvidence() == id)
+                    BalanceTraceSource();
+            });
+        }
+        return;
+    }
     const bool mms = m_snapshot && !m_showingFailure && m_tableModes->currentIndex() == 1 && m_taskBrowser->IsMmsPage();
     const bool signal = m_snapshot && !m_showingFailure && m_selected != NoNode
         && m_tableModes->currentIndex() == 1 && m_taskBrowser->IsSignalPage();
@@ -2497,6 +2578,57 @@ void SclWorkspace::RefreshSourcePreview()
     }
     else
         Preview(nullptr, {}, {});
+}
+
+void SclWorkspace::BalanceTraceSource()
+{
+    if (m_inspector->currentIndex() != 2 || !m_source->isVisible()) return;
+    const auto sizes = TraceSplitterSizes();
+    if (sizes.size() == 2) {
+        const auto total = sizes[0] + sizes[1];
+        const auto needed = m_source->viewport()->mapTo(m_inspectorDock->dockAreaWidget(), QPoint()).y()
+            + 3 * m_source->fontMetrics().height() + m_source->horizontalScrollBar()->sizeHint().height() + 8;
+        const auto minimum = std::min(needed, total / 2);
+        if (sizes[1] < minimum) m_docks->setSplitterSizes(m_tableDock->dockAreaWidget(), {total - minimum, minimum});
+    }
+    m_source->ensureCursorVisible();
+}
+
+QList<int> SclWorkspace::TraceSplitterSizes() const
+{
+    auto* center = m_tableDock->dockAreaWidget();
+    auto* source = m_inspectorDock->dockAreaWidget();
+    if (!center || !source || center->parentWidget() != source->parentWidget()) return {};
+    auto* splitter = qobject_cast<QSplitter*>(center->parentWidget());
+    if (!splitter || splitter->orientation() != Qt::Vertical || splitter->count() != 2
+        || splitter->widget(0) != center || splitter->widget(1) != source) return {};
+    return m_docks->splitterSizes(center);
+}
+
+bool SclWorkspace::IsReferenceTrace() const
+{
+    return m_centerPages->currentWidget() == m_referenceTrace;
+}
+
+void SclWorkspace::OpenReferenceTrace(std::shared_ptr<const SclReferenceTraceSelection> selection)
+{
+    if (!m_snapshot || selection->snapshot != m_snapshot || selection->values.empty()) return;
+    RememberView();
+    {
+        const QScopedValueRollback<bool> restoring(m_restoring, true);
+        m_referenceTrace->Open(std::move(selection), TraceSplitterSizes());
+        m_centerPages->setCurrentWidget(m_referenceTrace);
+        m_inspectorDock->toggleView(false);
+    }
+    PushTaskHistory();
+}
+
+void SclWorkspace::LeaveReferenceTrace()
+{
+    if (!IsReferenceTrace()) return;
+    m_centerPages->setCurrentWidget(m_tableModes);
+    m_referenceTrace->Clear();
+    m_sourceDirty = true;
 }
 
 void SclWorkspace::Preview(const Scl::SourceIndex* source, Scl::SourceLocation location, const QString& path)

@@ -88,10 +88,11 @@ std::vector<SclReferenceValue> ProjectSclMmsReferences(const SclSnapshot& s, con
 {
     using Kind = SclReferenceValueKind;
     std::vector<SclReferenceValue> values;
+    std::shared_ptr<const SclReferenceBasis> basis;
     checkpoint(task);
     const auto add = [&](Kind kind, const QString& value, MmsEvidence source,
                          MmsValueState origin = MmsValueState::Derived) {
-        if (!value.isEmpty()) values.push_back({kind, value, std::move(source), origin});
+        if (!value.isEmpty()) values.push_back({kind, value, std::move(source), origin, basis});
     };
     const auto mapping = [&](const QString& domain, const QString& item, const MmsEvidence& domainSource,
                              const MmsEvidence& itemSource) {
@@ -108,11 +109,29 @@ std::vector<SclReferenceValue> ProjectSclMmsReferences(const SclSnapshot& s, con
         add(Kind::RawReportId, rptId.raw, rptId.evidence, MmsValueState::Explicit);
         add(Kind::DataSetReference, report.dataSetReference, {report.node, "datSet", {}});
         add(Kind::MmsDataSetList, report.dataSetMmsName, {report.dataSet.target(), "name", {}});
-        if (row.key.kind == SclMmsRecordKind::Report)
+        if (row.key.kind == SclMmsRecordKind::Report) {
+            auto anchor = std::make_shared<SclReferenceBasis>();
+            anchor->scope = row.addressScope;
+            anchor->report = report.node;
+            anchor->logicalNode = report.logicalNode;
+            basis = std::move(anchor);
             mapping(report.mmsDomain, report.definitionMmsItem, {report.node, {}, {}}, {report.node, "name", {}});
+        }
     };
     switch (row.key.kind) {
     case SclMmsRecordKind::Address: {
+        auto anchor = std::make_shared<SclReferenceBasis>();
+        anchor->scope = row.addressScope;
+        anchor->logicalNode = row.key.node;
+        anchor->path = row.templatePath;
+        anchor->fc = row.fcEvidence;
+        anchor->arrayDeclaration = row.key.arrayDeclaration;
+        anchor->arrayIndex = row.arrayIndex;
+        anchor->selector = row.arraySelector;
+        anchor->component = row.component;
+        anchor->state = row.state;
+        anchor->limitation = row.limitation;
+        basis = std::move(anchor);
         const MmsEvidence leaf{row.key.declaration, {}, {}};
         add(Kind::ObjectReference, row.objectReference, leaf);
         add(Kind::FunctionalConstraint, row.fc, row.fcEvidence, MmsValueState::Explicit);
@@ -138,6 +157,11 @@ std::vector<SclReferenceValue> ProjectSclMmsReferences(const SclSnapshot& s, con
             const auto& instance = s.mms.instances[row.key.record];
             if (instance.definition != row.key.node || instance.ordinal != row.key.ordinal) break;
             const MmsEvidence source{instance.definition, "name", {}};
+            auto anchor = std::make_shared<SclReferenceBasis>();
+            anchor->scope = row.addressScope;
+            anchor->report = instance.definition;
+            anchor->instance = row.key.record;
+            basis = std::move(anchor);
             add(Kind::ExpectedReportInstance, instance.reference, source);
             mapping(instance.mmsDomain, instance.mmsItem, source, source);
             add(Kind::RawReportId, instance.rptId.raw, instance.rptId.evidence, MmsValueState::Explicit);
@@ -151,6 +175,13 @@ std::vector<SclReferenceValue> ProjectSclMmsReferences(const SclSnapshot& s, con
         if (row.key.record >= 0 && row.key.record < int(s.analysis.references.size()))
             ref = &s.analysis.references[row.key.record];
         if (ref && row.key.kind == SclMmsRecordKind::Member && ref->source != row.key.node) break;
+        if (ref) {
+            auto anchor = std::make_shared<SclReferenceBasis>();
+            anchor->reference = row.key.record;
+            anchor->scope = row.addressScope;
+            anchor->report = row.report;
+            basis = std::move(anchor);
+        }
         const auto source = ref ? ref->source : row.key.node;
         const auto& doc = *s.analysis.document;
         const MmsEvidence member{source, {}, {}};
@@ -312,6 +343,7 @@ SclMmsResult DescribeSclMms(const SclSnapshot& s, const SclMmsRequest& request, 
     SclMmsRow referenceRow;
     referenceRow.key = key;
     referenceRow.report = key.parentReport == NoNode ? request.report : key.parentReport;
+    referenceRow.addressScope = request.scope;
     switch (key.kind) {
     case SclMmsRecordKind::Report: {
         const auto it = s.mmsIndex.reports.constFind(key.node); if (it == s.mmsIndex.reports.cend()) break;

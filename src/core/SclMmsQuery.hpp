@@ -47,11 +47,27 @@ enum class SclReferenceValueKind { ObjectReference, FunctionalConstraint, MmsDom
     RawExtRef, RawReference, CandidatePath, InternalAddress, AppId, SmvId, NumericAppId, MacAddress,
     VlanId, VlanPriority, NetworkAddress, EndpointPath, IedName, AccessPointName, HitValue };
 
+struct SclReferenceBasis {
+    SclMmsScope scope;
+    Scl::NodeId logicalNode = Scl::NoNode;
+    QList<Scl::NodeId> path;
+    Scl::MmsEvidence fc;
+    Scl::NodeId arrayDeclaration = Scl::NoNode, selector = Scl::NoNode;
+    int arrayIndex = -1;
+    QString component;
+    int reference = -1;
+    Scl::NodeId report = Scl::NoNode;
+    int instance = -1;
+    Scl::LinkState state = Scl::LinkState::Resolved;
+    QString limitation;
+};
+
 struct SclReferenceValue {
     SclReferenceValueKind kind;
     QString value;
     Scl::MmsEvidence evidence;
     Scl::MmsValueState origin = Scl::MmsValueState::Derived;
+    std::shared_ptr<const SclReferenceBasis> basis;
 };
 
 struct SclMmsKey {
@@ -89,6 +105,7 @@ struct SclMmsRow {
     Scl::MmsEvidence matchEvidence;
     SclMmsScope addressScope;
     Scl::NodeId logicalDevice = Scl::NoNode;
+    Scl::NodeId arraySelector = Scl::NoNode;
     QString objectPath, objectReference;
     QList<Scl::NodeId> templatePath;
     Scl::MmsEvidence fcEvidence, domainEvidence;

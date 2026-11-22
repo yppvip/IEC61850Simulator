@@ -655,7 +655,7 @@ Match Analysis::object(NodeId ln, const QString &doName, const QString &daName, 
 
     ref.logicalNode = ln;
     ref.arrayIndex = index;
-    if (trace) {
+    if (trace && kind(ref.source, "FCDA")) {
         auto instance = ln;
         for (int i = 0; i < parts.size() && instance != NoNode; ++i) {
             // An entire array does not identify a particular instance.
@@ -802,8 +802,11 @@ void Analysis::extRef(NodeId id)
         match = {LinkState::Partial};
     } else if (source.target() != NoNode) {
         match = sourceLn(source.target(), ld, ln);
-        if (match.target() != NoNode)
-            match = object(match.target(), doName, daName, {}, {}, ref, detail);
+        if (match.target() != NoNode) {
+            FcdaTrace trace;
+            match = object(match.target(), doName, daName, {}, {}, ref, detail, &trace);
+            result.extRefTraces.insert(id, std::move(trace));
+        }
     }
     record(ExtRefRule, std::move(ref), std::move(match), detail);
 

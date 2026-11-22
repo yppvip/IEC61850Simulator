@@ -391,6 +391,9 @@ private slots:
     void SclTask8VoltageBaseline();
     void SclTask8AttributeWorkflow();
     void SclTask8ReferenceMenus();
+    void SclTask9TraceWorkflow_data();
+    void SclTask9TraceWorkflow();
+    void SclTask9LocalAcceptance();
     void SclTask8LocalAcceptance();
     void SclMmsLocalAcceptance();
     void SclMmsReview();
@@ -402,6 +405,9 @@ private slots:
     void SclNavigationReview();
     void SclMmsNavigation();
     void SclMmsNavigationPaging();
+
+private:
+    void RunPhaseLocalAcceptance(bool verifyTrace);
 };
 
 void MainWindowBaselineTest::SclConnectionsFlow()
@@ -3303,6 +3309,7 @@ void MainWindowBaselineTest::SclTask8AttributeWorkflow()
 }
 
 #include "SclTask8Acceptance.hpp"
+#include "SclTask9Acceptance.hpp"
 
 void MainWindowBaselineTest::SclTask8ReferenceMenus()
 {

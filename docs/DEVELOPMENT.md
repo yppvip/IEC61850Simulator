@@ -483,3 +483,11 @@ T7.1 的 Location 扩展同快照业务父链、搜索来源、字段与列表�
 [T8.3](Tasks/Task8T8.3.md) 的 `SclReferenceValues` 按原始记录投影类型化引用，`SclReferenceMenu` 将后台结果接入 `SclTableInteraction`。复制动作按命中行和视图代次校验。专项 CTest 为 `SclReferenceMenus`。
 
 [T8.4](Tasks/Task8T8.4.md) 在独立 Debug 目录 `build/task8-t84` 完成离线集成走查。真实样本使用原生 Qt 的 `MainWindowBaselineTest.exe SclTask8LocalAcceptance` 并显式传入 `IEC61850_LOCAL_SCL`。可重复检查相位属性与报告对象级成员的跨视图复制、作用域恢复、原文和读前后文件指纹。常规 CTest 继续使用合成样本。
+
+## 28. 引用组成与原文溯源（Task9，2026-11-22）
+
+[T9.0](Tasks/Task9T9.0.md) 冻结 Task8 菜单矩阵和证据基线。[T9.1](Tasks/Task9T9.1.md) 复用 `SclSnapshot`、FCDA 与 ExtRef 解析轨迹、MMS 投影和 `SourceIndex`，逐层交付组成片段及原文依据。复制仍按值去重，溯源保留不同的声明身份。
+
+[T9.2](Tasks/Task9T9.2.md) 在 MMS 属性表和高级 FCDA 树表试点。Qt Graphics View 和证据树共用有界结果，查阅页与工作台历史绑定，显式原文动作复用原 Dock。业务表格由统一的 `SclReferenceMenu` 入口提供剩余可溯源分组。
+
+[T9.3](Tasks/Task9T9.3.md) 记录清洁 PATH CTest 17/17、原生正常窗/短窄窗回归和指定 SCD 的原生走查。中央 Dock 使用表格和节点页自身的滚动区域，保留版本 2 布局。真实文件读前后指纹一致，关闭时释放快照。初学者独立试用待执行。
