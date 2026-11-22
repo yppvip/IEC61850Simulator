@@ -21,6 +21,8 @@ QString PageName(SclMmsQueryKind kind) {
     case SclMmsQueryKind::Members: return QStringLiteral("数据集成员");
     case SclMmsQueryKind::Signals: return QStringLiteral("信号对象");
     case SclMmsQueryKind::Addresses: return QStringLiteral("属性与地址");
+    case SclMmsQueryKind::Attributes: return QStringLiteral("查找属性");
+    case SclMmsQueryKind::AttributeReports: return QStringLiteral("属性的报告使用");
     case SclMmsQueryKind::Search: return QStringLiteral("全工程搜索");
     case SclMmsQueryKind::Instances: return QStringLiteral("预期实例");
     case SclMmsQueryKind::Clients: return QStringLiteral("客户端声明");
@@ -35,8 +37,7 @@ QString PageName(SclMmsQueryKind kind) {
     }
 }
 bool SameKey(const SclMmsKey& a, const SclMmsKey& b) {
-    return a.kind == b.kind && a.node == b.node && a.record == b.record
-        && a.ordinal == b.ordinal && a.field == b.field;
+    return a == b;
 }
 }
 
@@ -55,10 +56,13 @@ void SclMmsView::resizeEvent(QResizeEvent* event) {
 void SclMmsView::Commit(Location location) {
     if (!m_snapshot || location.snapshot != m_snapshot) return;
     emit BeforeNavigate();
-    if (location.viewIed != m_ied) emit ScopeRequested(location.viewIed);
-    if (location.snapshot != m_snapshot) return;
-    RestoreLocation(location);
-    emit RestoreInspector(location.inspectorVisible);
+    {
+        const QScopedValueRollback<bool> navigating(m_navigating, true);
+        if (location.viewIed != m_ied) emit ScopeRequested(location.viewIed);
+        if (location.snapshot != m_snapshot) return;
+        RestoreLocation(location);
+        emit RestoreInspector(location.inspectorVisible);
+    }
     emit Navigated();
 }
 
@@ -134,6 +138,7 @@ QString SclMmsView::PageLabel(const Location& location, bool selection) const {
         name += " · " + attr(ds);
         if (ds >= 0) name += " [" + SclTaskPath(*s.analysis.document, ds) + ']';
     }
+    if (location.request.kind == SclMmsQueryKind::AttributeReports) name += " · " + location.request.key.field;
     if (selection && location.selected) {
         const auto& key = *location.selected;
         if (key.kind == SclMmsRecordKind::Report) name += QStringLiteral(" · 报告 %1 [%2]").arg(attr(key.node), SclTaskPath(*s.analysis.document, key.node));

@@ -17,6 +17,15 @@ QString SclMmsStateText(LinkState state) {
     }
     return {};
 }
+
+QString SclMmsReportMatchText(SclMmsReportMatch match) {
+    switch (match) {
+    case SclMmsReportMatch::ExactAttribute: return QStringLiteral("精确属性匹配");
+    case SclMmsReportMatch::AttributeCoverage: return QStringLiteral("上级属性覆盖");
+    case SclMmsReportMatch::ObjectCoverage: return QStringLiteral("DO 级覆盖");
+    default: return {};
+    }
+}
 namespace {
 QString Attr(const SclSnapshot& s, NodeId node, const char* name) {
     return node >= 0 && node < int(s.analysis.document->nodes.size())
@@ -43,7 +52,135 @@ QString ValueState(MmsValueState state) {
     }
     return {};
 }
+
+QString DirectStateText(SclMmsDirectState state) {
+    switch (state) {
+    case SclMmsDirectState::Mapped: return QStringLiteral("已推导离线地址");
+    case SclMmsDirectState::Structure: return QStringLiteral("结构地址");
+    case SclMmsDirectState::ArraySelectionRequired: return QStringLiteral("数组元素待选");
+    case SclMmsDirectState::AlternateAccess: return QStringLiteral("数组 alternate access");
+    case SclMmsDirectState::Ambiguous: return QStringLiteral("地址候选歧义");
+    case SclMmsDirectState::Missing: return QStringLiteral("缺少定义");
+    case SclMmsDirectState::Blocked: return QStringLiteral("映射受阻");
+    case SclMmsDirectState::Unavailable: return QStringLiteral("无直接映射证据");
+    }
+    return {};
 }
+
+QString MatchText(SclMmsAttributeMatch match) {
+    switch (match) {
+    case SclMmsAttributeMatch::PathOrAddress: return QStringLiteral("路径或地址匹配");
+    case SclMmsAttributeMatch::Description: return QStringLiteral("文件描述匹配");
+    case SclMmsAttributeMatch::BusinessTerm: return QStringLiteral("模型结构匹配");
+    default: return {};
+    }
+}
+
+QString AddressLocation(const SclSnapshot& s, const SclMmsRow& row) {
+    const auto ln = Attr(s, row.key.node, "prefix") + Attr(s, row.key.node, "lnClass") + Attr(s, row.key.node, "inst");
+    return QStringList{Attr(s, row.addressScope.ied, "name"), Attr(s, row.addressScope.accessPoint, "name"),
+        QStringLiteral("Server"), Attr(s, row.logicalDevice, "inst"), ln}.join(" / ");
+}
+}
+
+std::vector<SclReferenceValue> ProjectSclMmsReferences(const SclSnapshot& s, const SclMmsRow& row,
+    TaskControl* task, bool includeDeclaration)
+{
+    using Kind = SclReferenceValueKind;
+    std::vector<SclReferenceValue> values;
+    checkpoint(task);
+    const auto add = [&](Kind kind, const QString& value, MmsEvidence source,
+                         MmsValueState origin = MmsValueState::Derived) {
+        if (!value.isEmpty()) values.push_back({kind, value, std::move(source), origin});
+    };
+    const auto mapping = [&](const QString& domain, const QString& item, const MmsEvidence& domainSource,
+                             const MmsEvidence& itemSource) {
+        add(Kind::MmsDomain, domain, domainSource,
+            domainSource.attribute == "ldName" ? MmsValueState::Explicit : MmsValueState::Derived);
+        add(Kind::MmsItem, item, itemSource);
+    };
+    const auto reportValues = [&](NodeId reportNode) {
+        const auto it = s.mmsIndex.reports.constFind(reportNode);
+        if (it == s.mmsIndex.reports.cend()) return;
+        const auto& report = s.mms.reports[*it];
+        add(Kind::ReportDefinition, report.definitionReference, {report.node, "name", {}});
+        const auto& rptId = report.fields.value("rptID");
+        add(Kind::RawReportId, rptId.raw, rptId.evidence, MmsValueState::Explicit);
+        add(Kind::DataSetReference, report.dataSetReference, {report.node, "datSet", {}});
+        add(Kind::MmsDataSetList, report.dataSetMmsName, {report.dataSet.target(), "name", {}});
+        if (row.key.kind == SclMmsRecordKind::Report)
+            mapping(report.mmsDomain, report.definitionMmsItem, {report.node, {}, {}}, {report.node, "name", {}});
+    };
+    switch (row.key.kind) {
+    case SclMmsRecordKind::Address: {
+        const MmsEvidence leaf{row.key.declaration, {}, {}};
+        add(Kind::ObjectReference, row.objectReference, leaf);
+        add(Kind::FunctionalConstraint, row.fc, row.fcEvidence, MmsValueState::Explicit);
+        mapping(row.domain, row.item, row.domainEvidence, leaf);
+        if (row.arrayIndex >= 0) {
+            add(Kind::ArrayIndex, QString::number(row.arrayIndex), {row.key.arrayDeclaration, "count", {}});
+            add(Kind::AlternateAccessComponent, row.component, leaf);
+        }
+        for (const auto node : row.templatePath) {
+            checkpoint(task);
+            add(Kind::TypeReference, Attr(s, node, "type"), {node, "type", {}}, MmsValueState::Explicit);
+        }
+        break;
+    }
+    case SclMmsRecordKind::Signal:
+        add(Kind::TypeReference, Attr(s, row.key.node, "lnType"), {row.key.node, "lnType", {}}, MmsValueState::Explicit);
+        break;
+    case SclMmsRecordKind::Report:
+        reportValues(row.key.node);
+        break;
+    case SclMmsRecordKind::Instance:
+        if (row.key.record >= 0 && row.key.record < int(s.mms.instances.size())) {
+            const auto& instance = s.mms.instances[row.key.record];
+            if (instance.definition != row.key.node || instance.ordinal != row.key.ordinal) break;
+            const MmsEvidence source{instance.definition, "name", {}};
+            add(Kind::ExpectedReportInstance, instance.reference, source);
+            mapping(instance.mmsDomain, instance.mmsItem, source, source);
+            add(Kind::RawReportId, instance.rptId.raw, instance.rptId.evidence, MmsValueState::Explicit);
+            if (const auto report = s.mmsIndex.reports.constFind(instance.definition); report != s.mmsIndex.reports.cend())
+                add(Kind::ReportDefinition, s.mms.reports[*report].definitionReference, source);
+        }
+        break;
+    case SclMmsRecordKind::Member:
+    case SclMmsRecordKind::Reference: {
+        const Reference* ref = nullptr;
+        if (row.key.record >= 0 && row.key.record < int(s.analysis.references.size()))
+            ref = &s.analysis.references[row.key.record];
+        if (ref && row.key.kind == SclMmsRecordKind::Member && ref->source != row.key.node) break;
+        const auto source = ref ? ref->source : row.key.node;
+        const auto& doc = *s.analysis.document;
+        const MmsEvidence member{source, {}, {}};
+        if (ref && ref->state == LinkState::Resolved && ref->candidates.size() == 1) {
+            add(Kind::ObjectReference, ref->objectReference, member);
+            mapping(ref->mmsDomain, ref->mmsItem, member, member);
+            if (ref->arrayIndex >= 0) {
+                const auto indexAttribute = !Attr(s, source, "ix").isNull() ? QStringLiteral("ix")
+                    : Attr(s, source, "doName").contains('(') ? QStringLiteral("doName") : QStringLiteral("daName");
+                add(Kind::ArrayIndex, QString::number(ref->arrayIndex), {source, indexAttribute, {}});
+                add(Kind::AlternateAccessComponent, ref->mmsComponent, member);
+            }
+        }
+        if (source >= 0 && source < int(doc.nodes.size()) && doc.nodes[source].name == "FCDA") {
+            add(Kind::FunctionalConstraint, Attr(s, source, "fc"), {source, "fc", {}}, MmsValueState::Explicit);
+            add(Kind::RawArrayIndex, Attr(s, source, "ix"), {source, "ix", {}}, MmsValueState::Explicit);
+            if (includeDeclaration && s.analysis.source)
+                add(Kind::RawFcdaDeclaration, s.analysis.source->openingTag(doc.nodes[source].source, task), member, MmsValueState::Explicit);
+        }
+        const auto report = s.mmsIndex.reports.constFind(row.report);
+        if (report != s.mmsIndex.reports.cend() && source >= 0 && source < int(doc.nodes.size())
+            && s.mms.reports[*report].dataSet.target() == doc.nodes[source].parent)
+            reportValues(row.report);
+        break;
+    }
+    default: break;
+    }
+    return values;
+}
+
 void PresentSclMms(const SclSnapshot& s, SclMmsResult& result, TaskControl* task) {
     for (auto& row : result.rows) {
         checkpoint(task);
@@ -69,6 +206,17 @@ void PresentSclMms(const SclSnapshot& s, SclMmsResult& result, TaskControl* task
             type = Shape(row.shape);
             if (row.key.record >= 0 && row.key.record < int(s.analysis.references.size()))
                 parent = s.analysis.references[row.key.record].objectReference;
+            if (result.request.kind == SclMmsQueryKind::AttributeReports) {
+                name = Attr(s, row.report, "name");
+                const auto it = s.mmsIndex.reports.constFind(row.report);
+                if (it != s.mmsIndex.reports.cend() && !s.mms.reports[*it].definitionReference.isEmpty())
+                    name = s.mms.reports[*it].definitionReference;
+                type = SclMmsReportMatchText(row.reportMatch);
+                const auto memberPath = Attr(s, row.key.node, "doName") +
+                    (Attr(s, row.key.node, "daName").isEmpty() ? QString() : '.' + Attr(s, row.key.node, "daName"));
+                desc = QStringLiteral("#%1 · %2").arg(row.key.ordinal).arg(memberPath);
+                parent = Attr(s, row.dataSet, "name");
+            }
             break;
         }
         case SclMmsRecordKind::Client:
@@ -81,6 +229,18 @@ void PresentSclMms(const SclSnapshot& s, SclMmsResult& result, TaskControl* task
             name = row.key.field; desc = row.limitation; type = Shape(row.shape);
             if (row.description) for (const auto& f : row.description->fields)
                 if (!f.value.isEmpty()) desc += '\n' + SclDescriptionLabel(f.source) + ": " + f.value;
+            if (result.request.kind == SclMmsQueryKind::Attributes) {
+                if (row.key.declaration != NoNode) name = row.objectPath + '.' + name;
+                if (!row.objectReference.isEmpty() && row.arrayIndex >= 0) name = row.objectReference.section('/', 1);
+                parent = AddressLocation(s, row);
+                type = MatchText(row.attributeMatch);
+                const auto evidence = row.matchEvidence;
+                if (evidence.node != NoNode) {
+                    const auto value = evidence.attribute.isEmpty() ? s.analysis.document->nodes[evidence.node].text
+                        : s.analysis.document->attribute(evidence.node, evidence.attribute);
+                    if (!desc.contains(value)) desc = value + (desc.isEmpty() ? QString() : '\n' + desc);
+                }
+            }
             break;
         case SclMmsRecordKind::Endpoint:
             name = row.cells.value(0) + '/' + row.cells.value(1); desc = row.cells.mid(2).join('\n');
@@ -101,8 +261,9 @@ void PresentSclMms(const SclSnapshot& s, SclMmsResult& result, TaskControl* task
             break;
         }
         }
-        row.cells = {name, desc, type, parent, row.fc, row.domain, row.item,
-            row.key.kind == SclMmsRecordKind::Finding ? (row.key.ordinal ? s.mms.ruleSetVersion : s.analysis.ruleSetVersion) : SclMmsStateText(row.state)};
+        const auto state = row.key.kind == SclMmsRecordKind::Finding ? (row.key.ordinal ? s.mms.ruleSetVersion : s.analysis.ruleSetVersion)
+            : result.request.kind == SclMmsQueryKind::Attributes ? DirectStateText(row.direct) : SclMmsStateText(row.state);
+        row.cells = {name, desc, type, parent, row.fc, row.domain, row.item, state};
     }
 }
 
@@ -148,6 +309,9 @@ SclMmsResult DescribeSclMms(const SclSnapshot& s, const SclMmsRequest& request, 
     if (!valid(key.node)) { out.summary = QStringLiteral("没有可用的来源节点。"); return out; }
     out.title = doc.nodes[key.node].name + " · " + Attr(s, key.node, "name");
     out.summary = QStringLiteral("离线只读 · 文件配置不证明在线连接、订阅或工程完整性。字段原文定位到所在元素。");
+    SclMmsRow referenceRow;
+    referenceRow.key = key;
+    referenceRow.report = key.parentReport == NoNode ? request.report : key.parentReport;
     switch (key.kind) {
     case SclMmsRecordKind::Report: {
         const auto it = s.mmsIndex.reports.constFind(key.node); if (it == s.mmsIndex.reports.cend()) break;
@@ -191,18 +355,54 @@ SclMmsResult DescribeSclMms(const SclSnapshot& s, const SclMmsRequest& request, 
             out.title = QStringLiteral("信号 · ") + SclTaskPath(doc, key.node) + '.' + d.path;
             if (key.kind == SclMmsRecordKind::Address) {
                 auto query = request; query.kind = SclMmsQueryKind::Addresses; query.signal = key.record;
-                query.text = key.field; query.offset = 0; query.pageSize = 200; query.presentation = false;
+                query.text.clear(); query.fc.clear(); query.offset = 0; query.pageSize = 1; query.presentation = false;
+                query.locate = key; query.arrayMember = NoNode;
                 const auto addresses = QuerySclMms(s, query, task);
-                for (const auto& row : addresses.rows) if (row.key.field == key.field) {
-                    mapping(row.domain, row.item, row.evidence.isEmpty() ? key.node : row.evidence.back().node);
-                    field("fc", "FC", row.fc, row.evidence.isEmpty() ? MmsEvidence{} : row.evidence.back());
+                for (const auto& row : addresses.rows) if (row.key == key) {
+                    referenceRow = row;
+                    out.title += '.' + (key.declaration != NoNode ? key.field : QStringLiteral("属性依据"));
+                    field("domain", "MMS Domain", row.domain, row.domainEvidence, QStringLiteral("离线 LD 命名依据"), !row.domain.isEmpty());
+                    field("item", "MMS Item", row.item, {key.declaration, {}, {}}, QStringLiteral("离线属性映射"), !row.item.isEmpty());
+                    field("object", "对象引用", row.objectReference, {key.declaration, {}, {}}, {}, !row.objectReference.isEmpty());
+                    field("fc", "FC", row.fc, row.fcEvidence, {}, !row.fc.isEmpty());
                     field("shape", "访问形态", Shape(row.shape), {}, row.limitation);
-                    if (row.description) description(*row.description);
+                    field("direct", "直接映射状态", DirectStateText(row.direct), {key.declaration, {}, {}}, row.limitation);
+                    field("online", "在线读取", QStringLiteral("未验证"));
+                    field("scope", "IED / AP / Server / LD / LN", AddressLocation(s, row), {key.node, {}, {}});
+                    field("ln", "LN 实例", SclTaskPath(doc, key.node), {key.node, "lnType", {}});
+                    const auto lnDesc = Attr(s, key.node, "desc");
+                    if (!lnDesc.isEmpty()) field("ln.desc", "LN 描述", lnDesc, {key.node, "desc", {}});
+                    for (const auto declaration : row.templatePath) {
+                        const auto& node = doc.nodes[declaration];
+                        field("path." + QString::number(declaration), node.name + QStringLiteral(" 定义"),
+                            Attr(s, declaration, "name"), {declaration, "name", {}}, Attr(s, declaration, "type"));
+                    }
+                    if (key.declaration != NoNode)
+                        field("bType", "属性基本类型", Attr(s, key.declaration, "bType"), {key.declaration, "bType", {}});
+                    if (row.arrayIndex >= 0) {
+                        field("array", "数组下标", QString::number(row.arrayIndex), {key.arrayDeclaration, "count", {}});
+                        if (!row.component.isEmpty()) field("component", "alternate access 组件", row.component, {key.declaration, {}, {}});
+                    }
+                    if (row.description) {
+                        description(*row.description);
+                        for (const auto& info : row.description->fields) {
+                            if (info.source != SclDescriptionSource::InstanceAttribute || info.node == NoNode) continue;
+                            for (auto child = doc.nodes[info.node].firstChild; child != NoNode; child = doc.nodes[child].nextSibling) {
+                                checkpoint(task);
+                                const auto& value = doc.nodes[child];
+                                if (!value.isScl() || value.name != "Val") continue;
+                                const auto group = Attr(s, child, "sGroup");
+                                field("val." + QString::number(child), "文件 Val", value.text, {child, {}, {}}, group.isNull()
+                                    ? QStringLiteral("文件原值 · 在线未验证") : QStringLiteral("定值组 %1 · 文件原值").arg(group));
+                                if (out.limited) break;
+                            }
+                        }
+                    }
                     break;
                 }
                 out.limited = addresses.limited; out.limitation = addresses.limitation;
             }
-            description(DescribeSclSignal(s.analysis, key.node, d.path, task));
+            description(DescribeSclSignal(s.analysis, key.node, d.path, task, key.arrayDeclaration, key.arrayIndex));
         }
         break;
     case SclMmsRecordKind::Member:
@@ -210,6 +410,13 @@ SclMmsResult DescribeSclMms(const SclSnapshot& s, const SclMmsRequest& request, 
         if (key.record >= 0 && key.record < int(s.analysis.references.size())) {
             const auto& ref = s.analysis.references[key.record];
             if (key.kind == SclMmsRecordKind::Member && ref.source != key.node) break;
+            if (request.reportMatch != SclMmsReportMatch::None) {
+                field("report.match", "报告匹配", SclMmsReportMatchText(request.reportMatch), {ref.source, {}, {}});
+                const auto ds = doc.nodes[ref.source].parent;
+                field("report.dataset", "数据集", Attr(s, ds, "name"), {ds, "name", {}});
+                field("report.member", "FCDA 原始序号", QString::number(ref.memberOrdinal), {ref.source, {}, {}});
+                field("online", "在线报告", QStringLiteral("未验证"));
+            }
             rawNode(ref.source); description(DescribeSclMember(s.analysis, ref.source, task));
             mapping(ref.mmsDomain, ref.mmsItem, ref.source);
             field("object", "对象引用", ref.objectReference, {ref.source, {}, {}}, SclMmsStateText(ref.state));
@@ -222,7 +429,7 @@ SclMmsResult DescribeSclMms(const SclSnapshot& s, const SclMmsRequest& request, 
             if (ref.candidates.size() > 64) { out.limited = true; out.limitation = QStringLiteral("目标候选最多展示 64 项；请查看原文与引用依据。"); }
             field("array", "数组下标（-1 为未指定）", QString::number(ref.arrayIndex), {ref.source, "ix", {}});
             field("component", "alternate access 组件", ref.mmsComponent, {ref.source, {}, {}});
-            field("parent", "父报告定义", Attr(s, request.report, "name"), {request.report, {}, {}});
+            field("parent", "父报告定义", Attr(s, referenceRow.report, "name"), {referenceRow.report, {}, {}});
         } else if (key.kind == SclMmsRecordKind::Member) {
             rawNode(key.node);
             field("resolution", "引用解析状态与原因", QStringLiteral("成员引用索引未覆盖；仅显示文件声明。"), {key.node, {}, {}});
@@ -239,6 +446,8 @@ SclMmsResult DescribeSclMms(const SclSnapshot& s, const SclMmsRequest& request, 
     }
     default: rawNode(key.node); break;
     }
+    if (key.kind != SclMmsRecordKind::Address || referenceRow.key.declaration != NoNode)
+        out.references = ProjectSclMmsReferences(s, referenceRow, task, true);
     out.total = int(out.fields.size()); return out;
 }
 }

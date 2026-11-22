@@ -12,12 +12,14 @@ struct SclBrowseIndex
 {
     struct Branch { int first = 0; int count = 0; int row = 0; };
     struct Members { int first = 0; int count = 0; };
+    struct Structure { int devices = 0; int logicalNodes = 0; };
 
     explicit SclBrowseIndex(const Scl::Document& document, Scl::TaskControl* task);
     void BuildScopes(const Scl::ReferenceAnalysis& analysis, Scl::TaskControl* task);
     bool InScope(Scl::NodeId node, Scl::NodeId ied) const;
     using ScopeRows = std::array<std::vector<int>, size_t(SclView::Count)>;
     QHash<Scl::NodeId, ScopeRows> scopedRows;
+    QHash<Scl::NodeId, Structure> structure;
     std::vector<Scl::NodeId> ieds;
     std::vector<Scl::NodeId> templateOwners;
     QHash<Scl::NodeId, std::vector<Scl::NodeId>> usedTemplates;

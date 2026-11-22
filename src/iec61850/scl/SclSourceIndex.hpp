@@ -28,11 +28,13 @@ public:
     int lineCount() const { return int(m_lines.size()); }
     SourceLocation locate(int byteOffset) const;
     SourceLine line(int number) const;
+    QString openingTag(SourceLocation location, TaskControl *task = nullptr) const;
     int previewColumn(SourceLocation location) const; // Zero-based UTF-16 column within the preview budget, or -1.
 
 private:
     friend class SourceCursor;
     int unit(int offset) const;
+    QString decode(int start, int end) const;
 
     QByteArray m_bytes;
     Encoding m_encoding = Encoding::Utf8;

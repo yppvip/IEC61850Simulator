@@ -146,7 +146,7 @@ const SclDescriptionField* SclDescription::ObjectTitle() const
 }
 
 SclDescription DescribeSclSignal(const Scl::ReferenceAnalysis& analysis, NodeId ln,
-    const QString& objectPath, TaskControl* task)
+    const QString& objectPath, TaskControl* task, NodeId array, int index)
 {
     const auto& doc = *analysis.document;
     SclDescription result;
@@ -164,7 +164,8 @@ SclDescription DescribeSclSignal(const Scl::ReferenceAnalysis& analysis, NodeId 
             instance = declaration;
             break;
         }
-        instance = InstanceChild(doc, instance, declaration.node, i == 0 ? "DOI" : "SDI", -1, task);
+        instance = InstanceChild(doc, instance, declaration.node, i == 0 ? "DOI" : "SDI",
+            declaration.node == array ? index : -1, task);
         if (i + 1 < parts.size())
             owner = Target(analysis, declaration, LinkKind::MemberType);
     }
@@ -241,7 +242,7 @@ SclDescription DescribeSclMember(const Scl::ReferenceAnalysis& analysis, NodeId 
 }
 
 SclDescription DescribeSclAttribute(const ReferenceAnalysis& analysis, const SclDescription& object,
-    const QString& path, const QString& fc, const QList<NodeId>& declarations, TaskControl* task)
+    const QString& path, const QString& fc, const QList<NodeId>& declarations, TaskControl* task, NodeId array, int index)
 {
     const auto& doc = *analysis.document;
     SclDescription result;
@@ -249,6 +250,7 @@ SclDescription DescribeSclAttribute(const ReferenceAnalysis& analysis, const Scl
     result.objectPath = object.objectPath;
     result.attributePath = path;
     result.fc = fc;
+    result.arrayIndex = index;
     result.objectInstance = object.objectInstance;
     Match instance{State::Unresolved};
     for (const auto& field : object.fields)
@@ -259,7 +261,7 @@ SclDescription DescribeSclAttribute(const ReferenceAnalysis& analysis, const Scl
             break;
         }
     for (const auto declaration : declarations)
-        instance = AttributeInstance(doc, instance, declaration, -1, task);
+        instance = AttributeInstance(doc, instance, declaration, declaration == array ? index : -1, task);
     result.fields << Field(doc, Source::InstanceAttribute, std::move(instance))
         << Field(doc, Source::TemplateAttribute, {State::Present, declarations.back()});
     return result;

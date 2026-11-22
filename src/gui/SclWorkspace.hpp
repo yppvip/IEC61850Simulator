@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SclAnalysisService.hpp"
+#include "SclDataSetView.hpp"
 #include "SclSearch.hpp"
 #include "SclTaskBrowser.hpp"
 #include <QWidget>
@@ -8,6 +9,7 @@
 
 class QAbstractItemView;
 class QLabel;
+class QMenu;
 class QComboBox;
 class QLineEdit;
 class QCheckBox;
@@ -21,6 +23,7 @@ class QStackedWidget;
 class QTableView;
 class QTreeView;
 class QTreeWidget;
+class QTreeWidgetItem;
 namespace ads { class CDockManager; class CDockWidget; }
 
 namespace iec61850sim
@@ -31,6 +34,9 @@ class SclSearchSession;
 class SclResultsModel;
 class SclSourcePreview;
 class SclTopologyFiles;
+class SclTableInteraction;
+struct SclReferenceMenuContext;
+struct SclReferenceRequest;
 
 class SclWorkspace final : public QWidget
 {
@@ -42,8 +48,14 @@ public:
 protected:
     void hideEvent(QHideEvent* event) override;
     void showEvent(QShowEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
 
 private:
+    struct Relationship
+    {
+        Scl::NodeId origin = Scl::NoNode;
+        QString action;
+    };
     struct Location
     {
         Scl::NodeId node;
@@ -56,8 +68,17 @@ private:
         SclTaskBrowser::Location task;
         bool inspectorVisible = true;
         QString signalEvidence;
+        SclDataSetView::Location dataSets;
+        SclDataSetView::UsersLocation users;
+        Relationship relationship;
+        int reference = -1;
+        Scl::NodeId candidate = Scl::NoNode;
     };
-    void Select(Scl::NodeId id, bool route = false, int finding = -1, bool openSource = false);
+    void Select(Scl::NodeId id, bool route = false, int finding = -1, bool openSource = false, bool keepScope = false,
+        std::optional<Relationship> relationship = {});
+    void FollowRelationship(Scl::NodeId target, const QString& action);
+    void ShowRelationshipHelp();
+    void UpdateRelationshipSummary();
     void SelectFinding(int finding, bool openSource, bool route = false);
     void RestoreWorkspaceLayout();
     void ResetWorkspaceLayout();
@@ -66,6 +87,9 @@ private:
     void UpdateTabVisibility();
     void SetIedScope(Scl::NodeId ied);
     void UpdateOverview();
+    void OpenAdvancedPage(QWidget* page);
+    void OpenMemberPage(Scl::NodeId dataSet);
+    void RefreshOverviewSummary();
     void SetMemberScope(Scl::NodeId dataSet);
     void RememberView();
     void Navigate(int direction);
@@ -86,14 +110,20 @@ private:
     void SaveIssues();
     void ShowTaskView(bool show, bool remember = false);
     void BalanceMmsPanels();
+    void BalanceAdvancedPanels();
     void PushTaskHistory();
     void CreateTopologyControls(QVBoxLayout* layout);
     void AddTopologyAction(QAbstractItemView* view);
+    void AddMmsAttributeAction(QMenu& menu, Scl::NodeId node, QAbstractItemView* view, const QModelIndex& index);
+    void AddNodeReferenceMenu(SclTableInteraction*, bool candidate = false);
+    SclReferenceMenuContext ReferenceMenu(SclReferenceRequest);
+    void OpenMmsAttributeTarget(Scl::NodeId node);
     void UpdateTopologyControls();
     void OpenTopology(Scl::NodeId id);
 
     std::shared_ptr<const SclSnapshot> m_snapshot;
     bool m_closing = false;
+    quint64 m_referenceGeneration = 0;
     Scl::Result m_failure;
     Scl::NodeId m_selected = Scl::NoNode;
     int m_finding = -1;
@@ -120,7 +150,25 @@ private:
     QStackedWidget* m_navigationModes;
     QComboBox* m_navigationKind;
     QTreeWidget* m_tasks;
+    QTreeWidgetItem* m_mmsAttributeTask;
     QTabWidget* m_tables;
+    SclDataSetView* m_dataSets;
+    SclHierarchyQuerySession* m_overviewQuery;
+    QLabel* m_overviewCounts;
+    QPushButton* m_overviewUsers;
+    QPushButton* m_overviewRelation;
+    QPushButton* m_overviewDataSets;
+    QPushButton* m_overviewStructure;
+    QPushButton* m_overviewTopology;
+    QWidget* m_memberContext;
+    QLabel* m_memberPath;
+    Scl::NodeId m_relationTarget = Scl::NoNode;
+    Relationship m_relationship;
+    QLabel* m_relationshipSummary;
+    QLabel* m_linksLimit;
+    QLabel* m_candidatesLimit;
+    QPushButton* m_relationshipParent;
+    QPushButton* m_relationshipUsers;
     QStackedWidget* m_tableModes;
     SclTaskBrowser* m_taskBrowser;
     QPushButton* m_taskSwitch;

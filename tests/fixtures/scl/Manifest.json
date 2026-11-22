@@ -330,6 +330,15 @@
       "counts": { "IED": 2, "AccessPoint": 2, "Server": 2, "LDevice": 3, "LN0": 3, "LN": 3, "ReportControl": 3, "DataSet": 2, "FCDA": 5, "GSEControl": 1, "ClientLN": 1 },
       "plannedRules": ["REF001"],
       "validationStatus": "T7.0 navigation contract: shared and scoped datasets, repeated/object/unresolved members; not XSD validated"
+    },
+    {
+      "file": "Task8Voltage.scd",
+      "wellFormed": true,
+      "root": "SCL",
+      "namespace": "http://www.iec.ch/61850/2003/SCL",
+      "counts": { "IED": 3, "AccessPoint": 3, "Server": 3, "LDevice": 3, "LN0": 3, "LN": 4, "ReportControl": 2, "DataSet": 2, "FCDA": 3, "DOI": 2, "SDI": 5, "DAI": 3, "Val": 3, "LNodeType": 4, "DOType": 5, "DAType": 3, "BDA": 4 },
+      "plannedRules": ["REF002"],
+      "validationStatus": "T8.0 offline MMS voltage attribute baseline with one intentional unresolved FCDA; not XSD validated"
     }
   ]
 }

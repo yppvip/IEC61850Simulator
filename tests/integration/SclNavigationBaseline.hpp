@@ -247,31 +247,55 @@ void MainWindowBaselineTest::SclNavigationBaseline()
     }
     QJsonObject statistics;
     for (auto i = timings.cbegin(); i != timings.cend(); ++i) statistics[i.key()] = Stats(i.value());
-    // Freeze the present advanced path: datasets and members are separate flat tables.
+    const auto mainMemory = Memory();
+    QJsonObject data{{"schema", 1}, {"sha256", QString::fromLatin1(hash)}, {"qt", qVersion()},
+        {"platform", QGuiApplication::platformName()}, {"readyMs", readyMs}, {"firstReportMs", firstReportMs},
+        {"firstMemberMs", firstMemberMs}, {"workingSet", mainMemory.workingSet}, {"peakWorkingSet", mainMemory.peakWorkingSet},
+        {"heartbeatMaxMs", heartbeatMax}, {"listApplyMaxUs", listApply}, {"detailApplyMaxUs", detailApply},
+        {"rowMeasureMaxUs", view->Table()->property("SclMaxMeasureUs").toLongLong()},
+        {"width", window.width()}, {"height", window.height()}, {"dpr", window.devicePixelRatioF()},
+        {"restore", restoration}, {"timings", statistics}, {"route", route}};
+    QVERIFY(Save("MainChain.json", data));
+    // Exercise the advanced path separately from the MMS timing samples.
     auto* switchView = window.findChild<QPushButton*>("SclTaskSwitch");
     if (!switchView) for (auto* button : window.findChildren<QPushButton*>())
         if (button->text() == QStringLiteral("高级视图")) switchView = button;
     QVERIFY(switchView); QTest::mouseClick(switchView, Qt::LeftButton);
-    auto* sets = window.findChild<QTableView*>("SclDataSets"); auto* memberTable = window.findChild<QTableView*>("SclMembers");
+    auto* sets = window.findChild<QTreeView*>("SclDataSets"); auto* memberTable = window.findChild<QTableView*>("SclMembers");
     auto* tabs = window.findChild<QTabWidget*>("SclTables"); auto* tree = window.findChild<QTreeView*>("SclTree");
-    QVERIFY(sets && memberTable && tabs && tree); tabs->setCurrentWidget(sets);
-    QVERIFY(Await([&] { return sets->isVisible() && sets->model()->rowCount() > 0; }));
-    sets->setCurrentIndex(sets->model()->index(0, 0)); QApplication::processEvents();
-    const int dataSet = tree->currentIndex().data(Qt::UserRole).toInt();
+    QVERIFY(sets && memberTable && tabs && tree);
+    const auto snapshot = service->snapshot();
+    const auto& browse = snapshot->browse;
+    const auto& dataSets = browse.categories[size_t(SclCategory::DataSets)];
+    const auto found = std::find_if(dataSets.begin(), dataSets.end(),
+        [&](Scl::NodeId node) { return browse.dataSetMembers.value(node).count > 0; });
+    QVERIFY(found != dataSets.end());
+    const auto dataSet = *found;
+    std::vector<Scl::NodeId> ancestors;
+    for (auto node = dataSet; node != Scl::NoNode; node = snapshot->analysis.document->nodes[node].parent)
+        ancestors.push_back(node);
+    QModelIndex dataSetInStructure;
+    for (auto it = ancestors.rbegin(); it != ancestors.rend(); ++it)
+        dataSetInStructure = tree->model()->index(*it == 0 ? 0 : browse.branches[*it].row, 0, dataSetInStructure);
+    QVERIFY(dataSetInStructure.isValid());
+    tree->setCurrentIndex(dataSetInStructure);
+    QVERIFY(Await([&] { return sets->isVisible() && sets->currentIndex().isValid()
+        && sets->currentIndex().data(Qt::UserRole).toInt() == dataSet; }));
     QVERIFY(Screenshot(window, "06-AdvancedDataSets"));
-    tabs->setCurrentWidget(memberTable); QApplication::processEvents();
-    QVERIFY(memberTable->model()->rowCount() > 0); QVERIFY(Visible(memberTable));
+    tabs->setCurrentWidget(memberTable);
+    QVERIFY(Await([&] { return memberTable->isVisible() && memberTable->model()->rowCount() > 0; }));
+    const auto firstMember = memberTable->model()->index(0, 0);
+    memberTable->setCurrentIndex(firstMember);
+    memberTable->scrollTo(firstMember);
+    QVERIFY(Await([&] { return Visible(memberTable); }));
     const int memberCount = memberTable->model()->rowCount();
     QVERIFY(Screenshot(window, "07-AdvancedMembers"));
     const auto usage = Memory(); heartbeat.stop();
-    const QJsonObject data{{"schema", 1}, {"sha256", QString::fromLatin1(hash)}, {"qt", qVersion()},
-        {"platform", QGuiApplication::platformName()}, {"readyMs", readyMs}, {"firstReportMs", firstReportMs},
-        {"firstMemberMs", firstMemberMs}, {"workingSet", usage.workingSet}, {"peakWorkingSet", usage.peakWorkingSet},
-        {"heartbeatMaxMs", heartbeatMax}, {"listApplyMaxUs", listApply}, {"detailApplyMaxUs", detailApply},
-        {"rowMeasureMaxUs", view->Table()->property("SclMaxMeasureUs").toLongLong()},
-        {"width", window.width()}, {"height", window.height()}, {"dpr", window.devicePixelRatioF()},
-        {"restore", restoration}, {"timings", statistics}, {"route", route},
-        {"advancedDataSet", dataSet}, {"advancedMemberCount", memberCount}};
+    data["workingSet"] = usage.workingSet;
+    data["peakWorkingSet"] = usage.peakWorkingSet;
+    data["heartbeatMaxMs"] = heartbeatMax;
+    data["advancedDataSet"] = dataSet;
+    data["advancedMemberCount"] = memberCount;
     QVERIFY(Save("NavigationBaseline.json", data));
     qInfo().noquote() << "TASK7_BASELINE" << QJsonDocument(QJsonObject{{"readyMs", readyMs},
         {"peakWorkingSet", usage.peakWorkingSet}, {"heartbeatMaxMs", heartbeatMax}, {"restoration", restoration}}).toJson(QJsonDocument::Compact);

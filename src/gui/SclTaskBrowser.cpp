@@ -1,4 +1,5 @@
 #include "SclTaskBrowser.hpp"
+#include "SclReferenceMenu.hpp"
 #include "SclTableInteraction.hpp"
 
 #include <QAbstractTableModel>
@@ -122,6 +123,25 @@ SclTaskBrowser::SclTaskBrowser(QWidget* parent)
     : QObject(parent), m_view(new SclTaskPages(parent)), m_model(new SclTaskTableModel(this))
 {
     m_view->SetModel(m_model);
+    ConnectSclReferenceMenu(m_view->Table()->findChild<SclTableInteraction*>(), [this](const QModelIndex& index) {
+        const auto row = m_model->Row(index);
+        if (!m_snapshot || !row) return SclReferenceMenuContext{};
+        SclReferenceRequest request;
+        switch (row->kind) {
+        case SclTaskKind::Signal:
+            request.anchor = SclReferenceAnchor::Signal;
+            request.record = row->index;
+            break;
+        case SclTaskKind::Goose: request.node = m_snapshot->tasks.goose[row->index].control; break;
+        case SclTaskKind::Sv: request.node = m_snapshot->tasks.sv[row->index].control; break;
+        case SclTaskKind::Finding: request.node = m_snapshot->analysis.findings[row->index].node; break;
+        default:
+            request.node = m_snapshot->tasks.inputs[row->index].node;
+            request.control = m_snapshot->tasks.inputs[row->index].matchedStream;
+            break;
+        }
+        return SclReferenceMenuContext{m_snapshot, std::move(request)};
+    });
     m_delay.setInterval(160);
     m_delay.setSingleShot(true);
     connect(&m_delay, &QTimer::timeout, this, &SclTaskBrowser::RunFilter);

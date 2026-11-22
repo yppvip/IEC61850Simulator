@@ -84,13 +84,42 @@ SourceLine SourceIndex::line(int number) const
             stop -= 2;
         }
     }
+    return {decode(start, stop), stop < end};
+}
+
+QString SourceIndex::decode(int start, int end) const
+{
     if (m_width == 1)
-        return {QString::fromUtf8(m_bytes.constData() + start, stop - start), stop < end};
+        return QString::fromUtf8(m_bytes.constData() + start, end - start);
     QString text;
-    text.reserve((stop - start) / 2);
-    for (int i = start; i + 1 < stop; i += 2)
+    text.reserve((end - start) / 2);
+    for (int i = start; i + 1 < end; i += 2)
         text.append(QChar(ushort(unit(i))));
-    return {text, stop < end};
+    return text;
+}
+
+QString SourceIndex::openingTag(SourceLocation location, TaskControl *task) const
+{
+    const int start = location.byteOffset;
+    if (start < m_bom || m_encoding == Encoding::Unsupported || unit(start) != '<')
+        return {};
+    int quote = 0;
+    int nextCheck = start;
+    for (int offset = start + m_width; offset + m_width <= m_bytes.size(); offset += m_width) {
+        if (offset >= nextCheck) {
+            checkpoint(task);
+            nextCheck = offset + 65536;
+        }
+        const int c = unit(offset);
+        if (quote) {
+            if (c == quote) quote = 0;
+        } else if (c == '"' || c == '\'') {
+            quote = c;
+        } else if (c == '>') {
+            return decode(start, offset + m_width);
+        }
+    }
+    return {};
 }
 
 int SourceIndex::previewColumn(SourceLocation location) const

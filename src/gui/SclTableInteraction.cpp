@@ -10,13 +10,16 @@
 #include <QMenu>
 #include <QPainter>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QScrollBar>
 #include <QStyledItemDelegate>
 #include <QTableView>
 #include <QTextLayout>
 #include <QToolTip>
+#include <QTreeView>
 #include <QVBoxLayout>
 #include <QtMath>
+#include <functional>
 #include <utility>
 
 namespace iec61850sim
@@ -27,6 +30,14 @@ class WrappedCell final : public QStyledItemDelegate
 {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
+    std::function<int(const QModelIndex&)> treeHeight;
+
+    QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override
+    {
+        if (treeHeight)
+            return {0, treeHeight(index)};
+        return QStyledItemDelegate::sizeHint(option, index);
+    }
 
     int Height(QStyleOptionViewItem option, const QModelIndex& index) const
     {
@@ -83,7 +94,22 @@ private:
 }
 
 SclTableInteraction::SclTableInteraction(QTableView* view)
-    : QObject(view), m_view(view), m_defaultDelegate(view->itemDelegate()),
+    : SclTableInteraction(view, view, nullptr)
+{
+}
+
+SclTableInteraction::SclTableInteraction(QTreeView* view)
+    : SclTableInteraction(view, nullptr, view)
+{
+}
+
+SclTableInteraction::SclTableInteraction(QAbstractItemView* view)
+    : SclTableInteraction(view, qobject_cast<QTableView*>(view), qobject_cast<QTreeView*>(view))
+{
+}
+
+SclTableInteraction::SclTableInteraction(QAbstractItemView* view, QTableView* table, QTreeView* tree)
+    : QObject(view), m_view(view), m_table(table), m_tree(tree), m_defaultDelegate(view->itemDelegate()),
       m_wrapDelegate(new WrappedCell(view))
 {
     view->installEventFilter(this);
@@ -97,8 +123,17 @@ SclTableInteraction::SclTableInteraction(QTableView* view)
             Schedule();
         }
     });
-    connect(view->horizontalHeader(), &QHeaderView::geometriesChanged, this, &SclTableInteraction::Schedule);
-    connect(view->horizontalHeader(), &QHeaderView::sectionResized, this, &SclTableInteraction::Invalidate);
+    auto* header = table ? table->horizontalHeader() : tree->header();
+    connect(header, &QHeaderView::geometriesChanged, this, &SclTableInteraction::Schedule);
+    connect(header, &QHeaderView::sectionResized, this, &SclTableInteraction::Invalidate);
+    if (tree)
+    {
+        static_cast<WrappedCell*>(m_wrapDelegate)->treeHeight = [this](const QModelIndex& index) {
+            return m_treeHeights.value(index.siblingAtColumn(0), m_view->fontMetrics().height() + 8);
+        };
+        connect(tree, &QTreeView::expanded, this, &SclTableInteraction::Schedule);
+        connect(tree, &QTreeView::collapsed, this, &SclTableInteraction::Schedule);
+    }
     SetModel(view->model());
 }
 
@@ -109,22 +144,19 @@ void SclTableInteraction::SetModel(QAbstractItemModel* model)
     m_connections.clear();
     if (!model)
         return;
-    m_connections << connect(model, &QAbstractItemModel::modelAboutToBeReset, this, [this] {
+    const auto clearRows = [this] {
         for (auto it = m_heights.cbegin(); it != m_heights.cend(); ++it)
-            m_view->setRowHeight(it.key(), m_view->verticalHeader()->defaultSectionSize());
+            m_table->setRowHeight(it.key(), m_table->verticalHeader()->defaultSectionSize());
         m_heights.clear();
         m_measured.clear();
+        m_treeHeights.clear();
         m_cursor = -1;
+    };
+    m_connections << connect(model, &QAbstractItemModel::modelAboutToBeReset, this, [this, clearRows] {
+        clearRows();
         m_swallowRelease = false;
     });
     m_connections << connect(model, &QAbstractItemModel::modelReset, this, &SclTableInteraction::Invalidate);
-    const auto clearRows = [this] {
-        for (auto it = m_heights.cbegin(); it != m_heights.cend(); ++it)
-            m_view->setRowHeight(it.key(), m_view->verticalHeader()->defaultSectionSize());
-        m_heights.clear();
-        m_measured.clear();
-        m_cursor = -1;
-    };
     m_connections << connect(model, &QAbstractItemModel::rowsAboutToBeInserted, this, clearRows);
     m_connections << connect(model, &QAbstractItemModel::rowsAboutToBeRemoved, this, clearRows);
     m_connections << connect(model, &QAbstractItemModel::layoutAboutToBeChanged, this, clearRows);
@@ -140,7 +172,10 @@ void SclTableInteraction::SetEnabled(bool enabled)
         return;
     m_enabled = enabled;
     m_view->setItemDelegate(enabled ? m_wrapDelegate : m_defaultDelegate);
-    m_view->setWordWrap(enabled);
+    if (m_table)
+        m_table->setWordWrap(enabled);
+    else
+        m_tree->setWordWrap(enabled);
     m_view->setTextElideMode(enabled ? Qt::ElideNone : Qt::ElideRight);
     m_view->setVerticalScrollMode(enabled ? QAbstractItemView::ScrollPerPixel : QAbstractItemView::ScrollPerItem);
     if (enabled)
@@ -150,7 +185,7 @@ void SclTableInteraction::SetEnabled(bool enabled)
         m_timer.stop();
         m_swallowRelease = false;
         for (auto it = m_heights.cbegin(); it != m_heights.cend(); ++it)
-            m_view->setRowHeight(it.key(), m_view->verticalHeader()->defaultSectionSize());
+            m_table->setRowHeight(it.key(), m_table->verticalHeader()->defaultSectionSize());
         m_heights.clear();
         m_measured.clear();
     }
@@ -173,12 +208,17 @@ void SclTableInteraction::Measure()
 {
     if (!m_enabled || !m_view->isVisible() || !m_view->model() || m_view->model()->rowCount() == 0)
         return;
-    const int top = m_view->rowAt(0);
+    if (m_tree)
+    {
+        MeasureTree();
+        return;
+    }
+    const int top = m_table->rowAt(0);
     if (top < 0)
         return;
-    const int offset = -m_view->rowViewportPosition(top);
+    const int offset = -m_table->rowViewportPosition(top);
     const auto visibleEnd = [this, top] {
-        const int bottom = m_view->rowAt(m_view->viewport()->height() - 1);
+        const int bottom = m_table->rowAt(m_view->viewport()->height() - 1);
         return qMin(m_view->model()->rowCount() - 1, (bottom < 0 ? top : bottom) + 4);
     };
     const int last = visibleEnd();
@@ -188,7 +228,7 @@ void SclTableInteraction::Measure()
     {
         if (it.key() < first || it.key() > last)
         {
-            m_view->setRowHeight(it.key(), m_view->verticalHeader()->defaultSectionSize());
+            m_table->setRowHeight(it.key(), m_table->verticalHeader()->defaultSectionSize());
             it = m_heights.erase(it);
         }
         else
@@ -207,7 +247,7 @@ void SclTableInteraction::Measure()
             ++it;
     QElapsedTimer budget;
     budget.start();
-    auto* header = m_view->verticalHeader();
+    auto* header = m_table->verticalHeader();
     QStyleOptionViewItem option;
     option.initFrom(m_view);
     option.widget = m_view;
@@ -221,14 +261,14 @@ void SclTableInteraction::Measure()
         int height = header->defaultSectionSize();
         for (int col = 0; col < m_view->model()->columnCount(); ++col)
         {
-            if (m_view->isColumnHidden(col))
+            if (m_table->isColumnHidden(col))
                 continue;
-            option.rect.setWidth(m_view->columnWidth(col) - (m_view->showGrid() ? 1 : 0));
+            option.rect.setWidth(m_table->columnWidth(col) - (m_table->showGrid() ? 1 : 0));
             height = qMax(height, static_cast<WrappedCell*>(m_wrapDelegate)->Height(option,
-                m_view->model()->index(row, col)) + (m_view->showGrid() ? 1 : 0));
+                m_view->model()->index(row, col)) + (m_table->showGrid() ? 1 : 0));
         }
-        if (m_view->rowHeight(row) != height)
-            m_view->setRowHeight(row, height);
+        if (m_table->rowHeight(row) != height)
+            m_table->setRowHeight(row, height);
         if (height != header->defaultSectionSize())
             m_heights.insert(row, height);
         else
@@ -238,7 +278,7 @@ void SclTableInteraction::Measure()
             break;
     }
     auto* scroll = m_view->verticalScrollBar();
-    scroll->setValue(header->sectionPosition(top) + qBound(0, offset, m_view->rowHeight(top) - 1));
+    scroll->setValue(header->sectionPosition(top) + qBound(0, offset, m_table->rowHeight(top) - 1));
     m_measuring = false;
     const auto elapsedUs = budget.nsecsElapsed() / 1000;
     m_view->setProperty("SclMaxMeasureUs", qMax(m_view->property("SclMaxMeasureUs").toLongLong(), elapsedUs));
@@ -246,15 +286,67 @@ void SclTableInteraction::Measure()
         Schedule();
 }
 
+void SclTableInteraction::MeasureTree()
+{
+    const auto top = m_tree->indexAt(QPoint(0, 0)).siblingAtColumn(0);
+    if (!top.isValid())
+        return;
+    const auto offset = -m_tree->visualRect(top).top();
+    const bool stale = std::exchange(m_stale, false);
+    if (stale)
+        m_treeHeights.clear();
+    bool changed = stale;
+    bool measured = false;
+    QElapsedTimer timer;
+    timer.start();
+    m_measuring = true;
+    QStyleOptionViewItem option;
+    option.initFrom(m_tree);
+    option.widget = m_tree;
+    option.font = m_tree->font();
+    for (auto index = top; index.isValid() && m_tree->visualRect(index).top() < m_tree->viewport()->height();
+         index = m_tree->indexBelow(index))
+    {
+        if (m_treeHeights.contains(index))
+            continue;
+        measured = true;
+        int height = m_tree->fontMetrics().height() + 8;
+        for (int col = 0; col < m_tree->model()->columnCount(); ++col)
+        {
+            if (m_tree->isColumnHidden(col))
+                continue;
+            const auto cell = index.siblingAtColumn(col);
+            option.rect = m_tree->visualRect(cell);
+            height = qMax(height, static_cast<WrappedCell*>(m_wrapDelegate)->Height(option, cell));
+        }
+        m_treeHeights.insert(index, height);
+        changed |= height != m_tree->fontMetrics().height() + 8;
+    }
+    if (changed)
+    {
+        const auto horizontal = m_tree->horizontalScrollBar()->value();
+        m_tree->doItemsLayout();
+        m_tree->scrollTo(top, QAbstractItemView::PositionAtTop);
+        m_tree->horizontalScrollBar()->setValue(horizontal);
+        m_tree->verticalScrollBar()->setValue(m_tree->verticalScrollBar()->value()
+            + qBound(0, offset, qMax(0, m_tree->visualRect(top).height() - 1)));
+    }
+    m_measuring = false;
+    if (measured)
+        m_tree->setProperty("SclTreeMeasureUs", qMax(qint64(1), timer.nsecsElapsed() / 1000));
+    if (changed)
+        Schedule();
+}
+
 void SclTableInteraction::Copy(const QModelIndex& index, bool row)
 {
-    if (!index.isValid())
+    if (!index.flags().testFlag(Qt::ItemIsSelectable))
         return;
     auto value = index.data(FullValueRole).toString();
     if (row)
     {
         QStringList fields;
-        auto* header = m_view->horizontalHeader();
+        auto* header = m_table ? m_table->horizontalHeader() : m_tree->header();
         for (int visual = 0; visual < header->count(); ++visual)
         {
             const int col = header->logicalIndex(visual);
@@ -285,8 +377,63 @@ void SclTableInteraction::ShowFull(const QModelIndex& index)
     dialog->open();
 }
 
+bool SclTableInteraction::OpenContextMenu(const QPoint& global, bool keyboard)
+{
+    const QPersistentModelIndex index(keyboard ? m_view->currentIndex()
+        : m_view->indexAt(m_view->viewport()->mapFromGlobal(global)));
+    if (!index.flags().testFlag(Qt::ItemIsSelectable)) return false;
+
+    if (!m_referenceMenus) m_view->setCurrentIndex(index);
+    const QPointer<SclTableInteraction> alive(this);
+    QMenu menu;
+    const auto* cell = m_enabled ? menu.addAction(tr("复制单元格")) : nullptr;
+    const auto* row = m_enabled ? menu.addAction(tr("复制行")) : nullptr;
+    const auto* full = m_enabled ? menu.addAction(tr("查看完整值")) : nullptr;
+    const auto* source = m_enabled ? menu.addAction(tr("查看原文")) : nullptr;
+    for (auto* action : m_view->actions()) {
+        if (!m_referenceMenus) { menu.addAction(action); continue; }
+        auto* copy = menu.addAction(action->icon(), action->text(), this, [this, index, original = QPointer<QAction>(action)] {
+            if (original && index.isValid()) {
+                m_view->setCurrentIndex(index);
+                original->trigger();
+            }
+        });
+        copy->setEnabled(action->isEnabled());
+    }
+    emit PopulateContextMenu(menu, index);
+    if (menu.isEmpty()) return false;
+
+    const auto* selected = menu.exec(global);
+    if (!alive || !selected || !index.isValid()) return true;
+    if (selected == cell || selected == row) Copy(index, selected == row);
+    else if (selected == full) ShowFull(index);
+    else if (selected == source) {
+        m_view->setCurrentIndex(index);
+        emit OpenSource();
+    }
+    return true;
+}
+
 bool SclTableInteraction::eventFilter(QObject* receiver, QEvent* event)
 {
+    if (event->type() == QEvent::ContextMenu && (m_enabled || m_referenceMenus)) {
+        const auto* context = static_cast<QContextMenuEvent*>(event);
+        return OpenContextMenu(context->globalPos(), context->reason() == QContextMenuEvent::Keyboard);
+    }
+    if (m_referenceMenus) {
+        if (event->type() == QEvent::Hide || event->type() == QEvent::EnabledChange) ++m_referenceEpoch;
+        // A reference menu uses the hit row without selecting it or moving history.
+        if (receiver == m_view->viewport() && (event->type() == QEvent::MouseButtonPress
+            || event->type() == QEvent::MouseButtonRelease)
+            && static_cast<QMouseEvent*>(event)->button() == Qt::RightButton) return true;
+        if (event->type() == QEvent::KeyPress) {
+            const auto* key = static_cast<QKeyEvent*>(event);
+            if (key->key() == Qt::Key_Menu || (key->key() == Qt::Key_F10 && key->modifiers() == Qt::ShiftModifier)) {
+                const auto rect = m_view->visualRect(m_view->currentIndex());
+                return OpenContextMenu(m_view->viewport()->mapToGlobal(rect.center()), true);
+            }
+        }
+    }
     if (!m_enabled)
         return false;
     switch (event->type())
@@ -314,7 +461,8 @@ bool SclTableInteraction::eventFilter(QObject* receiver, QEvent* event)
         const auto index = m_view->indexAt(mouse->position().toPoint());
         if (mouse->button() == Qt::LeftButton && index.isValid())
         {
-            m_view->setCurrentIndex(index);
+            if (m_table)
+                m_view->setCurrentIndex(index);
             Copy(index, false);
             m_swallowRelease = true;
             return true;
@@ -340,9 +488,9 @@ bool SclTableInteraction::eventFilter(QObject* receiver, QEvent* event)
         }
         if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter)
         {
-            if (index.isValid() && !key->isAutoRepeat())
+            if (index.flags().testFlag(Qt::ItemIsSelectable) && !key->isAutoRepeat())
                 emit OpenSource();
-            return true;
+            return !m_tree || index.flags().testFlag(Qt::ItemIsSelectable);
         }
         break;
     }
@@ -356,25 +504,6 @@ bool SclTableInteraction::eventFilter(QObject* receiver, QEvent* event)
             return true;
         }
         break;
-    }
-    case QEvent::ContextMenu:
-    {
-        const auto* context = static_cast<QContextMenuEvent*>(event);
-        const QPersistentModelIndex index(context->reason() == QContextMenuEvent::Keyboard
-            ? m_view->currentIndex() : m_view->indexAt(m_view->viewport()->mapFromGlobal(context->globalPos())));
-        if (!index.isValid())
-            break;
-        m_view->setCurrentIndex(index);
-        QMenu menu(m_view);
-        const auto* cell = menu.addAction(tr("复制单元格"));
-        const auto* row = menu.addAction(tr("复制行"));
-        const auto* full = menu.addAction(tr("查看完整值"));
-        const auto* selected = menu.exec(context->globalPos());
-        if (selected == cell || selected == row)
-            Copy(index, selected == row);
-        else if (selected == full)
-            ShowFull(index);
-        return true;
     }
     default:
         break;

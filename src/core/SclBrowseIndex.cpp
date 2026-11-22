@@ -35,6 +35,17 @@ SclBrowseIndex::SclBrowseIndex(const Scl::Document& document, Scl::TaskControl* 
             iedOwners[id] = id;
             ieds.push_back(id);
         }
+        if (name == "LDevice" || name == "LN" || name == "LN0")
+        {
+            const auto add = [&](Scl::NodeId scope) {
+                auto& counts = structure[scope];
+                if (name == "LDevice") ++counts.devices;
+                else ++counts.logicalNodes;
+            };
+            add(Scl::NoNode);
+            if (iedOwners[id] != Scl::NoNode)
+                add(iedOwners[id]);
+        }
         if (name == "P" && parent != Scl::NoNode && document.nodes[parent].name == "Address")
             addressRows.push_back(id);
         if (name == "DataSet")

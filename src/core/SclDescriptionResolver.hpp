@@ -35,11 +35,12 @@ struct SclDescription
 };
 
 SclDescription DescribeSclSignal(const Scl::ReferenceAnalysis& analysis, Scl::NodeId ln,
-    const QString& objectPath, Scl::TaskControl* task);
+    const QString& objectPath, Scl::TaskControl* task, Scl::NodeId array = Scl::NoNode, int index = -1);
 SclDescription DescribeSclMember(const Scl::ReferenceAnalysis& analysis, Scl::NodeId member,
     Scl::TaskControl* task);
 SclDescription DescribeSclAttribute(const Scl::ReferenceAnalysis& analysis, const SclDescription& object,
-    const QString& path, const QString& fc, const QList<Scl::NodeId>& declarations, Scl::TaskControl* task);
+    const QString& path, const QString& fc, const QList<Scl::NodeId>& declarations, Scl::TaskControl* task,
+    Scl::NodeId array = Scl::NoNode, int index = -1);
 QString SclDescriptionLabel(SclDescriptionSource source);
 QString SclDescriptionText(const SclDescriptionField& field);
 }

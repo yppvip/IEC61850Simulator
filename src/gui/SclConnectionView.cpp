@@ -1,6 +1,7 @@
 #include "SclConnectionView.hpp"
 #include "SclRelationGraph.hpp"
 #include "SclTableInteraction.hpp"
+#include "SclReferenceMenu.hpp"
 
 // finesse · register=product · native palette/type · direction tree + member columns
 // + bounded local graph · Qt Graphics View · feedback-only · density=9
@@ -216,6 +217,16 @@ SclConnectionView::SclConnectionView(QWidget* parent) : QWidget(parent)
         m_members->setColumnWidth(i, widths[i]);
     mapLayout->addWidget(m_members, 1);
     auto* memberInteraction = new SclTableInteraction(m_members);
+    ConnectSclReferenceMenu(memberInteraction, [this](const QModelIndex& index) {
+        if (!m_snapshot || index.row() >= int(m_detail.members.size())) return SclReferenceMenuContext{};
+        const auto& member = m_detail.members[index.row()];
+        SclReferenceRequest request;
+        request.node = member.member;
+        request.input = member.input;
+        request.candidateInput = member.candidate;
+        request.control = m_publication ? m_control : m_current >= 0 ? m_list.rows[m_current].control : Scl::NoNode;
+        return SclReferenceMenuContext{m_snapshot, std::move(request)};
+    });
     memberInteraction->SetEnabled(true);
     tabs->addTab(mapping, style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("成员映射"));
 
@@ -292,6 +303,13 @@ SclConnectionView::SclConnectionView(QWidget* parent) : QWidget(parent)
     m_endpoints->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_endpoints->verticalHeader()->hide();
     auto* endpointInteraction = new SclTableInteraction(m_endpoints);
+    ConnectSclReferenceMenu(endpointInteraction, [this](const QModelIndex& index) {
+        if (!m_snapshot || index.row() >= int(m_detail.endpoints.size())) return SclReferenceMenuContext{};
+        SclReferenceRequest request;
+        request.node = m_detail.endpoints[index.row()].node;
+        request.limited = m_detail.endpointsLimited;
+        return SclReferenceMenuContext{m_snapshot, std::move(request)};
+    });
     endpointInteraction->SetEnabled(true);
     connect(endpointInteraction, &SclTableInteraction::OpenSource, this, [this] {
         const auto row = m_endpoints->currentRow();

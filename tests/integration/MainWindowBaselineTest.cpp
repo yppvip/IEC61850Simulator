@@ -13,8 +13,11 @@
 #include <QCheckBox>
 #include <QClipboard>
 #include <QComboBox>
+#include <QContextMenuEvent>
+#include <QScrollArea>
 #include <QCryptographicHash>
 #include <QDir>
+#include <QDialog>
 #include <QDesktopServices>
 #include <QFile>
 #include <QGraphicsView>
@@ -28,6 +31,10 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QMenu>
+#include <QPointer>
+#include <QScopeGuard>
+#include <QSemaphore>
 #include <QPlainTextEdit>
 #include <QPainterPathStroker>
 #include <QPushButton>
@@ -50,6 +57,7 @@
 #include <QTreeWidget>
 #include <QTableWidget>
 #include <QUrl>
+#include <QtConcurrentRun>
 #include <QtTest>
 #include <DockManager.h>
 #include <DockAreaWidget.h>
@@ -90,7 +98,7 @@ void CheckWorkspaceFlow(iec61850sim::MainWindow& window)
     auto* service = window.findChild<iec61850sim::SclAnalysisService*>();
     auto* workspace = window.findChild<QWidget*>("SclWorkspace");
     auto* reports = window.findChild<QTableView*>("SclReports");
-    auto* dataSets = window.findChild<QTableView*>("SclDataSets");
+    auto* dataSets = window.findChild<QTreeView*>("SclDataSets");
     auto* members = window.findChild<QTableView*>("SclMembers");
     auto* links = window.findChild<QTableView*>("SclLinks");
     auto* findings = window.findChild<QTableView*>("SclFindings");
@@ -135,8 +143,8 @@ void CheckWorkspaceFlow(iec61850sim::MainWindow& window)
     jump(0);
     QCOMPARE(selected(), dataSet);
     QCOMPARE(analysis.document->nodes[dataSet].name, QStringLiteral("DataSet"));
-    QCOMPARE(tabs->currentWidget(), dataSets);
-    QCOMPARE(dataSets->currentIndex().data(Qt::UserRole).toInt(), dataSet);
+    QCOMPARE(tabs->currentWidget(), dataSets->parentWidget());
+    QTRY_COMPARE(dataSets->currentIndex().data(Qt::UserRole).toInt(), dataSet);
     const auto dataSetTree = tree->currentIndex();
     tabs->setCurrentWidget(members);
     QVERIFY(members->model()->rowCount() > 0);
@@ -190,7 +198,7 @@ void CheckWorkspaceFlow(iec61850sim::MainWindow& window)
     auto* scope = window.findChild<QLabel*>("SclNodeOverview");
     QVERIFY(scope && scope->isVisible() && scope->text().contains("LN"));
     tree->setCurrentIndex(dataSetTree);
-    QCOMPARE(tabs->currentWidget(), dataSets);
+    QCOMPARE(tabs->currentWidget(), dataSets->parentWidget());
     QCOMPARE(analysis.document->nodes[member].parent, dataSet);
     const auto memberTree = tree->model()->index(snapshot->browse.branches[member].row, 0, dataSetTree);
     QVERIFY(memberTree.isValid());
@@ -359,6 +367,12 @@ private slots:
     void SclWorkspaceFlow();
     void SclWorkspaceLayout();
     void SclIedBrowsing();
+    void SclAdvancedDataSets();
+    void SclAdvancedDataSetsLocal();
+    void SclRelationshipNavigation();
+    void SclTask7Cache();
+    void SclTask7Cycles();
+    void SclTask7TreeTiming();
     void SclIedAmbiguity();
     void SclMemberScopeClearing();
     void SclReferenceDetails();
@@ -374,6 +388,10 @@ private slots:
     void SclTaskLocal();
     void SclConnectionsFlow();
     void SclMmsWorkbench();
+    void SclTask8VoltageBaseline();
+    void SclTask8AttributeWorkflow();
+    void SclTask8ReferenceMenus();
+    void SclTask8LocalAcceptance();
     void SclMmsLocalAcceptance();
     void SclMmsReview();
     void SclMmsStress_data();
@@ -1185,9 +1203,14 @@ void MainWindowBaselineTest::SclMmsBaseline()
         QCOMPARE(reports->currentIndex().data(Qt::UserRole).toInt(), target);
         elapsed.restart();
         inspector->setCurrentIndex(2);
+        const auto activation = elapsed.nsecsElapsed();
         QApplication::processEvents();
         QVERIFY(!source->toPlainText().isEmpty());
-        detail.push_back(elapsed.nsecsElapsed());
+        const auto sourceElapsed = elapsed.nsecsElapsed();
+        detail.push_back(sourceElapsed);
+        if (sourceElapsed > 100'000'000)
+            qInfo() << "MMS slow source step" << i << "activation ms" << activation / 1e6
+                    << "dispatch ms" << (sourceElapsed - activation) / 1e6;
         inspector->setCurrentIndex(0);
         QTest::qWait(16);
     }
@@ -1787,7 +1810,7 @@ void MainWindowBaselineTest::SclIedBrowsing()
     auto* tabs = window.findChild<QTabWidget*>("SclTables");
     auto* tree = window.findChild<QTreeView*>("SclTree");
     auto* reports = window.findChild<QTableView*>("SclReports");
-    auto* sets = window.findChild<QTableView*>("SclDataSets");
+    auto* sets = window.findChild<QTreeView*>("SclDataSets");
     auto* templates = window.findChild<QTableView*>("SclTemplates");
     auto* communication = window.findChild<QTableView*>("SclCommunication");
     auto* findings = window.findChild<QTableView*>("SclFindings");
@@ -1806,7 +1829,6 @@ void MainWindowBaselineTest::SclIedBrowsing()
     QCOMPARE(templates->model()->rowCount(), 4);
     scope->setCurrentIndex(1);
     QCOMPARE(reports->model()->rowCount(), 2);
-    QCOMPARE(sets->model()->rowCount(), 2);
     QCOMPARE(templates->model()->rowCount(), 3); // Transitive DOType, plus two LN types.
     QCOMPARE(communication->model()->rowCount(), 2); // ConnectedAP and ExtRef.
     const auto selected = [&] { return tree->currentIndex().data(Qt::UserRole).toInt(); };
@@ -1817,25 +1839,26 @@ void MainWindowBaselineTest::SclIedBrowsing()
     QCOMPARE(browse.iedOwners[selected()], a);
     reports->setCurrentIndex(reports->model()->index(1, 0));
     const auto reportA2 = selected();
-    tabs->setCurrentWidget(sets);
+    tabs->setCurrentWidget(sets->parentWidget());
     QCOMPARE(browse.iedOwners[selected()], a);
-    QVERIFY(sets->currentIndex().isValid());
+    QTRY_COMPARE(sets->model()->rowCount(), 2);
+    QVERIFY(!sets->currentIndex().isValid());
     sets->setCurrentIndex(sets->model()->index(1, 0));
     const auto setA2 = selected();
     tabs->setCurrentWidget(reports);
     QCOMPARE(selected(), reportA2);
-    tabs->setCurrentWidget(sets);
+    tabs->setCurrentWidget(sets->parentWidget());
     QCOMPARE(selected(), setA2);
     auto* members = window.findChild<QTableView*>("SclMembers");
     tabs->setCurrentWidget(members);
     QCOMPARE(members->model()->rowCount(), 0);
     QCOMPARE(selected(), setA2);
-    tabs->setCurrentWidget(sets);
+    tabs->setCurrentWidget(sets->parentWidget());
     sets->setCurrentIndex(sets->model()->index(0, 0));
     tabs->setCurrentWidget(members);
     QCOMPARE(members->model()->rowCount(), 1);
     QCOMPARE(nodes[selected()].name, QStringLiteral("FCDA"));
-    tabs->setCurrentWidget(sets);
+    tabs->setCurrentWidget(sets->parentWidget());
     sets->setCurrentIndex(sets->model()->index(1, 0));
     tabs->setCurrentWidget(members);
     QCOMPARE(members->model()->rowCount(), 0);
@@ -1933,6 +1956,244 @@ void MainWindowBaselineTest::SclIedBrowsing()
     window.findChild<QPushButton*>("SclResetLayout")->click();
     QCOMPARE(service->snapshot(), snapshot);
     QCOMPARE(scope->currentData().toInt(), a);
+}
+
+void MainWindowBaselineTest::SclAdvancedDataSets()
+{
+    using Service = iec61850sim::SclAnalysisService;
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    IsolateSettings(temp.path());
+    QSettings settings(QSettings::IniFormat, QSettings::UserScope, "IEC61850Simulator", "IEC61850Simulator");
+    settings.setValue("SclWorkspace/TaskView", false);
+    QFile fixture(QStringLiteral(SCL_FIXTURE_DIR "/Task7Navigation.scd"));
+    QVERIFY(fixture.open(QIODevice::ReadOnly));
+    auto xml = fixture.readAll();
+    const auto firstMember = xml.indexOf("<FCDA ");
+    const auto end = xml.indexOf("/>", firstMember) + 2;
+    xml.insert(end, xml.mid(firstMember, end - firstMember).repeated(249));
+    const auto desc = xml.indexOf("desc=\"") + 6;
+    const auto longValue = QByteArray(4200, 'A') + " &amp; full";
+    xml.replace(desc, xml.indexOf('"', desc) - desc, longValue);
+    QFile source(temp.filePath("Hierarchy.scd"));
+    QVERIFY(source.open(QIODevice::WriteOnly));
+    QCOMPARE(source.write(xml), xml.size());
+    source.close();
+
+    iec61850sim::MainWindow window;
+    const bool narrow = qEnvironmentVariableIsSet("IEC61850_HIERARCHY_NARROW");
+    window.resize(narrow ? QSize(620, 560) : QSize(1280, 800));
+    window.show();
+    auto* service = window.findChild<Service*>();
+    service->Open(source.fileName());
+    QTRY_COMPARE(service->state(), Service::State::Ready);
+    auto* tabs = window.findChild<QTabWidget*>("SclTables");
+    auto* sets = window.findChild<QTreeView*>("SclDataSets");
+    auto* members = window.findChild<QTableView*>("SclMembers");
+    auto* tree = window.findChild<QTreeView*>("SclTree");
+    auto* mode = window.findChild<QComboBox*>("SclDataSetMode");
+    auto* order = window.findChild<QComboBox*>("SclDataSetOrder");
+    auto* scope = window.findChild<QComboBox*>("SclBrowseScope");
+    auto* inspector = window.findChild<QTabWidget*>("SclInspector");
+    auto* page = sets->parentWidget();
+    const auto selected = [&] { return tree->currentIndex().data(Qt::UserRole).toInt(); };
+    const auto root = [&] { return sets->model()->index(0, 0); };
+    const auto child = [&](int row) { return sets->model()->index(row, 0, root()); };
+    tabs->setCurrentWidget(page);
+    QTRY_COMPARE(sets->model()->rowCount(), 2);
+    QCOMPARE(selected(), 0);
+    const auto dataSet = root().data(Qt::UserRole).toInt();
+    const auto other = sets->model()->index(1, 0).data(Qt::UserRole).toInt();
+    QVERIFY(dataSet != other);
+    QVERIFY(!sets->isExpanded(root()));
+    // A disclosure operation on a different row preserves the working selection.
+    sets->setCurrentIndex(sets->model()->index(1, 0));
+    sets->scrollTo(root(), QAbstractItemView::PositionAtTop);
+    QTRY_VERIFY(sets->visualRect(root()).top() >= 0 && sets->viewport()->height() > 20);
+    const auto rect = sets->visualRect(root());
+    const auto disclosure = QPoint(rect.left() - sets->indentation() / 2, rect.top() + 8);
+    QVERIFY(sets->viewport()->rect().contains(disclosure));
+    QTest::mouseClick(sets->viewport(), Qt::LeftButton, {}, disclosure);
+    QTRY_VERIFY(sets->isExpanded(root()));
+    QCOMPARE(selected(), other);
+    sets->setCurrentIndex(root());
+    QCOMPARE(selected(), dataSet);
+    QCOMPARE(scope->currentIndex(), 0);
+    const auto description = root().siblingAtColumn(4);
+    sets->setCurrentIndex(description);
+    QVERIFY(description.data().toString().size() < 4207);
+    QTRY_VERIFY(sets->visualRect(root()).height() > 2 * sets->fontMetrics().height());
+    QTest::keyClick(sets, Qt::Key_C, Qt::ControlModifier);
+    QCOMPARE(QApplication::clipboard()->text(), QString(4200, 'A') + " & full");
+    sets->setCurrentIndex(root());
+    sets->collapse(root());
+    QTest::keyClick(sets, Qt::Key_Right);
+    QTRY_COMPARE(sets->model()->rowCount(root()), 201);
+    QCOMPARE(selected(), dataSet);
+    QCOMPARE(child(0).data().toString(), QStringLiteral("#1  Ind1.stVal"));
+    QVERIFY(child(0).data(Qt::UserRole) != child(1).data(Qt::UserRole));
+    const auto more = child(200);
+    QVERIFY(more.isValid());
+    QVERIFY(!more.flags().testFlag(Qt::ItemIsSelectable));
+    QVERIFY(!more.data(Qt::UserRole).isValid());
+    sets->scrollTo(more, QAbstractItemView::PositionAtCenter);
+    QTRY_VERIFY(sets->viewport()->rect().intersects(sets->visualRect(more)));
+    const auto morePoint = sets->visualRect(more).center();
+    QTest::mouseClick(sets->viewport(), Qt::LeftButton, {}, morePoint);
+    QTRY_COMPARE(sets->model()->rowCount(root()), 253);
+    QCOMPARE(selected(), dataSet);
+    const auto member = child(217).data(Qt::UserRole).toInt();
+    sets->setCurrentIndex(child(217));
+    sets->scrollTo(child(217), QAbstractItemView::PositionAtCenter);
+    QTRY_VERIFY(sets->viewport()->rect().intersects(sets->visualRect(child(217))));
+    const int inspectorTab = inspector->currentIndex();
+    QTest::mouseDClick(sets->viewport(), Qt::LeftButton, {}, sets->visualRect(child(217)).center());
+    QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("#218  Ind1.stVal"));
+    QCOMPARE(selected(), member);
+    QCOMPARE(inspector->currentIndex(), inspectorTab);
+    QVERIFY(sets->isExpanded(root()));
+
+    mode->setCurrentIndex(1);
+    QCOMPARE(sets->model()->rowCount(root()), 0);
+    QCOMPARE(selected(), member);
+    mode->setCurrentIndex(0);
+    QTRY_COMPARE(sets->currentIndex().data(Qt::UserRole).toInt(), member);
+    auto* detailDock = window.findChild<ads::CDockManager*>("SclDockManager")->findDockWidget("SclInspectorDock");
+    detailDock->toggleView(false);
+    const auto top = sets->model()->index(7, 0, sets->currentIndex().parent());
+    sets->scrollTo(top, QAbstractItemView::PositionAtTop);
+    sets->verticalScrollBar()->setValue(sets->verticalScrollBar()->value() + 5);
+    QTRY_COMPARE(sets->indexAt(QPoint(0, 0)).data(Qt::UserRole), top.data(Qt::UserRole));
+    const auto topNode = top.data(Qt::UserRole);
+    const int topDelta = -sets->visualRect(top).top();
+    QVERIFY(topDelta > 0);
+    window.findChild<QPushButton*>("SclDataSetOpenMembers")->click();
+    QCOMPARE(tabs->currentWidget(), members);
+    QCOMPARE(members->currentIndex().data(Qt::UserRole).toInt(), member);
+    const auto context = window.findChild<QLabel*>("SclMemberContext")->text();
+    QVERIFY(context.contains("LD0/LLN0/Shared"));
+    QVERIFY(context.contains("253"));
+    window.findChild<QPushButton*>("SclBack")->click();
+    QCOMPARE(tabs->currentWidget(), page);
+    QTRY_COMPARE(sets->currentIndex().data(Qt::UserRole).toInt(), member);
+    QTRY_COMPARE(sets->indexAt(QPoint(0, 0)).data(Qt::UserRole), topNode);
+    QCOMPARE(-sets->visualRect(sets->indexAt(QPoint(0, 0))).top(), topDelta);
+    QVERIFY(detailDock->isClosed());
+    order->setCurrentIndex(2);
+    QTRY_COMPARE(root().data(Qt::UserRole).toInt(), other);
+    QTRY_COMPARE(sets->currentIndex().data(Qt::UserRole).toInt(), member);
+    auto* searchMode = window.findChild<QComboBox*>("SclSearchMode");
+    auto* query = window.findChild<QLineEdit*>("SclQuery");
+    searchMode->setCurrentIndex(1);
+    query->setText("no-dataset-matches-this");
+    QTRY_COMPARE(sets->model()->rowCount(), 0);
+    auto* reveal = window.findChild<QPushButton*>("SclClearNavigationFilter");
+    QTRY_VERIFY(reveal->isVisible());
+    QVERIFY(tabs->isTabVisible(tabs->indexOf(page)));
+    QCOMPARE(selected(), member);
+    reveal->click();
+    QTRY_COMPARE(sets->currentIndex().data(Qt::UserRole).toInt(), member);
+    order->setCurrentIndex(0);
+    QTRY_COMPARE(root().data(Qt::UserRole).toInt(), dataSet);
+    QTRY_COMPARE(sets->currentIndex().data(Qt::UserRole).toInt(), member);
+    sets->collapse(root());
+    QCOMPARE(selected(), dataSet);
+    tabs->setCurrentIndex(0);
+    auto* counts = window.findChild<QLabel*>("SclOverviewMemberCounts");
+    QTRY_VERIFY(counts->text().contains(QStringLiteral("成员声明 253")));
+    window.findChild<QPushButton*>("SclOverviewUsers")->click();
+    auto* users = window.findChild<QListWidget*>("SclDataSetUsersList");
+    QTRY_COMPARE(users->count(), 3);
+    window.findChild<QDialog*>("SclDataSetUsersDialog")->close();
+    tabs->setCurrentWidget(page);
+    sets->expand(root());
+    scope->setCurrentIndex(2);
+    QTRY_COMPARE(tabs->currentIndex(), 0);
+    QCOMPARE(members->model()->rowCount(), 0);
+    QVERIFY(!tabs->isTabVisible(tabs->indexOf(page)));
+    QVERIFY(!tabs->isTabVisible(tabs->indexOf(members)));
+    service->Close();
+    QCOMPARE(sets->model()->rowCount(), 0);
+    qInfo() << "T7.3 hierarchy verified" << QGuiApplication::platformName() << window.size() << window.devicePixelRatioF();
+}
+
+void MainWindowBaselineTest::SclAdvancedDataSetsLocal()
+{
+    const auto path = qEnvironmentVariable("IEC61850_ADVANCED_SCL");
+    if (path.isEmpty())
+        QSKIP("Set IEC61850_ADVANCED_SCL for explicit read-only local acceptance.");
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    const auto digest = QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex();
+    file.close();
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    IsolateSettings(temp.path());
+    QSettings settings(QSettings::IniFormat, QSettings::UserScope, "IEC61850Simulator", "IEC61850Simulator");
+    settings.setValue("SclWorkspace/TaskView", false);
+    iec61850sim::MainWindow window;
+    window.resize(1280, 800);
+    window.show();
+    auto* service = window.findChild<iec61850sim::SclAnalysisService*>();
+    service->Open(path);
+    QTRY_COMPARE_WITH_TIMEOUT(service->state(), iec61850sim::SclAnalysisService::State::Ready, 60000);
+    const auto snapshot = service->snapshot();
+    QCOMPARE(snapshot->analysis.sha256, digest);
+    auto* tabs = window.findChild<QTabWidget*>("SclTables");
+    auto* sets = window.findChild<QTreeView*>("SclDataSets");
+    auto* next = window.findChild<QPushButton*>("SclDataSetNext");
+    auto* previous = window.findChild<QPushButton*>("SclDataSetPrevious");
+    tabs->setCurrentWidget(sets->parentWidget());
+    QTRY_COMPARE(sets->model()->rowCount(), 200);
+    const auto first = sets->model()->index(0, 0).data(Qt::UserRole).toInt();
+    QVERIFY(next->isEnabled());
+    next->click();
+    QTRY_COMPARE(sets->model()->rowCount(), 200);
+    QVERIFY(sets->model()->index(0, 0).data(Qt::UserRole).toInt() != first);
+    QVERIFY(previous->isEnabled());
+    previous->click();
+    QTRY_COMPARE(sets->model()->rowCount(), 200);
+    const auto root = sets->model()->index(0, 0);
+    QCOMPARE(root.data(Qt::UserRole).toInt(), first);
+    sets->setCurrentIndex(root);
+    window.findChild<QPushButton*>("SclDataSetUsers")->click();
+    auto* dialog = window.findChild<QDialog*>("SclDataSetUsersDialog");
+    QVERIFY(dialog->isVisible());
+    QTRY_VERIFY(dialog->findChild<QLabel*>()->text().contains('\n'));
+    dialog->close();
+    Scl::NodeId largest = Scl::NoNode;
+    int memberCount = 0;
+    for (auto it = snapshot->browse.dataSetMembers.cbegin(); it != snapshot->browse.dataSetMembers.cend(); ++it)
+        if (it->count > memberCount)
+        {
+            largest = it.key();
+            memberCount = it->count;
+        }
+    QVERIFY(memberCount > 200);
+    auto* tree = window.findChild<QTreeView*>("SclTree");
+    std::vector<Scl::NodeId> ancestors;
+    for (auto node = largest; node != Scl::NoNode; node = snapshot->analysis.document->nodes[node].parent)
+        ancestors.push_back(node);
+    QModelIndex selected;
+    for (auto it = ancestors.rbegin(); it != ancestors.rend(); ++it)
+        selected = tree->model()->index(*it == 0 ? 0 : snapshot->browse.branches[*it].row, 0, selected);
+    tree->setCurrentIndex(selected);
+    QTRY_COMPARE(sets->currentIndex().data(Qt::UserRole).toInt(), largest);
+    const auto largestRow = sets->currentIndex().siblingAtColumn(0);
+    sets->expand(largestRow);
+    QTRY_COMPARE(sets->model()->rowCount(largestRow), 201);
+    const auto more = sets->model()->index(200, 0, largestRow);
+    sets->scrollTo(more, QAbstractItemView::PositionAtCenter);
+    QTRY_VERIFY(sets->viewport()->rect().intersects(sets->visualRect(more)));
+    QTest::mouseClick(sets->viewport(), Qt::LeftButton, {}, sets->visualRect(more).center());
+    QTRY_COMPARE(sets->model()->rowCount(largestRow), memberCount);
+    const auto last = sets->model()->index(memberCount - 1, 0, largestRow);
+    const auto range = snapshot->browse.dataSetMembers.value(largest);
+    QCOMPARE(last.data(Qt::UserRole).toInt(), snapshot->browse.memberRows[range.first + range.count - 1]);
+    service->Close();
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex(), digest);
+    qInfo().noquote() << "T7.3 local paging and users verified, members" << memberCount << "SHA-256" << digest;
 }
 
 void MainWindowBaselineTest::SclMemberScopeClearing()
@@ -2130,13 +2391,14 @@ void MainWindowBaselineTest::SclReferenceDetails()
     inspector->setCurrentIndex(1);
     QVERIFY(reference->text().contains(QStringLiteral("已解析")));
     const auto* links = window.findChild<QTableView*>("SclLinks");
-    const auto* dataSets = window.findChild<QTableView*>("SclDataSets");
+    const auto* dataSets = window.findChild<QTreeView*>("SclDataSets");
     QVERIFY(links && dataSets);
-    const auto lastColumn = [](const QTableView* view) {
+    const auto lastColumn = [](const QAbstractItemView* view) {
         return view->model()->index(0, view->model()->columnCount() - 1);
     };
     const auto description = QStringLiteral("有序成员，含 DO 引用及重复成员");
-    QCOMPARE(lastColumn(dataSets).data().toString(), description);
+    tabs->setCurrentWidget(dataSets->parentWidget());
+    QTRY_COMPARE(lastColumn(dataSets).data().toString(), description);
     QCOMPARE(lastColumn(links).data().toString(), description);
     copy->click();
     QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("dsEvents"));
@@ -2683,7 +2945,575 @@ void MainWindowBaselineTest::ResetLayoutAndHelp()
 }
 
 #include "SclNavigationBaseline.hpp"
+#include "SclTask7Acceptance.hpp"
 #include "SclMmsNavigationTest.hpp"
+
+void MainWindowBaselineTest::SclTask8VoltageBaseline()
+{
+    using namespace iec61850sim;
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    IsolateSettings(temp.path());
+    QSettings settings(QSettings::IniFormat, QSettings::UserScope, "IEC61850Simulator", "IEC61850Simulator");
+    settings.setValue("SclWorkspace/TaskView", true);
+    MainWindow window;
+    window.resize(1280, 800);
+    window.show();
+    auto* service = window.findChild<SclAnalysisService*>();
+    auto* mms = window.findChild<SclMmsView*>();
+    auto* tasks = window.findChild<QTreeWidget*>("SclTaskTree");
+    auto* scope = window.findChild<QComboBox*>("SclTaskIed");
+    auto* filter = window.findChild<QLineEdit*>("SclMmsFilter");
+    auto* open = window.findChild<QPushButton*>("SclMmsOpen");
+    QVERIFY(service && mms && tasks && scope && filter && open);
+    service->Open(QStringLiteral(SCL_FIXTURE_DIR "/Task8Voltage.scd"));
+    QTRY_COMPARE(service->state(), SclAnalysisService::State::Ready);
+    const auto snapshot = service->snapshot();
+    const auto& doc = *snapshot->analysis.document;
+    const auto ied = std::find_if(snapshot->browse.ieds.begin(), snapshot->browse.ieds.end(),
+        [&](Scl::NodeId node) { return doc.attribute(node, "name") == "DemoListed"; });
+    QVERIFY(ied != snapshot->browse.ieds.end());
+    const int scopeIndex = scope->findData(*ied);
+    QVERIFY(scopeIndex >= 0);
+    scope->setCurrentIndex(scopeIndex);
+    QVERIFY(QMetaObject::invokeMethod(scope, "activated", Q_ARG(int, scopeIndex)));
+    const auto routes = tasks->findItems(QStringLiteral("信号地址"), Qt::MatchExactly | Qt::MatchRecursive);
+    QCOMPARE(routes.size(), 1);
+    tasks->setCurrentItem(routes.front());
+    QTRY_VERIFY(mms->Result() && mms->Result()->request.kind == SclMmsQueryKind::Signals);
+    filter->setText(QStringLiteral("PhV.phsA"));
+    auto* table = mms->Table();
+    QTRY_COMPARE(table->model()->rowCount(), 1);
+    QCOMPARE(table->model()->index(0, 0).data().toString(), QStringLiteral("PhV.phsA"));
+    QCOMPARE(mms->Result()->request.scope.ied, *ied);
+    table->setCurrentIndex(table->model()->index(0, 0));
+    QTRY_VERIFY(open->isEnabled());
+    QCOMPARE(open->text(), QStringLiteral("查看属性与地址"));
+    open->click();
+    QTRY_VERIFY(mms->Result() && mms->Result()->request.kind == SclMmsQueryKind::Addresses);
+    const auto indexFor = [&](const QString& field) {
+        for (int row = 0; row < table->model()->rowCount(); ++row)
+        {
+            const auto index = table->model()->index(row, 0);
+            if (index.data().toString() == field)
+                return index;
+        }
+        return QModelIndex{};
+    };
+    const auto magnitude = indexFor("cVal.mag.f");
+    const auto phase = indexFor("cVal.ang.f");
+    QVERIFY(magnitude.isValid() && phase.isValid());
+    QCOMPARE(phase.siblingAtColumn(1).data().toString(), QStringLiteral("ListedMeasurements"));
+    QCOMPARE(phase.siblingAtColumn(2).data().toString(), QStringLiteral("MMXU1$MX$PhV$phsA$cVal$ang$f"));
+    QCOMPARE(phase.siblingAtColumn(3).data().toString(), QStringLiteral("MX"));
+    QCOMPARE(magnitude.siblingAtColumn(2).data().toString(), QStringLiteral("MMXU1$MX$PhV$phsA$cVal$mag$f"));
+
+    const auto menuFor = [](QAbstractItemView* view, const QModelIndex& index) {
+        QStringList entries;
+        QTimer capture;
+        capture.setSingleShot(true);
+        QObject::connect(&capture, &QTimer::timeout, view, [&] {
+            if (auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget()))
+            {
+                for (auto* action : menu->actions())
+                    if (!action->property("SclReferenceKind").isValid() && action->text() != QStringLiteral("正在准备引用…"))
+                        entries << (action->menu() ? action->text() + " >" : action->text());
+                menu->close();
+            }
+        });
+        const auto point = view->visualRect(index).center();
+        QContextMenuEvent event(QContextMenuEvent::Mouse, point, view->viewport()->mapToGlobal(point));
+        capture.start(0);
+        QApplication::sendEvent(view->viewport(), &event);
+        return entries;
+    };
+    const QStringList copyMenu{QStringLiteral("复制单元格"), QStringLiteral("复制行"),
+        QStringLiteral("查看完整值"), QStringLiteral("查看原文")};
+    const auto item = phase.siblingAtColumn(2);
+    table->setCurrentIndex(item);
+    table->scrollTo(item);
+    QTRY_VERIFY(SclNavigationProbe::Visible(table));
+    QCOMPARE(menuFor(table, item), copyMenu);
+    QTRY_VERIFY(mms->Selected() && mms->Selected()->field == QStringLiteral("cVal.ang.f"));
+    auto* fields = mms->Fields();
+    const auto itemEvidence = [&] {
+        for (int row = 0; row < fields->model()->rowCount(); ++row)
+            if (fields->model()->index(row, 0).data().toString() == "MMS Item"
+                && fields->model()->index(row, 1).data().toString() == item.data().toString())
+                return fields->model()->index(row, 1);
+        return QModelIndex{};
+    };
+    QTRY_VERIFY(itemEvidence().isValid());
+    fields->setCurrentIndex(itemEvidence());
+    auto* source = window.findChild<QPlainTextEdit*>("SclSource");
+    auto* sourceButton = window.findChild<QPushButton*>("SclMmsSource");
+    QTRY_VERIFY(sourceButton->isEnabled());
+    sourceButton->click();
+    QTRY_VERIFY(source->textCursor().block().text().contains("<BDA name=\"f\" bType=\"FLOAT32\""));
+    QTRY_VERIFY(SclNavigationProbe::VisibleRect(source->viewport()).intersects(source->cursorRect()));
+
+    window.findChild<QPushButton*>("SclTaskViewSwitch")->click();
+    const auto dataSets = snapshot->browse.categories[size_t(SclCategory::DataSets)];
+    QVERIFY(!dataSets.empty());
+    auto* structure = window.findChild<QTreeView*>("SclTree");
+    structure->setCurrentIndex(Task7Acceptance::StructureIndex(structure, *snapshot, dataSets.front()));
+    auto* sets = window.findChild<QTreeView*>("SclDataSets");
+    QTRY_VERIFY(sets->isVisible() && sets->currentIndex().isValid());
+    const auto root = sets->currentIndex().siblingAtColumn(0);
+    QCOMPARE(root.data(Qt::UserRole).toInt(), dataSets.front());
+    sets->expand(root);
+    QTRY_COMPARE(sets->model()->rowCount(root), 2);
+    const auto member = sets->model()->index(0, 0, root);
+    sets->scrollTo(member);
+    QTRY_VERIFY(Task7Acceptance::CellVisible(sets, member));
+    auto treeMenu = copyMenu;
+    treeMenu << QStringLiteral("打开引用拓扑") << QStringLiteral("在 MMS 中查阅属性");
+    QCOMPARE(menuFor(sets, member), treeMenu);
+}
+
+void MainWindowBaselineTest::SclTask8AttributeWorkflow()
+{
+    if (!QCoreApplication::arguments().contains(QStringLiteral("SclTask8AttributeWorkflow")))
+        QSKIP("Run as the separate MMS attribute workflow test");
+    using namespace iec61850sim;
+    using SclNavigationProbe::VisibleRect;
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    IsolateSettings(temp.path());
+    QSettings settings(QSettings::IniFormat, QSettings::UserScope, "IEC61850Simulator", "IEC61850Simulator");
+    settings.setValue("SclWorkspace/TaskView", true);
+    MainWindow window;
+    const auto width = qEnvironmentVariableIntValue("IEC61850_MMS_WIDTH");
+    const auto height = qEnvironmentVariableIntValue("IEC61850_MMS_HEIGHT");
+    window.resize(width > 0 ? width : 1280, height > 0 ? height : 800);
+    window.show();
+    auto* service = window.findChild<SclAnalysisService*>();
+    auto* mms = window.findChild<SclMmsView*>();
+    auto* tasks = window.findChild<QTreeWidget*>("SclTaskTree");
+    auto* scope = window.findChild<QComboBox*>("SclTaskIed");
+    auto* advancedScope = window.findChild<QComboBox*>("SclBrowseScope");
+    auto* filter = window.findChild<QLineEdit*>("SclMmsFilter");
+    auto* open = window.findChild<QPushButton*>("SclMmsOpen");
+    auto* back = window.findChild<QPushButton*>("SclMmsBack");
+    auto* inspector = window.findChild<QTabWidget*>("SclInspector");
+    auto* toggle = window.findChild<QToolButton*>("SclToggleDetails");
+    auto* status = window.findChild<QLabel*>("SclMmsStatus");
+    auto* source = window.findChild<QPlainTextEdit*>("SclSource");
+    auto* sourceButton = window.findChild<QPushButton*>("SclMmsSource");
+    QVERIFY(service && mms && tasks && scope && advancedScope && filter && open && back && inspector && toggle && status && source && sourceButton);
+    service->Open(QStringLiteral(SCL_FIXTURE_DIR "/Task8Voltage.scd"));
+    QTRY_COMPARE(service->state(), SclAnalysisService::State::Ready);
+    qInfo() << "MMS attribute workflow window" << window.size() << "DPR" << window.devicePixelRatioF();
+    const auto snapshot = service->snapshot();
+    const auto& doc = *snapshot->analysis.document;
+    const auto find = [&](const QString& tag, const QString& name) {
+        for (int i = 0; i < int(doc.nodes.size()); ++i)
+            if (doc.nodes[i].isScl() && doc.nodes[i].name == tag && doc.attribute(i, "name") == name) return i;
+        return Scl::NoNode;
+    };
+    const auto selectIed = [&](Scl::NodeId node) {
+        const int index = scope->findData(node);
+        QVERIFY(index >= 0);
+        scope->setCurrentIndex(index);
+        QVERIFY(QMetaObject::invokeMethod(scope, "activated", Q_ARG(int, index)));
+    };
+    const auto page = [&](SclMmsQueryKind kind) { return mms->Result() && mms->Result()->request.kind == kind; };
+    const auto field = [&](const QString& name) {
+        auto* model = mms->Fields()->model();
+        for (int row = 0; row < model->rowCount(); ++row)
+            if (model->index(row, 0).data().toString() == name) return model->index(row, 1);
+        return QModelIndex{};
+    };
+    const auto cellVisible = [&](QAbstractItemView* view, const QModelIndex& index) {
+        const auto rect = view->visualRect(index);
+        return index.isValid() && VisibleRect(view->viewport()).intersected(rect).height()
+            >= std::min(rect.height(), view->fontMetrics().height()) && rect.height() > 0;
+    };
+    const auto openFromTable = [&](QAbstractItemView* view, const QModelIndex& index) {
+        bool opened = false;
+        QTimer capture;
+        capture.setSingleShot(true);
+        connect(&capture, &QTimer::timeout, view, [&] {
+            auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            if (!menu) return;
+            for (auto* action : menu->actions()) if (action->objectName() == "SclOpenMmsAttributes") {
+                action->trigger();
+                opened = true;
+                break;
+            }
+            menu->close();
+        });
+        const auto point = view->visualRect(index).center();
+        QContextMenuEvent event(QContextMenuEvent::Mouse, point, view->viewport()->mapToGlobal(point));
+        capture.start(0);
+        QApplication::sendEvent(view->viewport(), &event);
+        return opened;
+    };
+
+    const auto listed = find("IED", "DemoListed"), unlisted = find("IED", "DemoUnlisted"), noAngle = find("IED", "DemoNoAngle");
+    selectIed(listed);
+    const auto routes = tasks->findItems(QStringLiteral("查找属性"), Qt::MatchExactly | Qt::MatchRecursive);
+    QCOMPARE(routes.size(), 1);
+    tasks->setCurrentItem(routes.front());
+    QTRY_VERIFY(page(SclMmsQueryKind::Attributes));
+    const auto query = QStringLiteral("A 相电压");
+    filter->setText(query);
+    QTRY_VERIFY(page(SclMmsQueryKind::Attributes) && mms->Result()->request.text == query);
+    auto* table = mms->Table();
+    QTRY_COMPARE(table->model()->rowCount(), 2);
+    QVERIFY(!mms->Selected());
+    QCOMPARE(table->model()->index(0, 0).data().toString(), QStringLiteral("PhV.phsA.cVal.mag.f"));
+    const auto phase = table->model()->index(1, 0);
+    QCOMPARE(phase.data().toString(), QStringLiteral("PhV.phsA.cVal.ang.f"));
+    QVERIFY(phase.siblingAtColumn(1).data().toString().contains("DemoListed / AP1 / Server / LD0 / MMXU1"));
+    QCOMPARE(phase.siblingAtColumn(4).data().toString(), QStringLiteral("模型结构匹配"));
+    const auto phaseIdentity = mms->Result()->rows[1].key;
+    const auto server = mms->Result()->rows[1].addressScope.server;
+    if (!toggle->isChecked()) toggle->click();
+    inspector->setCurrentWidget(mms->Inspector());
+    table->setCurrentIndex(phase);
+    table->scrollTo(phase);
+    QTRY_VERIFY(open->isEnabled() && cellVisible(table, phase));
+    QTRY_COMPARE(field(QStringLiteral("在线读取")).data().toString(), QStringLiteral("未验证"));
+    QCOMPARE(field(QStringLiteral("文件 Val")).data().toString(), QStringLiteral("15"));
+    const auto item = field(QStringLiteral("MMS Item"));
+    QCOMPARE(item.data().toString(), QStringLiteral("MMXU1$MX$PhV$phsA$cVal$ang$f"));
+    mms->Fields()->setCurrentIndex(item);
+    mms->Fields()->scrollTo(item);
+    QTRY_VERIFY(cellVisible(mms->Fields(), item) && sourceButton->isEnabled());
+    sourceButton->click();
+    const auto expectedLine = snapshot->analysis.source->line(doc.nodes[phaseIdentity.declaration].source.line).text.trimmed();
+    QTRY_COMPARE(source->textCursor().block().text().trimmed(), expectedLine);
+    QTRY_VERIFY(VisibleRect(source->viewport()).intersects(source->cursorRect()));
+
+    QCOMPARE(open->text(), QStringLiteral("查看报告使用"));
+    open->click();
+    QTRY_VERIFY(page(SclMmsQueryKind::AttributeReports));
+    QCOMPARE(mms->Result()->request.scope.server, server);
+    QCOMPARE(table->model()->rowCount(), 1);
+    QCOMPARE(table->model()->index(0, 1).data().toString(), QStringLiteral("DO 级覆盖"));
+    QCOMPARE(table->model()->index(0, 2).data().toString(), QStringLiteral("Voltage"));
+    table->setCurrentIndex(table->model()->index(0, 0));
+    QTRY_COMPARE(field(QStringLiteral("报告匹配")).data().toString(), QStringLiteral("DO 级覆盖"));
+    QCOMPARE(field(QStringLiteral("FCDA 原始序号")).data().toString(), QStringLiteral("2"));
+    QCOMPARE(field(QStringLiteral("在线报告")).data().toString(), QStringLiteral("未验证"));
+    open->click();
+    QTRY_VERIFY(page(SclMmsQueryKind::Members) && mms->Selected() && mms->Selected()->ordinal == 2);
+    QVERIFY(mms->Result()->request.report != Scl::NoNode);
+    back->click();
+    QTRY_VERIFY(page(SclMmsQueryKind::AttributeReports) && mms->Selected() && mms->Selected()->ordinal == 2);
+    back->click();
+    QTRY_VERIFY(page(SclMmsQueryKind::Attributes));
+    QCOMPARE(mms->Selected(), std::optional<SclMmsKey>(phaseIdentity));
+    QCOMPARE(filter->text(), query);
+    QCOMPARE(scope->currentData().toInt(), listed);
+    QTRY_VERIFY(cellVisible(table, table->currentIndex()));
+    QTRY_COMPARE(mms->Fields()->currentIndex().siblingAtColumn(0).data().toString(), QStringLiteral("MMS Item"));
+    QTRY_COMPARE(source->textCursor().block().text().trimmed(), expectedLine);
+
+    toggle->click();
+    QTRY_VERIFY(!toggle->isChecked());
+    selectIed(unlisted);
+    QTRY_VERIFY(page(SclMmsQueryKind::Attributes) && mms->Result()->request.scope.ied == unlisted);
+    QCOMPARE(filter->text(), query);
+    QCOMPARE(mms->Result()->rows.size(), size_t(2));
+    QCOMPARE(mms->Result()->rows[1].domain, QStringLiteral("DemoUnlistedLD0"));
+    QVERIFY(!SclNavigationProbe::Visible(mms->Fields()));
+    table->setCurrentIndex(table->model()->index(1, 0));
+    open->click();
+    QTRY_VERIFY(page(SclMmsQueryKind::AttributeReports));
+    QCOMPARE(table->model()->rowCount(), 0);
+    QVERIFY(status->text().contains(QStringLiteral("未找到已解析的报告使用")));
+    back->click();
+    QTRY_VERIFY(page(SclMmsQueryKind::Attributes) && mms->Result()->request.scope.ied == unlisted);
+    selectIed(noAngle);
+    filter->setText(QStringLiteral("A 相电压相位"));
+    QTRY_VERIFY(page(SclMmsQueryKind::Attributes) && mms->Result()->request.scope.ied == noAngle
+        && mms->Result()->request.text == filter->text());
+    QCOMPARE(table->model()->rowCount(), 0);
+    QVERIFY(status->text().contains(QStringLiteral("没有匹配属性")));
+    auto limited = mms->CurrentLocation();
+    limited.request.workLimit = 2;
+    mms->RestoreLocation(limited);
+    QTRY_VERIFY(page(SclMmsQueryKind::Attributes) && mms->Result()->limited);
+    QVERIFY(status->text().contains(QStringLiteral("结果不完整")));
+
+    auto* taskSwitch = window.findChild<QPushButton*>("SclTaskViewSwitch");
+    auto* structure = window.findChild<QTreeView*>("SclTree");
+    auto* sets = window.findChild<QTreeView*>("SclDataSets");
+    auto* objects = window.findChild<QTableView*>("SclObjects");
+    QVERIFY(taskSwitch && structure && sets && objects);
+    taskSwitch->click();
+    const auto ds = find("DataSet", "Voltage");
+    structure->setCurrentIndex(Task7Acceptance::StructureIndex(structure, *snapshot, ds));
+    QTRY_VERIFY(sets->isVisible() && sets->currentIndex().isValid() && sets->currentIndex().data(Qt::UserRole).toInt() == ds);
+    const auto root = sets->currentIndex().siblingAtColumn(0);
+    sets->expand(root);
+    QTRY_COMPARE(sets->model()->rowCount(root), 2);
+    const auto member = sets->model()->index(0, 0, root);
+    const auto memberNode = member.data(Qt::UserRole).toInt();
+    sets->scrollTo(member);
+    QTRY_VERIFY(cellVisible(sets, member));
+    QVERIFY(openFromTable(sets, member));
+    QTRY_VERIFY(page(SclMmsQueryKind::Attributes) && mms->Result()->request.target == memberNode && mms->Selected());
+    QCOMPARE(mms->Selected()->field, QStringLiteral("cVal.mag.f"));
+    QCOMPARE(mms->Result()->rows.front().item, QStringLiteral("MMXU1$MX$PhV$phsA$cVal$mag$f"));
+    back->click();
+    QTRY_VERIFY(sets->isVisible() && sets->currentIndex().data(Qt::UserRole).toInt() == memberNode);
+    QCOMPARE(advancedScope->currentData().toInt(), listed);
+
+    const auto phaseValue = std::find_if(doc.nodes.cbegin(), doc.nodes.cend(), [](const auto& node) {
+        return node.isScl() && node.name == "Val" && node.text == "15";
+    });
+    QVERIFY(phaseValue != doc.nodes.cend());
+    structure->setCurrentIndex(Task7Acceptance::StructureIndex(structure, *snapshot, phaseValue->parent));
+    QTRY_VERIFY(objects->isVisible() && objects->currentIndex().data(Qt::UserRole).toInt() == phaseValue->parent);
+    objects->scrollTo(objects->currentIndex());
+    QTRY_VERIFY(cellVisible(objects, objects->currentIndex()));
+    QVERIFY(openFromTable(objects, objects->currentIndex()));
+    QTRY_VERIFY(page(SclMmsQueryKind::Attributes) && mms->Result()->request.target == phaseValue->parent && mms->Selected());
+    QCOMPARE(*mms->Selected(), phaseIdentity);
+    back->click();
+    QTRY_VERIFY(objects->isVisible() && objects->currentIndex().data(Qt::UserRole).toInt() == phaseValue->parent);
+    QCOMPARE(advancedScope->currentData().toInt(), listed);
+
+    if (window.height() >= 650) {
+        const auto missingSet = find("DataSet", "MissingAngle");
+        const auto missingMember = snapshot->browse.memberRows[snapshot->browse.dataSetMembers.value(missingSet).first];
+        structure->setCurrentIndex(Task7Acceptance::StructureIndex(structure, *snapshot, missingMember));
+        if (!toggle->isChecked()) toggle->click();
+        inspector->setCurrentIndex(1);
+        auto* links = window.findChild<QTableView*>("SclLinks");
+        auto* relationScroll = qobject_cast<QScrollArea*>(inspector->widget(1));
+        QVERIFY(relationScroll);
+        QTRY_VERIFY(links && links->isVisible() && links->model()->rowCount() == 1 && links->viewport()->height() > 0);
+        const auto reference = links->model()->index(0, 1);
+        links->scrollTo(reference);
+        const auto center = links->viewport()->mapTo(relationScroll->widget(), links->visualRect(reference).center());
+        relationScroll->ensureVisible(center.x(), center.y(), 0, links->fontMetrics().height());
+        QTRY_VERIFY(cellVisible(links, reference));
+        QVERIFY(openFromTable(links, reference));
+        QTRY_VERIFY(page(SclMmsQueryKind::Attributes) && mms->Result()->request.target == missingMember);
+        QVERIFY(status->text().contains(QStringLiteral("FCDA 引用未解析")));
+        QCOMPARE(open->text(), QStringLiteral("查看来源原文"));
+        open->click();
+        QTRY_VERIFY(source->textCursor().block().text().contains("daName=\"cVal.ang.f\""));
+        QTRY_VERIFY(VisibleRect(source->viewport()).intersects(source->cursorRect()));
+    }
+}
+
+#include "SclTask8Acceptance.hpp"
+
+void MainWindowBaselineTest::SclTask8ReferenceMenus()
+{
+    if (!QCoreApplication::arguments().contains(QStringLiteral("SclTask8ReferenceMenus")))
+        QSKIP("Run as the separate reference menu test");
+    using namespace iec61850sim;
+    using namespace Task8Acceptance;
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    IsolateSettings(temp.path());
+    QSettings settings(QSettings::IniFormat, QSettings::UserScope, "IEC61850Simulator", "IEC61850Simulator");
+    settings.setValue("SclWorkspace/TaskView", true);
+    const auto oldClipboard = QApplication::clipboard()->text();
+    const auto restoreClipboard = qScopeGuard([oldClipboard] { QApplication::clipboard()->setText(oldClipboard); });
+    QFile fixture(QStringLiteral(SCL_FIXTURE_DIR "/Task8Voltage.scd"));
+    QVERIFY(fixture.open(QIODevice::ReadOnly));
+    auto xml = fixture.readAll();
+    const auto longId = QStringLiteral("  中文 & $ 报告\n下一行  ") + QString(5000, 'X') + QStringLiteral("  尾部 ");
+    auto encoded = longId.toUtf8();
+    encoded.replace("&", "&amp;");
+    encoded.replace("\n", "&#10;");
+    xml.replace("name=\"VoltageReport\"", "name=\"VoltageReport\" rptID=\"" + encoded + "\"");
+    QFile sample(temp.filePath("ReferenceMenus.scd"));
+    QVERIFY(sample.open(QIODevice::WriteOnly));
+    QCOMPARE(sample.write(xml), xml.size());
+    sample.close();
+
+    MainWindow window;
+    window.resize(1280, 800);
+    window.show();
+    auto* service = window.findChild<SclAnalysisService*>();
+    auto* mms = window.findChild<SclMmsView*>();
+    auto* tasks = window.findChild<QTreeWidget*>("SclTaskTree");
+    auto* scope = window.findChild<QComboBox*>("SclTaskIed");
+    auto* filter = window.findChild<QLineEdit*>("SclMmsFilter");
+    auto* source = window.findChild<QPlainTextEdit*>("SclSource");
+    auto* toggle = window.findChild<QToolButton*>("SclToggleDetails");
+    auto* inspector = window.findChild<QTabWidget*>("SclInspector");
+    QVERIFY(service && mms && tasks && scope && filter && source && toggle && inspector);
+    service->Open(sample.fileName());
+    QTRY_COMPARE(service->state(), SclAnalysisService::State::Ready);
+    const auto snapshot = service->snapshot();
+    const auto& doc = *snapshot->analysis.document;
+    const auto listed = snapshot->browse.ieds.front();
+    const auto ied = scope->findData(listed);
+    QVERIFY(ied >= 0);
+    scope->setCurrentIndex(ied);
+    QVERIFY(QMetaObject::invokeMethod(scope, "activated", Q_ARG(int, ied)));
+    const auto route = tasks->findItems(QStringLiteral("查找属性"), Qt::MatchExactly | Qt::MatchRecursive);
+    QCOMPARE(route.size(), 1);
+    tasks->setCurrentItem(route.front());
+    filter->setText(QStringLiteral("A 相电压"));
+    QTRY_VERIFY(mms->Result() && mms->Result()->request.text == filter->text() && mms->Result()->rows.size() == 2);
+    auto* table = mms->Table();
+    const auto first = table->model()->index(0, 0);
+    const auto second = table->model()->index(1, 0);
+    table->setCurrentIndex(first);
+    table->scrollTo(second);
+
+    const auto leafKey = mms->Selected();
+    QVERIFY(leafKey);
+    const auto initialSource = source->textCursor().position();
+    const auto initialPage = mms->Result();
+    const auto phaseRef = QStringLiteral("ListedMeasurements/MMXU1.PhV.phsA.cVal.ang.f");
+    auto action = ChooseMenu(table, second, QStringLiteral("对象引用"), Gesture::Hover);
+    QVERIFY2(action.opened && action.expanded && action.dispatched, qPrintable(QStringLiteral("popup %1 / submenu %2 / selected %3 · %4")
+        .arg(action.opened).arg(action.expanded).arg(action.dispatched).arg(action.heads.join(" | "))));
+    QVERIFY(action.heads.contains(QStringLiteral("复制单元格")) && action.heads.contains(QStringLiteral("查看原文")));
+    QCOMPARE(QApplication::clipboard()->text(), phaseRef);
+    QCOMPARE(mms->Selected(), leafKey);
+    QCOMPARE(mms->Result(), initialPage);
+    QCOMPARE(table->currentIndex(), first);
+    QCOMPARE(source->textCursor().position(), initialSource);
+    action = ChooseMenu(table, first, QStringLiteral("MMS Item"), Gesture::Keyboard);
+    QVERIFY(action.expanded && action.dispatched);
+    const auto magItem = QStringLiteral("MMXU1$MX$PhV$phsA$cVal$mag$f");
+    QCOMPARE(QApplication::clipboard()->text(), magItem);
+
+    if (!toggle->isChecked()) toggle->click();
+    inspector->setCurrentWidget(mms->Inspector());
+    auto* fields = mms->Fields();
+    const auto itemField = [&] {
+        for (int row = 0; row < fields->model()->rowCount(); ++row)
+            if (fields->model()->index(row, 0).data().toString() == "MMS Item")
+                return fields->model()->index(row, 1);
+        return QModelIndex{};
+    };
+    QTRY_VERIFY(itemField().isValid());
+    fields->setCurrentIndex(itemField());
+    fields->scrollTo(itemField());
+    action = ChooseMenu(fields, itemField(), QStringLiteral("MMS Item"), Gesture::Keyboard);
+    QVERIFY(action.expanded && action.dispatched);
+    QCOMPARE(QApplication::clipboard()->text(), magItem);
+
+    const auto sentinel = QStringLiteral("clipboard still belongs to previous action");
+    QApplication::clipboard()->setText(sentinel);
+    action = ChooseMenu(table, second, QStringLiteral("MMS Item"), Gesture::Mouse, [&] { filter->setText(QStringLiteral("相位")); });
+    QVERIFY(action.expanded && action.dispatched);
+    QCOMPARE(QApplication::clipboard()->text(), sentinel);
+    QTRY_VERIFY(mms->Result() && mms->Result()->request.text == filter->text());
+
+    // Hold the copy worker until the initiating filter has been replaced.
+    auto* pool = QThreadPool::globalInstance();
+    pool->waitForDone();
+    const auto workers = pool->maxThreadCount();
+    pool->setMaxThreadCount(1);
+    QSemaphore gate;
+    pool->start([&gate] { gate.acquire(); });
+    bool pendingObserved = false, oldDelivered = false;
+    QTimer invalidatePending;
+    invalidatePending.setSingleShot(true);
+    QObject::connect(&invalidatePending, &QTimer::timeout, &window, [&] {
+        const QPointer<QMenu> menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        if (menu) {
+            for (auto* item : menu->actions()) pendingObserved |= item->text() == QStringLiteral("正在准备引用…");
+            filter->setText(QStringLiteral("幅值"));
+            QObject::connect(menu, &QMenu::aboutToHide, &invalidatePending, [&, menu] {
+                for (auto* item : menu->actions()) oldDelivered |= item->property("SclReferenceKind").isValid();
+            });
+            QTimer::singleShot(300, menu, &QMenu::close);
+        }
+        gate.release();
+    });
+    const auto current = table->model()->index(0, 0);
+    const auto point = table->visualRect(current).center();
+    QContextMenuEvent pendingEvent(QContextMenuEvent::Mouse, point, table->viewport()->mapToGlobal(point));
+    invalidatePending.start(0);
+    QApplication::sendEvent(table->viewport(), &pendingEvent);
+    invalidatePending.stop();
+    gate.release();
+    pool->waitForDone();
+    pool->setMaxThreadCount(workers);
+    QVERIFY(pendingObserved && !oldDelivered);
+    QCOMPARE(QApplication::clipboard()->text(), sentinel);
+    QTRY_VERIFY(mms->Result() && mms->Result()->request.text == filter->text());
+
+    auto* taskSwitch = window.findChild<QPushButton*>("SclTaskViewSwitch");
+    auto* structure = window.findChild<QTreeView*>("SclTree");
+    auto* sets = window.findChild<QTreeView*>("SclDataSets");
+    auto* order = window.findChild<QComboBox*>("SclDataSetOrder");
+    QVERIFY(taskSwitch && structure && sets && order);
+    taskSwitch->click();
+    const auto dataSet = snapshot->browse.categories[size_t(SclCategory::DataSets)].front();
+    structure->setCurrentIndex(Task7Acceptance::StructureIndex(structure, *snapshot, dataSet));
+    QTRY_VERIFY(sets->isVisible() && sets->currentIndex().isValid());
+    const auto root = sets->currentIndex().siblingAtColumn(0);
+    QCOMPARE(root.data(Qt::UserRole).toInt(), dataSet);
+    sets->expand(root);
+    QTRY_COMPARE(sets->model()->rowCount(root), 2);
+    const auto member = sets->model()->index(0, 0, root);
+    sets->scrollTo(member);
+    QTRY_VERIFY(Task7Acceptance::CellVisible(sets, member));
+    action = ChooseMenu(sets, member, QStringLiteral("MMS Item"), Gesture::Mouse);
+    QVERIFY(action.expanded && action.dispatched);
+    QCOMPARE(QApplication::clipboard()->text(), magItem);
+    QCOMPARE(sets->currentIndex(), root);
+    QVERIFY(action.heads.contains(QStringLiteral("打开引用拓扑")) && action.heads.contains(QStringLiteral("在 MMS 中查阅属性")));
+    action = ChooseMenu(sets, member, QStringLiteral("原始 FCDA 声明"), Gesture::Mouse);
+    QVERIFY(action.expanded && action.dispatched);
+    const auto memberNode = member.data(Qt::UserRole).toInt();
+    QCOMPARE(QApplication::clipboard()->text(), snapshot->analysis.source->openingTag(doc.nodes[memberNode].source));
+    QApplication::clipboard()->setText(sentinel);
+    action = ChooseMenu(sets, member, QStringLiteral("对象引用"), Gesture::Mouse, [&] { order->setCurrentIndex(1); });
+    QVERIFY(action.expanded && action.dispatched);
+    QCOMPARE(QApplication::clipboard()->text(), sentinel);
+
+    taskSwitch->click();
+    const auto reportRoute = tasks->findItems(QStringLiteral("报告上送"), Qt::MatchExactly | Qt::MatchRecursive);
+    QCOMPARE(reportRoute.size(), 1);
+    tasks->setCurrentItem(reportRoute.front());
+    QTRY_VERIFY(mms->Result() && mms->Result()->request.kind == SclMmsQueryKind::Reports && !mms->Result()->rows.empty());
+    const auto report = table->model()->index(0, 0);
+    QCOMPARE(report.data().toString(), QStringLiteral("VoltageReport"));
+    table->setCurrentIndex(report);
+    table->scrollTo(report);
+    action = ChooseMenu(table, report, QStringLiteral("原始 rptID"), Gesture::Keyboard);
+    QVERIFY(action.expanded && action.dispatched);
+    QVERIFY(action.preview.size() < 150);
+    QCOMPARE(QApplication::clipboard()->text(), longId);
+    QApplication::clipboard()->setText(sentinel);
+    action = ChooseMenu(table, report, QStringLiteral("原始 rptID"), Gesture::Mouse, [&] {
+        service->Close();
+        service->Open(QStringLiteral(SCL_FIXTURE_DIR "/Task4Signals.scd"));
+    });
+    QVERIFY(action.expanded);
+    QCOMPARE(QApplication::clipboard()->text(), sentinel);
+    QTRY_VERIFY(service->snapshot() && service->snapshot() != snapshot);
+
+    const auto goose = tasks->findItems(QStringLiteral("GOOSE"), Qt::MatchExactly | Qt::MatchRecursive);
+    QCOMPARE(goose.size(), 1);
+    tasks->setCurrentItem(goose.front());
+    auto* taskRows = window.findChild<QTableView*>("SclTaskResults");
+    QTRY_VERIFY(taskRows && taskRows->isVisible() && taskRows->model()->rowCount() == 1);
+    const auto publisher = taskRows->model()->index(0, 0);
+    action = ChooseMenu(taskRows, publisher, QStringLiteral("原始 appID"), Gesture::Mouse);
+    QVERIFY(action.expanded && action.dispatched);
+    QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("EventsText"));
+    taskRows->setCurrentIndex(publisher);
+    auto* members = window.findChild<QTableWidget*>("SclPublicationMembers");
+    QTRY_VERIFY(members && members->isVisible() && members->rowCount() == 2);
+    auto* scroll = window.findChild<QScrollArea*>("SclPublicationScroll");
+    QVERIFY(scroll);
+    const auto published = members->model()->index(0, 0);
+    members->scrollTo(published);
+    const auto memberCenter = members->viewport()->mapTo(scroll->widget(), members->visualRect(published).center());
+    scroll->ensureVisible(memberCenter.x(), memberCenter.y(), 0, members->fontMetrics().height());
+    QTRY_VERIFY(SclNavigationProbe::VisibleRect(members->viewport()).intersects(members->visualRect(published)));
+    action = ChooseMenu(members, published, QStringLiteral("原始 FCDA 声明"), Gesture::Mouse);
+    QVERIFY(action.expanded && action.dispatched);
+    QVERIFY(QApplication::clipboard()->text().contains("doName=\"Pos\""));
+}
 
 int main(int argc, char** argv)
 {

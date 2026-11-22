@@ -1,7 +1,9 @@
 #include "SclWorkspace.hpp"
 
 #include "SclIssueExport.hpp"
+#include "SclReferenceMenu.hpp"
 #include "SclSearchSession.hpp"
+#include "SclTableInteraction.hpp"
 #include <deque>
 #include <QAbstractTableModel>
 #include <QCheckBox>
@@ -37,7 +39,7 @@ SearchScope TableScope(const QWidget* page)
         return SearchScope::All;
     const auto name = page->objectName();
     if (name == "SclReports") return SearchScope::Reports;
-    if (name == "SclDataSets") return SearchScope::DataSets;
+    if (name == "SclDataSetPage") return SearchScope::DataSets;
     if (name == "SclMembers") return SearchScope::Members;
     if (name == "SclObjects") return SearchScope::Objects;
     if (name == "SclCommunication") return SearchScope::Communication;
@@ -263,6 +265,12 @@ void SclWorkspace::AttachSearchResults()
     m_results->horizontalHeader()->setDefaultSectionSize(110);
     m_resultsModel = new SclResultsModel(m_results);
     m_results->setModel(m_resultsModel);
+    ConnectSclReferenceMenu(new SclTableInteraction(m_results), [this](const QModelIndex& index) {
+        SclReferenceRequest request;
+        request.anchor = SclReferenceAnchor::Hit;
+        request.hit = m_resultsModel->Hit(index.row());
+        return ReferenceMenu(std::move(request));
+    });
     m_results->setColumnWidth(0, 160);
     m_results->setColumnWidth(2, 250);
     m_tables->addTab(m_results, QStringLiteral("搜索结果"));
@@ -316,6 +324,7 @@ void SclWorkspace::AttachSearchResults()
 
 void SclWorkspace::ResetSearch(bool clearInputs)
 {
+    ++m_referenceGeneration;
     m_search->Cancel();
     m_searchDelay->stop();
     m_searching = false;
@@ -334,6 +343,7 @@ void SclWorkspace::ResetSearch(bool clearInputs)
         }
         const QSignalBlocker blocked(m_severityFilter);
         m_severityFilter->setCurrentIndex(0);
+        m_dataSets->SetFilter({});
     }
     UpdateSearchStatus();
 }
@@ -343,6 +353,11 @@ void SclWorkspace::ScheduleSearch()
     ResetSearch();
     if (!m_snapshot)
         return;
+    if (m_tables->currentWidget() == m_dataSets && m_searchMode->currentIndex() == 1)
+    {
+        BeginSearch();
+        return;
+    }
     m_searchDelay->start();
     UpdateSearchStatus();
 }
@@ -359,6 +374,23 @@ void SclWorkspace::BeginSearch()
     query.severity = m_severityFilter->currentIndex() - 1;
     query.exact = m_exact->isChecked();
     query.dataSet = m_dataSet;
+    if (m_tables->currentWidget() == m_dataSets)
+    {
+        SclHierarchyRequest filter;
+        if (m_searchMode->currentIndex() == 1)
+        {
+            filter.text = query.text;
+            filter.iedName = query.ied;
+            filter.type = query.type;
+            filter.fc = query.fc;
+            filter.severity = query.severity;
+            filter.exact = query.exact;
+            m_dataSets->SetFilter(filter);
+            UpdateSearchStatus();
+            return;
+        }
+        m_dataSets->SetFilter(filter);
+    }
     if (query.empty())
     {
         UpdateSearchStatus();
@@ -401,6 +433,12 @@ void SclWorkspace::CancelSearch()
 
 void SclWorkspace::UpdateSearchStatus()
 {
+    const bool filter = m_searchMode->currentIndex() == 1;
+    m_query->setPlaceholderText(filter && m_tables->currentWidget() == m_dataSets
+        ? QStringLiteral("筛选当前数据集列表")
+        : filter && m_tables->currentWidget() == m_members
+        ? QStringLiteral("筛选当前数据集成员")
+        : QStringLiteral("搜索名称、描述、引用、地址或规则编号"));
     m_cancelSearch->setEnabled(m_searching || m_searchDelay->isActive());
     m_moreResults->setVisible(m_resultsModel->rowCount() < m_resultsModel->total());
     QString text;

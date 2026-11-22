@@ -154,6 +154,8 @@ private slots:
                      ? QByteArray::fromHex("3c00") : QByteArray::fromHex("003c"));
         QCOMPARE(result.source->line(5).text, QStringLiteral("  <IED\r\n"));
         QVERIFY(result.source->line(6).text.contains(QStringLiteral("测点😀")));
+        QCOMPARE(result.source->openingTag(doc.nodes[ied].source),
+            QStringLiteral("<IED\r\n    name='测点😀' xmlns:v='urn:test' v:name='foreign'>"));
         QCOMPARE(doc.attribute(ied, "name"), QStringLiteral("测点😀"));
         QCOMPARE(doc.attribute(ied, "name", "urn:test"), QStringLiteral("foreign"));
         QCOMPARE(doc.nodes[doc.nodes[ied].nextSibling].source.line, 9);

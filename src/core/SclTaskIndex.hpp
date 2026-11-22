@@ -80,7 +80,7 @@ struct SclTaskIndex
                               Scl::TaskControl* task);
 };
 
-QString SclTaskPath(const Scl::Document& document, Scl::NodeId node);
+QString SclTaskPath(const Scl::Document& document, Scl::NodeId node, bool full = false);
 QString SclSignalCategory(const Scl::SignalDefinition& definition);
 QStringList SclTaskCells(const SclSnapshot& snapshot, SclTaskRow row, bool fullSignal = false);
 std::vector<SclTaskRow> FilterSclTaskRows(const SclSnapshot& snapshot, SclTaskKind kind, Scl::NodeId ied,

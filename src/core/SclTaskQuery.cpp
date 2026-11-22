@@ -7,7 +7,7 @@ namespace iec61850sim
 using Scl::NodeId;
 using Scl::NoNode;
 
-static QString TaskPath(const Scl::Document& doc, NodeId node, bool full)
+QString SclTaskPath(const Scl::Document& doc, NodeId node, bool full)
 {
     QStringList path;
     for (int depth = 0; node != NoNode && (full || depth < 32); ++depth)
@@ -28,11 +28,6 @@ static QString TaskPath(const Scl::Document& doc, NodeId node, bool full)
         node = element.parent;
     }
     return path.join('/');
-}
-
-QString SclTaskPath(const Scl::Document& doc, NodeId node)
-{
-    return TaskPath(doc, node, false);
 }
 
 QString SclSignalCategory(const Scl::SignalDefinition& definition)
@@ -69,7 +64,7 @@ QStringList SclTaskCells(const SclSnapshot& snapshot, SclTaskRow row, bool fullS
             ? doc.nodes[source].text : doc.attribute(source, QStringLiteral("desc"));
         if (!fullSignal)
             description = description.left(source != NoNode && doc.nodes[source].name == "Val" ? 512 : 2048);
-        const auto path = TaskPath(doc, instance.logicalNode, fullSignal) + '.' + definition.path;
+        const auto path = SclTaskPath(doc, instance.logicalNode, fullSignal) + '.' + definition.path;
         return {description.isEmpty() ? definition.path : description, SclSignalCategory(definition),
                 path, definition.cdc, definition.hasUnexpandedArray ? QStringLiteral("数组未展开")
                     : definition.type == NoNode ? QStringLiteral("类型未解析") : QString{}};

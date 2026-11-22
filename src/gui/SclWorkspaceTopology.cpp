@@ -1,5 +1,7 @@
 #include "SclWorkspace.hpp"
 #include "SclTopology.hpp"
+#include "SclReferenceMenu.hpp"
+#include "SclTableInteraction.hpp"
 
 #include <QAbstractItemView>
 #include <QAction>
@@ -15,8 +17,11 @@
 #include <QLabel>
 #include <QLockFile>
 #include <QMenu>
+#include <QPointer>
+#include <QTableView>
 #include <QPushButton>
 #include <QStandardPaths>
+#include <QStyle>
 #include <QTemporaryDir>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -90,8 +95,9 @@ void SclWorkspace::CreateTopologyControls(QVBoxLayout* layout)
 {
     m_topologyFiles = std::make_shared<SclTopologyFiles>();
     auto* actions = new QHBoxLayout;
-    m_topology = new QPushButton(QStringLiteral("打开引用拓扑"), this);
+    m_topology = new QPushButton(style()->standardIcon(QStyle::SP_FileLinkIcon), QStringLiteral("打开局部引用拓扑"), this);
     m_topology->setObjectName("SclOpenTopology");
+    m_topology->setToolTip(QStringLiteral("打开当前所选节点的本地只读关系图"));
     m_copyTopologyPath = new QPushButton(QStringLiteral("复制本地页面路径"), this);
     actions->addWidget(m_topology);
     actions->addWidget(m_copyTopologyPath);
@@ -111,25 +117,61 @@ void SclWorkspace::CreateTopologyControls(QVBoxLayout* layout)
 
 void SclWorkspace::AddTopologyAction(QAbstractItemView* view)
 {
-    view->setContextMenuPolicy(Qt::CustomContextMenu);
-    connect(view, &QAbstractItemView::customContextMenuRequested, this, [this, view](const QPoint& point) {
-        const auto index = view->indexAt(point);
-        if (!index.isValid() || !m_snapshot || m_buildingTopology)
-            return;
+    auto* interaction = new SclTableInteraction(view);
+    interaction->EnableReferenceMenus();
+    connect(interaction, &SclTableInteraction::PopulateContextMenu, this, [this, view](QMenu& menu, const QModelIndex& index) {
+        if (!m_snapshot) return;
         const auto id = index.data(Qt::UserRole).toInt();
-        if (!CanShowSclTopology(*m_snapshot, id))
-            return;
-        QMenu menu(view);
-        auto* action = menu.addAction(QStringLiteral("打开引用拓扑"));
         const std::weak_ptr<const SclSnapshot> snapshot = m_snapshot;
-        if (menu.exec(view->viewport()->mapToGlobal(point)) == action && snapshot.lock() == m_snapshot)
-            OpenTopology(id);
+        if (!m_buildingTopology && CanShowSclTopology(*m_snapshot, id))
+            menu.addAction(QStringLiteral("打开引用拓扑"), this, [this, id, snapshot] {
+                if (snapshot.lock() == m_snapshot) OpenTopology(id);
+            });
+        AddMmsAttributeAction(menu, id, view, index);
+    });
+    if (qobject_cast<QTableView*>(view)) AddNodeReferenceMenu(interaction);
+}
+
+void SclWorkspace::AddMmsAttributeAction(QMenu& menu, Scl::NodeId node, QAbstractItemView* view, const QModelIndex& index)
+{
+    if (!m_snapshot || !IsSclMmsAttributeTarget(*m_snapshot, node)) return;
+    const std::weak_ptr<const SclSnapshot> snapshot = m_snapshot;
+    const auto scope = m_ied;
+    auto* action = menu.addAction(QStringLiteral("在 MMS 中查阅属性"), this,
+        [this, snapshot, scope, node, view = QPointer<QAbstractItemView>(view), hit = QPersistentModelIndex(index)] {
+        if (snapshot.lock() != m_snapshot || scope != m_ied || !view || !hit.isValid()) return;
+        view->setCurrentIndex(hit);
+        OpenMmsAttributeTarget(node);
+    });
+    action->setObjectName("SclOpenMmsAttributes");
+}
+
+SclReferenceMenuContext SclWorkspace::ReferenceMenu(SclReferenceRequest request)
+{
+    const std::weak_ptr<const SclSnapshot> snapshot = m_snapshot;
+    const auto generation = m_referenceGeneration;
+    return {m_snapshot, std::move(request), [self = QPointer<SclWorkspace>(this), snapshot, generation] {
+        return self && snapshot.lock() == self->m_snapshot && generation == self->m_referenceGeneration;
+    }};
+}
+
+void SclWorkspace::AddNodeReferenceMenu(SclTableInteraction* interaction, bool candidate)
+{
+    ConnectSclReferenceMenu(interaction, [this, candidate](const QModelIndex& index) {
+        const auto value = index.data(Qt::UserRole);
+        if (!value.isValid() || value.toInt() == Scl::NoNode) return SclReferenceMenuContext{};
+        SclReferenceRequest request;
+        request.anchor = candidate ? SclReferenceAnchor::Candidate : SclReferenceAnchor::Node;
+        request.node = value.toInt();
+        return ReferenceMenu(std::move(request));
     });
 }
 
 void SclWorkspace::UpdateTopologyControls()
 {
     m_topology->setEnabled(!m_buildingTopology && m_snapshot && CanShowSclTopology(*m_snapshot, m_selected));
+    if (m_overviewTopology)
+        m_overviewTopology->setEnabled(m_topology->isEnabled());
     m_copyTopologyPath->setVisible(!m_topologyPath.isEmpty());
     m_topologyStatus->setVisible(!m_topologyStatus->text().isEmpty());
 }

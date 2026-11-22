@@ -4,13 +4,30 @@
 #include <QSet>
 #include <QRegularExpression>
 #include <algorithm>
+#include <tuple>
 
 namespace iec61850sim {
 using namespace Scl;
 
+bool IsSclMmsAttributeTarget(const SclSnapshot& s, NodeId id)
+{
+    const auto& doc = *s.analysis.document;
+    if (id < 0 || id >= int(doc.nodes.size()) || !doc.nodes[id].isScl()) return false;
+    const auto& node = doc.nodes[id];
+    if (node.name == "FCDA") return s.browse.dataSetMembers.contains(node.parent);
+    if (node.name == "DO" || node.name == "SDO" || node.name == "DA" || node.name == "BDA") return true;
+    return s.browse.iedOwners[id] != NoNode && (node.name == "LN" || node.name == "LN0"
+        || node.name == "DOI" || node.name == "SDI" || node.name == "DAI");
+}
+
 SclMmsIndex SclMmsIndex::Build(const MmsProjection& p, const ReferenceAnalysis& a, TaskControl* task)
 {
     SclMmsIndex index;
+    for (const auto& server : p.servers)
+        for (const auto& domain : server.domains) {
+            checkpoint(task);
+            index.domainsByDevice.insert(domain.device, domain);
+        }
     for (int i = 0; i < int(p.reports.size()); ++i) {
         checkpoint(task);
         index.reports.insert(p.reports[i].node, i);
@@ -52,13 +69,50 @@ SclMmsIndex SclMmsIndex::Build(const MmsProjection& p, const ReferenceAnalysis& 
         checkpoint(task);
         if (a.references[i].kind != LinkKind::Fcda) continue;
         if (index.memberReferences.size() >= memberLimit) { index.limited = true; break; }
-        index.memberReferences.insert(a.references[i].source, i);
+        const auto& ref = a.references[i];
+        index.memberReferences.insert(ref.source, i);
+        if (ref.state == LinkState::Resolved && ref.candidates.size() == 1 && ref.logicalNode != NoNode)
+            index.membersByLogicalNode[ref.logicalNode].push_back(i);
     }
     return index;
 }
 
 namespace {
 struct BudgetEnd {};
+struct ArraySelection {
+    NodeId declaration = NoNode;
+    int index = -1;
+    QList<NodeId> path;
+};
+
+struct AttributeTarget {
+    NodeId logicalNode = NoNode, declaration = NoNode;
+    QList<NodeId> path;
+    QStringList instancePath;
+    QString fc;
+    int indexPart = -1, index = -1;
+    bool exact = false;
+};
+
+int UnsignedIndex(const QString& value)
+{
+    static const QRegularExpression digits(QStringLiteral("^[0-9]+$"));
+    bool ok = false;
+    const int number = value.toInt(&ok);
+    return ok && digits.match(value).hasMatch() ? number : -1;
+}
+
+SclMmsDirectState DirectState(const SclMmsRow& row)
+{
+    if (row.state == LinkState::Ambiguous) return SclMmsDirectState::Ambiguous;
+    if (row.state == LinkState::Missing) return SclMmsDirectState::Missing;
+    if (row.state == LinkState::Partial && row.shape == SclMmsAddressShape::ArrayTemplate)
+        return SclMmsDirectState::ArraySelectionRequired;
+    if (row.state != LinkState::Resolved) return SclMmsDirectState::Blocked;
+    if (row.shape == SclMmsAddressShape::AlternateAccess) return SclMmsDirectState::AlternateAccess;
+    return row.shape == SclMmsAddressShape::Structure ? SclMmsDirectState::Structure : SclMmsDirectState::Mapped;
+}
+
 class Query {
 public:
     Query(const SclSnapshot& s, SclMmsRequest r, TaskControl* t)
@@ -80,6 +134,8 @@ private:
     TaskControl* task;
     SclMmsResult out;
     int work = 0;
+    std::optional<SclMmsRow> reportAttribute;
+    AttributeTarget attributeTarget;
     void Tick() { checkpoint(task); if (++work > r.workLimit) throw BudgetEnd{}; }
     bool Valid(NodeId n) const { return n >= 0 && n < int(doc.nodes.size()); }
     QString Attr(NodeId n, const char* key) const {
@@ -103,6 +159,13 @@ private:
     SclMmsAddressShape Shape(const Reference&);
     void Members(NodeId report);
     void Addresses(int signal);
+    void Attributes();
+    bool PrepareAttributeTarget();
+    bool MatchesAttributeTarget(const SclMmsRow& row) const;
+    void AttributeReports();
+    ArraySelection RequestedArray(const SclMmsKey& signal);
+    SclMmsReportMatch MatchReport(const SclMmsRow& attribute, const Reference& member);
+    SclMmsAttributeMatch MatchAttribute(const SclMmsRow& row, const QString& ln, const QString& cdc) const;
     void ReverseSignal(int signal);
     void Graph(NodeId report);
     bool Matches(const SclMmsRow& row) const;
@@ -131,6 +194,8 @@ bool Query::InScope(NodeId n)
 bool Query::Matches(const SclMmsRow& row) const
 {
     if (!r.fc.isEmpty() && row.fc != r.fc) return false;
+    if (r.kind == SclMmsQueryKind::Attributes)
+        return r.text.trimmed().isEmpty() || row.attributeMatch != SclMmsAttributeMatch::None;
     if (r.text.isEmpty()) return true;
     for (const auto& cell : row.cells)
         if (cell.contains(r.text, Qt::CaseInsensitive)) return true;
@@ -146,9 +211,7 @@ bool Query::Add(SclMmsRow row)
     if (r.locate) {
         if (!out.locateFound && pos % r.pageSize == 0) out.rows.clear();
         if (!out.locateFound || pos < out.request.offset + r.pageSize) out.rows.push_back(row);
-        const auto& key = *r.locate;
-        if (row.key.kind == key.kind && row.key.node == key.node && row.key.record == key.record
-            && row.key.ordinal == key.ordinal && row.key.field == key.field) {
+        if (row.key == *r.locate) {
             out.locateFound = true;
             out.request.offset = (pos / r.pageSize) * r.pageSize;
         }
@@ -281,34 +344,94 @@ void Query::Members(NodeId report)
     }
 }
 
+ArraySelection Query::RequestedArray(const SclMmsKey& signal)
+{
+    const auto& key = r.kind == SclMmsQueryKind::AttributeReports ? r.key : r.locate.value_or(SclMmsKey{});
+    if (key.kind == SclMmsRecordKind::Address && key.node == signal.node && key.record == signal.record
+        && key.arrayDeclaration != NoNode)
+        return {key.arrayDeclaration, key.arrayIndex};
+    const auto member = s.mmsIndex.memberReferences.constFind(r.arrayMember);
+    if (member == s.mmsIndex.memberReferences.cend()) return {};
+    const auto& ref = s.analysis.references[*member];
+    if (ref.state != LinkState::Resolved || ref.logicalNode != signal.node || ref.arrayIndex < 0) return {};
+    const auto trace = s.analysis.fcdaTraces.constFind(ref.source);
+    if (trace != s.analysis.fcdaTraces.cend()) {
+        QList<NodeId> path;
+        for (const auto& step : trace->steps) {
+            Tick();
+            if (step.field == FcdaField::DoName || step.field == FcdaField::DaName) path.push_back(step.node);
+            if (step.field == FcdaField::Ix)
+                return {step.node, ref.arrayIndex, path.mid(0, path.indexOf(step.node) + 1)};
+        }
+    }
+    return {};
+}
+
+SclMmsAttributeMatch Query::MatchAttribute(const SclMmsRow& row, const QString& ln, const QString& cdc) const
+{
+    const auto text = r.text.trimmed();
+    if (text.isEmpty()) return SclMmsAttributeMatch::None;
+    const auto contains = [&](const QString& value) { return value.contains(text, Qt::CaseInsensitive); };
+    auto fullPath = row.objectPath;
+    if (row.key.declaration != NoNode) fullPath += '.' + row.key.field;
+    if (contains(fullPath) || contains(ln + '.' + fullPath) || contains(row.objectReference)
+        || contains(row.domain) || contains(row.item) || contains(row.domain + '/' + row.item)
+        || contains(Attr(row.logicalDevice, "inst")))
+        return SclMmsAttributeMatch::PathOrAddress;
+
+    if (row.fc == "MX" && cdc == "CMV"
+        && (row.objectPath == "PhV.phsA" || row.objectPath == "PhV.phsB" || row.objectPath == "PhV.phsC")) {
+        const bool magnitude = row.key.field.startsWith("cVal.mag.");
+        const bool angle = row.key.field.startsWith("cVal.ang.");
+        if (magnitude || angle) {
+            auto compact = text.simplified(); compact.remove(' ');
+            const auto phase = row.objectPath.back() + QStringLiteral("相电压");
+            const auto quantity = magnitude ? QStringLiteral("幅值") : QStringLiteral("相位");
+            if (compact.compare(phase, Qt::CaseInsensitive) == 0 || compact == quantity
+                || compact == QStringLiteral("电压") + quantity
+                || compact.compare(phase + quantity, Qt::CaseInsensitive) == 0)
+                return SclMmsAttributeMatch::BusinessTerm;
+        }
+    }
+    return SclMmsAttributeMatch::None;
+}
+
 void Query::Addresses(int i)
 {
     if (i < 0 || i >= int(s.tasks.catalog.instances.size())) return;
     const auto& signal = s.tasks.catalog.instances[i];
+    if (attributeTarget.logicalNode != NoNode && signal.logicalNode != attributeTarget.logicalNode) return;
     if (!InScope(signal.logicalNode)) return;
     const auto& def = s.tasks.catalog.definitions[signal.definition];
     auto base = Signal(i);
     const auto ld = Ancestor(signal.logicalNode, "LDevice");
-    QString domain;
-    for (const auto& server : p.servers) {
-        Tick();
-        for (const auto& d : server.domains) {
-            Tick();
-            if (d.device == ld && d.state == MmsValueState::Derived) domain = d.name;
-        }
+    const auto server = Ancestor(ld, "Server");
+    const auto ap = r.scope.accessPoint == NoNode ? Ancestor(server, "AccessPoint") : r.scope.accessPoint;
+    base.addressScope = {s.browse.iedOwners[signal.logicalNode], ap, server};
+    base.logicalDevice = ld;
+    base.objectPath = def.path;
+    if (const auto domain = s.mmsIndex.domainsByDevice.constFind(ld);
+        domain != s.mmsIndex.domainsByDevice.cend() && domain->state == MmsValueState::Derived) {
+        base.domain = domain->name;
+        base.domainEvidence = domain->evidence;
+        base.evidence.push_back(domain->evidence);
+        if (domain->evidence.attribute == "inst") base.evidence.push_back({base.addressScope.ied, "name", {}});
     }
     const auto ln = doc.nodes[signal.logicalNode].name == "LN0" ? QStringLiteral("LLN0") :
         Attr(signal.logicalNode, "prefix") + Attr(signal.logicalNode, "lnClass") + Attr(signal.logicalNode, "inst");
     const auto memberType = [&](NodeId declaration, LinkKind kind = LinkKind::MemberType) {
         const auto refs = s.analysis.outgoing.equal_range(declaration);
-        NodeId target = NoNode;
+        std::pair<NodeId, LinkState> result{NoNode, LinkState::Missing};
+        bool found = false;
         for (auto it = refs.first; it != refs.second; ++it) {
             Tick(); const auto& ref = s.analysis.references[it.value()];
             if (ref.kind != kind) continue;
-            if (ref.state != LinkState::Resolved || ref.candidates.size() != 1 || target != NoNode) return NoNode;
-            target = ref.candidates.front();
+            if (found) return std::pair{NoNode, LinkState::Ambiguous};
+            found = true;
+            result = {ref.state == LinkState::Resolved && ref.candidates.size() == 1 ? ref.candidates.front() : NoNode,
+                ref.state};
         }
-        return target;
+        return result;
     };
     static const QRegularExpression addressPart(QStringLiteral("^[A-Za-z0-9_]+$"));
     const auto validPart = [&](const QString& part) { return addressPart.match(part).hasMatch(); };
@@ -325,9 +448,8 @@ void Query::Addresses(int i)
     uniquePath &= logicalNames == 1 && (doc.nodes[signal.logicalNode].name == "LN0" ?
         Attr(signal.logicalNode, "lnClass") == "LLN0" && Attr(signal.logicalNode, "inst").isEmpty() :
         !Attr(signal.logicalNode, "lnClass").isEmpty() && !Attr(signal.logicalNode, "inst").isNull());
-    auto objectType = memberType(signal.logicalNode, LinkKind::LogicalNodeType);
+    auto [objectType, objectState] = memberType(signal.logicalNode, LinkKind::LogicalNodeType);
     const auto objectParts = def.path.split('.');
-    QList<MmsEvidence> objectEvidence;
     for (int part = 0; part < objectParts.size() && objectType != NoNode; ++part) {
         Tick(); NodeId declaration = NoNode; int count = 0;
         for (auto n = doc.nodes[objectType].firstChild; n != NoNode; n = doc.nodes[n].nextSibling) {
@@ -337,22 +459,47 @@ void Query::Addresses(int i)
             }
         }
         uniquePath &= count == 1 && validPart(objectParts[part]);
-        objectType = count == 1 ? memberType(declaration) : NoNode;
-        if (count == 1) objectEvidence.push_back({declaration, {}, {}});
+        if (count == 1) {
+            std::tie(objectType, objectState) = memberType(declaration);
+            base.templatePath.push_back(declaration);
+            base.evidence.push_back({declaration, {}, {}});
+        } else {
+            objectType = NoNode;
+            objectState = count > 1 ? LinkState::Ambiguous : LinkState::Missing;
+        }
     }
     uniquePath &= objectType == def.type && objectType != NoNode;
-    base.evidence.append(objectEvidence);
+    const bool reportQuery = r.kind == SclMmsQueryKind::AttributeReports;
+    const bool search = r.kind == SclMmsQueryKind::Attributes;
+    const auto publish = [&](SclMmsRow row) {
+        if (reportQuery) {
+            if (row.key == r.key) reportAttribute = std::move(row);
+        } else if (MatchesAttributeTarget(row)) {
+            Add(std::move(row));
+        }
+    };
     if (def.type == NoNode || !uniquePath) {
         auto row = base; row.key.kind = SclMmsRecordKind::Address;
-        row.state = LinkState::Blocked; row.limitation = QStringLiteral("类型或逻辑节点地址未唯一解析。");
-        Add(std::move(row)); return;
+        row.state = logicalNames > 1 ? LinkState::Ambiguous : objectState;
+        if (row.state == LinkState::Resolved) row.state = LinkState::Blocked;
+        row.direct = DirectState(row);
+        row.limitation = QStringLiteral("类型或逻辑节点地址未唯一解析。");
+        if (search) row.attributeMatch = MatchAttribute(row, ln, def.cdc);
+        if (!search || r.arrayMember == NoNode) publish(std::move(row));
+        return;
     }
-    base.description = DescribeSclSignal(s.analysis, signal.logicalNode, def.path, task);
+    const auto selection = RequestedArray(base.key);
     QSet<NodeId> ancestry;
     QList<NodeId> declarations;
-    const auto expand = [&](auto&& self, NodeId type, const QString& prefix, const QString& parentFc,
-                            bool array, int depth) -> void {
-        Tick();
+    const auto describe = [&](const SclMmsRow& row) {
+        if (!base.description) base.description = DescribeSclSignal(s.analysis, signal.logicalNode, def.path, task);
+        const auto object = row.arrayIndex < 0 ? *base.description : DescribeSclSignal(s.analysis,
+            signal.logicalNode, def.path, task, row.key.arrayDeclaration, row.arrayIndex);
+        return DescribeSclAttribute(s.analysis, object, row.key.field, row.fc, declarations, task,
+            row.key.arrayDeclaration, row.arrayIndex);
+    };
+    const auto expand = [&](auto&& self, NodeId type, const QString& prefix, const QString& parentFc, int depth) -> void {
+        Tick(); if (reportAttribute) return;
         if (depth >= 32 || ancestry.contains(type)) {
             out.limited = true; out.limitation = QStringLiteral("属性类型深度/环预算受限。"); return;
         }
@@ -378,44 +525,266 @@ void Query::Addresses(int i)
                 "TrgOps", "OptFlds", "SvOptFlds", "LogOptFlds"};
             // Any count declaration remains a template until alternate access
             // is explicitly resolved. No implicit element 0 or scalar address.
-            const bool isArray = array || !Attr(c, "count").isNull();
             auto row = base;
             row.key.kind = SclMmsRecordKind::Address; row.key.field = path;
-            row.fc = fc; row.domain = domain;
+            row.key.fc = fc; row.key.declaration = c;
+            row.fc = fc;
+            row.templatePath.append(declarations);
+            row.templatePath.push_back(c);
+            row.fcEvidence = {depth ? declarations.front() : c, "fc", {}};
+            const auto selectedFromInstance = attributeTarget.indexPart >= 0 && attributeTarget.indexPart < row.templatePath.size();
+            const int axis = selectedFromInstance ? attributeTarget.indexPart : int(row.templatePath.indexOf(selection.declaration));
+            const int index = selectedFromInstance ? attributeTarget.index : selection.index;
+            const auto axisNode = axis >= 0 ? row.templatePath[axis] : NoNode;
+            const bool selected = axis >= 0 && index >= 0 && index < UnsignedIndex(Attr(axisNode, "count"))
+                && (selection.path.isEmpty() || selection.path == row.templatePath.mid(0, axis + 1));
+            const bool isArray = std::any_of(row.templatePath.cbegin(), row.templatePath.cend(), [&](NodeId declaration) {
+                return !Attr(declaration, "count").isNull() && (!selected || declaration != axisNode);
+            });
             row.shape = isArray ? SclMmsAddressShape::ArrayTemplate :
                 bt == "Struct" ? SclMmsAddressShape::Structure : SclMmsAddressShape::Scalar;
             static const QSet<QString> fcs = {"ST","MX","SP","SV","CF","DC","SG","SE","SR","OR","BL","EX","CO","US","MS","RP","BR","LG","GO","GS"};
-            row.state = !domain.isEmpty() && validPart(name) && names.value(nameKey) == 1 && fcs.contains(fc)
+            row.state = !row.domain.isEmpty() && validPart(name) && names.value(nameKey) == 1 && fcs.contains(fc)
                 && basicTypes.contains(bt) ? LinkState::Resolved : LinkState::Blocked;
             if (!basicTypes.contains(bt)) row.shape = SclMmsAddressShape::None;
+            const auto [target, typeState] = (bt == "Struct" || bt == "Enum") ? memberType(c) :
+                std::pair{NoNode, LinkState::Resolved};
+            const auto nested = bt == "Struct" ? target : NoNode;
+            if (typeState != LinkState::Resolved) row.state = typeState;
             if (names.value(nameKey) > 1) row.state = LinkState::Ambiguous;
-            const auto nested = bt == "Struct" ? memberType(c) : NoNode;
-            if (bt == "Struct" && nested == NoNode) row.state = LinkState::Blocked;
-            if (bt == "Enum" && memberType(c) == NoNode) row.state = LinkState::Blocked;
-            if (isArray) {
+            if (selected) {
+                row.arrayIndex = row.key.arrayIndex = index;
+                row.key.arrayDeclaration = axisNode;
+            }
+            if (isArray && row.state == LinkState::Resolved) {
                 row.state = LinkState::Partial;
                 row.limitation = QStringLiteral("数组模板未选择元素；不生成标量 Item。");
             } else if (row.state == LinkState::Resolved) {
-                auto object = def.path; object.replace('.', '$');
-                auto attribute = path; attribute.replace('.', '$');
-                row.item = ln + '$' + fc + '$' + object + '$' + attribute;
+                auto parts = objectParts + path.split('.');
+                if (selected) {
+                    row.shape = SclMmsAddressShape::AlternateAccess;
+                    row.item = ln + '$' + fc + '$' + parts.mid(0, axis + 1).join('$');
+                    row.component = parts.mid(axis + 1).join('$');
+                    parts[axis] += '(' + QString::number(index) + ')';
+                } else {
+                    row.item = ln + '$' + fc + '$' + parts.join('$');
+                }
+                row.objectReference = row.domain + '/' + ln + '.' + parts.join('.');
             } else row.limitation = QStringLiteral("名称、FC 或类型未唯一解析；不生成确定地址。");
+            row.direct = DirectState(row);
             row.evidence.push_back({c, {}, {}});
             row.cells << path << fc << bt << Attr(c, "count") << row.domain << row.item << row.limitation;
             declarations.push_back(c);
-            if (Matches(row) && out.total >= r.offset && int(out.rows.size()) < r.pageSize)
-                row.description = DescribeSclAttribute(s.analysis, *base.description, path, fc, declarations, task);
-            Add(std::move(row));
+            const bool targetMatches = !search || MatchesAttributeTarget(row);
+            if (search && targetMatches && (r.fc.isEmpty() || row.fc == r.fc)) {
+                row.attributeMatch = MatchAttribute(row, ln, def.cdc);
+                if (row.attributeMatch == SclMmsAttributeMatch::None && !r.text.trimmed().isEmpty()) {
+                    row.description = describe(row);
+                    const auto matchesDescription = [&](const SclDescriptionField& field) {
+                        return field.state == SclDescriptionState::Present && field.value.contains(r.text.trimmed(), Qt::CaseInsensitive);
+                    };
+                    const auto attribute = std::find_if(row.description->fields.cbegin(), row.description->fields.cend(), matchesDescription);
+                    const auto object = std::find_if(base.description->fields.cbegin(), base.description->fields.cend(), matchesDescription);
+                    if (attribute != row.description->fields.cend())
+                        row.matchEvidence = {attribute->node, "desc", {}};
+                    else if (object != base.description->fields.cend())
+                        row.matchEvidence = {object->node, object->source == SclDescriptionSource::InstanceDU ? QString() : QStringLiteral("desc"), {}};
+                    else if (Attr(signal.logicalNode, "desc").contains(r.text.trimmed(), Qt::CaseInsensitive))
+                        row.matchEvidence = {signal.logicalNode, "desc", {}};
+                    if (row.matchEvidence.node != NoNode)
+                        row.attributeMatch = SclMmsAttributeMatch::Description;
+                }
+            }
+            const bool onPage = r.locate ? row.key == *r.locate || out.locateFound :
+                out.total >= r.offset && int(out.rows.size()) < r.pageSize;
+            if (!reportQuery && targetMatches && onPage && Matches(row) && !row.description) row.description = describe(row);
+            if (targetMatches && (!search || r.arrayMember == NoNode || selected)) publish(std::move(row));
+            if (reportAttribute) {
+                declarations.pop_back();
+                break;
+            }
             if (nested != NoNode && names.value(nameKey) == 1 && validPart(name) && path.size() < 2048)
-                self(self, nested, path + '.', fc, isArray, depth + 1);
+                self(self, nested, path + '.', fc, depth + 1);
             else if (nested != NoNode && path.size() >= 2048) {
                 out.limited = true; out.limitation = QStringLiteral("属性路径长度受限。");
             }
             declarations.pop_back();
+            if (reportAttribute) break;
         }
         ancestry.remove(type);
     };
-    expand(expand, def.type, {}, {}, def.hasUnexpandedArray, 0);
+    expand(expand, def.type, {}, {}, 0);
+}
+
+void Query::Attributes()
+{
+    if (r.target != NoNode && !PrepareAttributeTarget()) return;
+    if (r.signal >= 0) {
+        Addresses(r.signal);
+    } else if (r.scope.ied != NoNode) {
+        const auto candidates = s.tasks.signalsByIed.constFind(r.scope.ied);
+        if (candidates != s.tasks.signalsByIed.cend())
+            for (const auto signal : *candidates) { Tick(); Addresses(signal); }
+    } else {
+        for (int i = 0; i < int(s.tasks.catalog.instances.size()); ++i) { Tick(); Addresses(i); }
+    }
+    if (s.tasks.catalog.limited) {
+        out.limited = true;
+        out.limitation += QStringLiteral(" 共享信号目录受限。");
+    }
+}
+
+bool Query::PrepareAttributeTarget()
+{
+    if (!IsSclMmsAttributeTarget(s, r.target)) {
+        out.summary = QStringLiteral("所选记录没有可查阅的属性依据。");
+        return false;
+    }
+    const auto& element = doc.nodes[r.target];
+    if (element.name == "FCDA") {
+        const auto entry = s.mmsIndex.memberReferences.constFind(r.target);
+        if (entry == s.mmsIndex.memberReferences.cend()) {
+            out.limited = s.mmsIndex.limited;
+            out.summary = QStringLiteral("成员引用索引未覆盖。可查看来源 FCDA 原文。");
+            return false;
+        }
+        const auto& ref = s.analysis.references[*entry];
+        const auto trace = s.analysis.fcdaTraces.constFind(r.target);
+        if (ref.state != LinkState::Resolved || trace == s.analysis.fcdaTraces.cend()) {
+            out.summary = QStringLiteral("FCDA 引用未解析 · %1").arg(SclMmsStateText(ref.state));
+            if (!ref.detail.isEmpty()) out.summary += QStringLiteral(" · ") + ref.detail;
+            return false;
+        }
+        attributeTarget.logicalNode = ref.logicalNode;
+        attributeTarget.fc = Attr(r.target, "fc");
+        for (const auto& step : trace->steps) {
+            Tick();
+            if (step.field == FcdaField::DoName || step.field == FcdaField::DaName)
+                attributeTarget.path.push_back(step.node);
+            attributeTarget.exact |= step.field == FcdaField::DaName;
+        }
+        if (ref.arrayIndex >= 0) r.arrayMember = r.target;
+    } else if (element.name == "DO" || element.name == "SDO" || element.name == "DA" || element.name == "BDA") {
+        attributeTarget.declaration = r.target;
+        attributeTarget.exact = element.name == "DA" || element.name == "BDA";
+    } else {
+        attributeTarget.exact = element.name == "DAI";
+        auto node = r.target;
+        int reversedIndexPart = -1;
+        while (Valid(node) && (doc.nodes[node].name == "DOI" || doc.nodes[node].name == "SDI" || doc.nodes[node].name == "DAI")) {
+            Tick();
+            const auto name = Attr(node, "name");
+            const auto index = Attr(node, "ix");
+            if (!index.isNull()) {
+                if (reversedIndexPart >= 0 || UnsignedIndex(index) < 0) {
+                    out.summary = QStringLiteral("实例索引无法唯一解释。可查看来源原文。");
+                    return false;
+                }
+                reversedIndexPart = int(attributeTarget.instancePath.size());
+                attributeTarget.index = UnsignedIndex(index);
+            }
+            attributeTarget.instancePath.prepend(name);
+            node = doc.nodes[node].parent;
+        }
+        if (reversedIndexPart >= 0)
+            attributeTarget.indexPart = int(attributeTarget.instancePath.size()) - 1 - reversedIndexPart;
+        if (!Valid(node) || !doc.nodes[node].isScl() || (doc.nodes[node].name != "LN" && doc.nodes[node].name != "LN0")) {
+            out.summary = QStringLiteral("来源对象没有可定位的 LN 实例。可查看来源原文。");
+            return false;
+        }
+        attributeTarget.logicalNode = node;
+    }
+    if (attributeTarget.logicalNode != NoNode && !InScope(attributeTarget.logicalNode)) {
+        out.summary = QStringLiteral("来源对象不在当前 IED / AP / Server 范围。");
+        return false;
+    }
+    return true;
+}
+
+bool Query::MatchesAttributeTarget(const SclMmsRow& row) const
+{
+    const auto& target = attributeTarget;
+    if (!target.fc.isEmpty() && target.fc != row.fc) return false;
+    if (target.declaration != NoNode)
+        return target.exact ? row.key.declaration == target.declaration : row.templatePath.contains(target.declaration);
+    if (!target.path.isEmpty())
+        return (!target.exact || row.templatePath.size() == target.path.size())
+            && row.templatePath.size() >= target.path.size()
+            && std::equal(target.path.cbegin(), target.path.cend(), row.templatePath.cbegin());
+    if (row.templatePath.size() < target.instancePath.size()
+        || (target.indexPart >= 0 && row.key.arrayIndex != target.index)
+        || (target.exact && row.templatePath.size() != target.instancePath.size())) return false;
+    for (int i = 0; i < target.instancePath.size(); ++i)
+        if (Attr(row.templatePath[i], "name") != target.instancePath[i]) return false;
+    return true;
+}
+
+SclMmsReportMatch Query::MatchReport(const SclMmsRow& attribute, const Reference& member)
+{
+    if (Attr(member.source, "fc") != attribute.fc) return SclMmsReportMatch::None;
+    const auto trace = s.analysis.fcdaTraces.constFind(member.source);
+    if (trace == s.analysis.fcdaTraces.cend()) return SclMmsReportMatch::None;
+    int length = 0;
+    bool hasAttribute = false;
+    NodeId axis = NoNode;
+    for (const auto& step : trace->steps) {
+        Tick();
+        if (step.field == FcdaField::Ix) axis = step.node;
+        if (step.field != FcdaField::DoName && step.field != FcdaField::DaName) continue;
+        if (length >= attribute.templatePath.size() || step.node != attribute.templatePath[length++])
+            return SclMmsReportMatch::None;
+        hasAttribute |= step.field == FcdaField::DaName;
+    }
+    if (length == 0 || (member.arrayIndex >= 0 && (axis == NoNode || axis != attribute.key.arrayDeclaration
+        || member.arrayIndex != attribute.key.arrayIndex))) return SclMmsReportMatch::None;
+    if (!hasAttribute) return SclMmsReportMatch::ObjectCoverage;
+    return length == attribute.templatePath.size() && member.arrayIndex == attribute.key.arrayIndex
+        ? SclMmsReportMatch::ExactAttribute : SclMmsReportMatch::AttributeCoverage;
+}
+
+void Query::AttributeReports()
+{
+    if (r.key.kind != SclMmsRecordKind::Address) return;
+    Addresses(r.key.record);
+    if (!reportAttribute) {
+        out.summary = QStringLiteral("当前范围内未定位到属性身份。");
+        return;
+    }
+    const auto& attribute = *reportAttribute;
+    out.attributeDirect = attribute.direct;
+    if (attribute.state != LinkState::Resolved) {
+        out.summary = QStringLiteral("属性尚无确定的访问身份，无法确认报告成员匹配。");
+        return;
+    }
+    const auto members = s.mmsIndex.membersByLogicalNode.constFind(attribute.key.node);
+    if (members == s.mmsIndex.membersByLogicalNode.cend()) return;
+    for (const auto index : *members) {
+        Tick();
+        const auto& member = s.analysis.references[index];
+        const auto match = MatchReport(attribute, member);
+        if (match == SclMmsReportMatch::None) continue;
+        const auto ds = doc.nodes[member.source].parent;
+        const auto reports = s.mmsIndex.reportsByDataSet.constFind(ds);
+        if (reports == s.mmsIndex.reportsByDataSet.cend()) continue;
+        for (const auto report : *reports) {
+            Tick();
+            if (!InScope(p.reports[report].node)) continue;
+            auto row = Report(report);
+            row.key = {SclMmsRecordKind::Member, member.source, index, member.memberOrdinal};
+            row.key.parentReport = row.report;
+            row.reportMatch = match;
+            row.state = member.state;
+            row.shape = Shape(member);
+            row.domain = member.mmsDomain; row.item = member.mmsItem;
+            row.fc = attribute.fc; row.fcEvidence = {member.source, "fc", {}};
+            row.arrayIndex = member.arrayIndex; row.component = member.mmsComponent;
+            row.evidence.push_back({ds, "name", {}});
+            row.evidence.push_back({member.source, {}, {}});
+            row.cells << Attr(member.source, "doName") << Attr(member.source, "daName")
+                << row.fc << QString::number(member.memberOrdinal);
+            Add(std::move(row));
+        }
+    }
 }
 
 void Query::ReverseSignal(int i)
@@ -532,6 +901,8 @@ SclMmsResult Query::Run()
         }
         case SclMmsQueryKind::Members: Members(r.report); break;
         case SclMmsQueryKind::Addresses: Addresses(r.signal); break;
+        case SclMmsQueryKind::Attributes: Attributes(); break;
+        case SclMmsQueryKind::AttributeReports: AttributeReports(); break;
         case SclMmsQueryKind::ReverseSignal: ReverseSignal(r.signal); break;
         case SclMmsQueryKind::Graph: Graph(r.report); break;
         case SclMmsQueryKind::Instances:
@@ -674,6 +1045,8 @@ SclMmsResult Query::Run()
 SclMmsResult QuerySclMms(const SclSnapshot& s, const SclMmsRequest& request, TaskControl* task)
 {
     auto result = Query(s, request, task).Run();
+    for (auto& row : result.rows)
+        row.references = ProjectSclMmsReferences(s, row, task);
     if (request.presentation && request.kind != SclMmsQueryKind::Detail) PresentSclMms(s, result, task);
     return result;
 }

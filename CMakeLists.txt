@@ -45,8 +45,10 @@ target_include_directories(SclAnalysis PUBLIC src/iec61850/scl)
 target_link_libraries(SclAnalysis PUBLIC Qt${QT_VERSION_MAJOR}::Core)
 
 add_library(SclApplication STATIC src/core/SclAnalysisService.cpp src/core/SclAnalysisService.hpp
+    src/core/SclHierarchyQuery.cpp src/core/SclHierarchyQuery.hpp
     src/core/SclMmsQuery.cpp src/core/SclMmsQuery.hpp
     src/core/SclMmsPresentation.cpp
+    src/core/SclReferenceValues.cpp src/core/SclReferenceValues.hpp
     src/core/SclConnections.cpp src/core/SclConnections.hpp
     src/core/SclRelationGraph.cpp src/core/SclRelationGraph.hpp
     src/core/SclTaskIndex.cpp src/core/SclTaskIndex.hpp src/core/SclTaskQuery.cpp src/core/SclTaskDetails.cpp
@@ -71,7 +73,8 @@ set(BUILD_EXAMPLES OFF CACHE BOOL "Build QtADS examples" FORCE)
 add_subdirectory(third_party/Qt-Advanced-Docking-System-5.0.0)
 
 set(AppTarget IEC61850Simulator)
-set(SclMmsGuiSources src/gui/SclMmsView.cpp src/gui/SclMmsView.hpp src/gui/SclMmsNavigation.cpp)
+set(SclMmsGuiSources src/gui/SclMmsView.cpp src/gui/SclMmsView.hpp src/gui/SclMmsNavigation.cpp
+    src/gui/SclReferenceMenu.cpp src/gui/SclReferenceMenu.hpp)
 add_executable(${AppTarget}
     ${SclMmsGuiSources}
     app/ui/Main.cpp
@@ -86,6 +89,7 @@ add_executable(${AppTarget}
     src/gui/MainWindow.hpp
     src/gui/SclWorkspace.cpp
     src/gui/SclWorkspace.hpp
+    src/gui/SclDataSetView.cpp src/gui/SclDataSetView.hpp
     src/gui/SclTaskPages.cpp src/gui/SclTaskPages.hpp
     src/gui/SclTableInteraction.cpp src/gui/SclTableInteraction.hpp
     src/gui/SclTaskBrowser.cpp src/gui/SclTaskBrowser.hpp
@@ -206,6 +210,12 @@ if(BUILD_TESTING)
     add_test(NAME SclMmsQueryTest COMMAND SclMmsQueryTest)
     set_tests_properties(SclMmsQueryTest PROPERTIES TIMEOUT 30)
 
+    add_executable(SclHierarchyQueryTest tests/unit/SclHierarchyQueryTest.cpp)
+    target_link_libraries(SclHierarchyQueryTest PRIVATE SclApplication Qt${QT_VERSION_MAJOR}::Test)
+    target_compile_definitions(SclHierarchyQueryTest PRIVATE SCL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/scl")
+    add_test(NAME SclHierarchyQueryTest COMMAND SclHierarchyQueryTest)
+    set_tests_properties(SclHierarchyQueryTest PROPERTIES TIMEOUT 30)
+
     add_executable(SclTaskIndexTest tests/unit/SclTaskIndexTest.cpp)
     target_link_libraries(SclTaskIndexTest PRIVATE SclApplication Qt${QT_VERSION_MAJOR}::Test)
     target_compile_definitions(SclTaskIndexTest PRIVATE SCL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/scl")
@@ -245,6 +255,7 @@ if(BUILD_TESTING)
             src/gui/SclTaskPages.cpp src/gui/SclTaskPages.hpp
             src/gui/SclTaskBrowser.cpp src/gui/SclTaskBrowser.hpp
             src/gui/MainWindow.cpp src/gui/MainWindow.hpp src/gui/SclWorkspace.cpp src/gui/SclWorkspace.hpp
+            src/gui/SclDataSetView.cpp src/gui/SclDataSetView.hpp
             src/gui/SclSearchSession.cpp src/gui/SclSearchSession.hpp src/gui/SclWorkspaceSearch.cpp
             src/gui/SclSourcePreview.cpp src/gui/SclSourcePreview.hpp src/gui/SclWorkspaceTopology.cpp)
         target_include_directories(MainWindowBaselineTest PRIVATE src/gui)
@@ -266,6 +277,10 @@ if(BUILD_TESTING)
         endif()
         add_test(NAME MainWindowBaselineTest COMMAND MainWindowBaselineTest)
         set_tests_properties(MainWindowBaselineTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+        add_test(NAME SclMmsAttributeWorkflow COMMAND MainWindowBaselineTest SclTask8AttributeWorkflow)
+        set_tests_properties(SclMmsAttributeWorkflow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+        add_test(NAME SclReferenceMenus COMMAND MainWindowBaselineTest SclTask8ReferenceMenus)
+        set_tests_properties(SclReferenceMenus PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
         add_test(NAME SclMmsStressTest COMMAND MainWindowBaselineTest SclMmsStress)
         set_tests_properties(SclMmsStressTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
     endif()

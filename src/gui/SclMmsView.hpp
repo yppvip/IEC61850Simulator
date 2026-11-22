@@ -32,6 +32,7 @@ public:
     void SetContext(std::shared_ptr<const SclSnapshot>, Scl::NodeId);
     void Open(SclMmsQueryKind);
     void OpenNode(Scl::NodeId);
+    void OpenAttributeTarget(Scl::NodeId, bool inspectorVisible);
     Location CurrentLocation() const;
     void RestoreLocation(const Location&);
     void Cancel();
@@ -41,6 +42,7 @@ public:
     QTableView* Fields() const { return m_fields; }
     std::shared_ptr<const SclMmsResult> Result() const { return m_result; }
     std::optional<SclMmsKey> Selected() const { return m_selected; }
+    bool IsNavigating() const { return m_navigating; }
 signals:
     void BeforeNavigate();
     void Navigated();
@@ -60,6 +62,7 @@ private:
     void Navigate(SclMmsRequest);
     void Commit(Location);
     void ChangePage(int offset);
+    void ChangeFilter(const QString& text, const QString& fc);
     void OpenAncestor(std::shared_ptr<const Location>);
     void CompleteRestore();
     void UpdateNavigation();
@@ -68,14 +71,17 @@ private:
     void Run();
     void ApplyList();
     void Select(int row, bool navigate);
+    const SclMmsRow* SelectedRow() const;
     void Detail();
     void ApplyDetail();
     void UpdateActions();
     void OpenSource();
+    void OpenRowSource();
     void Continue(SclMmsQueryKind);
     void RenderGraph();
     void Coverage();
     bool m_applying = false;
+    bool m_navigating = false;
     bool m_inspectorVisible = true;
     quint64 m_epoch = 0, m_pathEpoch = 0;
     std::shared_ptr<const Location> m_parent, m_searchOrigin;
