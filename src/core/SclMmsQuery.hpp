@@ -2,6 +2,7 @@
 
 #include "SclMmsProjection.hpp"
 #include "SclDescriptionResolver.hpp"
+#include "SclObjectEvidence.hpp"
 #include <QHash>
 #include <QObject>
 #include <QFutureWatcher>
@@ -19,6 +20,10 @@ struct SclMmsIndex {
         clientsByTarget, instancesByReport;
     QHash<Scl::NodeId, int> memberReferences;
     QHash<Scl::NodeId, std::vector<int>> membersByLogicalNode;
+    // Includes unresolved FCDA after a known LN, plus pre-LN failures by Server.
+    QHash<Scl::NodeId, std::vector<int>> dataSetMembersByLogicalNode, uncertainMembersByServer;
+    QHash<Scl::NodeId, std::vector<int>> dataSetUsers;
+    bool dataSetIndexLimited = false;
     QHash<Scl::NodeId, Scl::MmsDomain> domainsByDevice;
     static SclMmsIndex Build(const Scl::MmsProjection&, const Scl::ReferenceAnalysis&, Scl::TaskControl*);
 };
@@ -31,7 +36,7 @@ struct SclMmsScope {
 };
 enum class SclMmsQueryKind { Reports, Instances, Members, Clients, Servers, Endpoints,
     Capabilities, Signals, Addresses, ReverseClients, ReverseSignal, Search, Graph, Findings, Detail,
-    Attributes, AttributeReports };
+    Attributes, AttributeReports, ObjectEvidence, DataSetRelations };
 enum class SclMmsRecordKind { Report, Instance, Member, Client, Server, Endpoint, Capability, Signal, Address, DataSet, Reference, Finding };
 enum class SclMmsAddressShape { None, Scalar, Structure, ArrayTemplate, ObjectMember, AlternateAccess };
 enum class SclMmsDirectState { Unavailable, Mapped, Structure, ArraySelectionRequired, AlternateAccess,
@@ -112,6 +117,7 @@ struct SclMmsRow {
     QList<Scl::MmsEvidence> evidence;
     std::vector<SclReferenceValue> references;
     std::optional<SclDescription> description;
+    std::shared_ptr<const SclDataSetRelation> dataSetRelation;
 };
 struct SclMmsRequest {
     SclMmsQueryKind kind = SclMmsQueryKind::Reports;
@@ -127,6 +133,8 @@ struct SclMmsRequest {
     SclMmsKey key;
     SclMmsReportMatch reportMatch = SclMmsReportMatch::None; // Evidence from the selected report-use row.
     std::optional<SclMmsKey> locate; // Locate a stable identity's page in the worker, after scope/filter.
+    // Mandatory for ObjectEvidence/DataSetRelations: IDs cannot cross snapshots.
+    std::shared_ptr<const Scl::Document> identityDocument;
 };
 struct SclMmsDetailField {
     QString key, label, value, explanation;
@@ -151,6 +159,8 @@ struct SclMmsResult {
     QString title, summary;
     std::vector<SclMmsDetailField> fields;
     std::vector<SclReferenceValue> references; // Full values for the requested detail key.
+    std::shared_ptr<const SclObjectEvidence> objectEvidence;
+    SclDataSetCoverage dataSetCoverage;
 };
 
 // Worker-only entry. No XML parsing, I/O, or online queries; evidence and

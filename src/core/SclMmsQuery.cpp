@@ -65,14 +65,38 @@ SclMmsIndex SclMmsIndex::Build(const MmsProjection& p, const ReferenceAnalysis& 
             }
     }
     constexpr int memberLimit = 500000;
+    int dataSetUserEntries = 0;
     for (int i = 0; i < int(a.references.size()); ++i) {
         checkpoint(task);
-        if (a.references[i].kind != LinkKind::Fcda) continue;
-        if (index.memberReferences.size() >= memberLimit) { index.limited = true; break; }
         const auto& ref = a.references[i];
+        if (ref.kind == LinkKind::ControlDataSet) {
+            for (const auto target : ref.candidates) {
+                checkpoint(task);
+                if (dataSetUserEntries++ >= memberLimit) { index.dataSetIndexLimited = true; break; }
+                index.dataSetUsers[target].push_back(i);
+            }
+        }
+        if (a.references[i].kind != LinkKind::Fcda) continue;
+        if (index.memberReferences.size() >= memberLimit) {
+            index.limited = true; index.dataSetIndexLimited = true; continue;
+        }
         index.memberReferences.insert(ref.source, i);
         if (ref.state == LinkState::Resolved && ref.candidates.size() == 1 && ref.logicalNode != NoNode)
             index.membersByLogicalNode[ref.logicalNode].push_back(i);
+        NodeId logicalNode = ref.logicalNode;
+        const auto trace = a.fcdaTraces.constFind(ref.source);
+        if (logicalNode == NoNode && trace != a.fcdaTraces.cend()) for (const auto& step : trace->steps) {
+            checkpoint(task);
+            if (step.field == FcdaField::LogicalNode) logicalNode = step.node;
+        }
+        if (logicalNode != NoNode) index.dataSetMembersByLogicalNode[logicalNode].push_back(i);
+        else {
+            auto server = ref.source;
+            while (server != NoNode && (!a.document->nodes[server].isScl() || a.document->nodes[server].name != "Server")) {
+                checkpoint(task); server = a.document->nodes[server].parent;
+            }
+            index.uncertainMembersByServer[server].push_back(i);
+        }
     }
     return index;
 }
@@ -163,6 +187,9 @@ private:
     bool PrepareAttributeTarget();
     bool MatchesAttributeTarget(const SclMmsRow& row) const;
     void AttributeReports();
+    void ObjectEvidence();
+    void DataSetRelations();
+    bool SelectAttribute();
     ArraySelection RequestedArray(const SclMmsKey& signal);
     SclMmsReportMatch MatchReport(const SclMmsRow& attribute, const Reference& member);
     SclMmsAttributeMatch MatchAttribute(const SclMmsRow& row, const QString& ln, const QString& cdc) const;
@@ -349,7 +376,8 @@ void Query::Members(NodeId report)
 
 ArraySelection Query::RequestedArray(const SclMmsKey& signal)
 {
-    const auto& key = r.kind == SclMmsQueryKind::AttributeReports ? r.key : r.locate.value_or(SclMmsKey{});
+    const auto& key = r.kind == SclMmsQueryKind::AttributeReports || r.kind == SclMmsQueryKind::ObjectEvidence
+        || r.kind == SclMmsQueryKind::DataSetRelations ? r.key : r.locate.value_or(SclMmsKey{});
     if (key.kind == SclMmsRecordKind::Address && key.node == signal.node && key.record == signal.record
         && key.arrayDeclaration != NoNode)
         return {key.arrayDeclaration, key.arrayIndex};
@@ -472,7 +500,8 @@ void Query::Addresses(int i)
         }
     }
     uniquePath &= objectType == def.type && objectType != NoNode;
-    const bool reportQuery = r.kind == SclMmsQueryKind::AttributeReports;
+    const bool reportQuery = r.kind == SclMmsQueryKind::AttributeReports
+        || r.kind == SclMmsQueryKind::ObjectEvidence || r.kind == SclMmsQueryKind::DataSetRelations;
     const bool search = r.kind == SclMmsQueryKind::Attributes;
     const auto publish = [&](SclMmsRow row) {
         if (reportQuery) {
@@ -725,25 +754,124 @@ bool Query::MatchesAttributeTarget(const SclMmsRow& row) const
 
 SclMmsReportMatch Query::MatchReport(const SclMmsRow& attribute, const Reference& member)
 {
-    if (Attr(member.source, "fc") != attribute.fc) return SclMmsReportMatch::None;
-    const auto trace = s.analysis.fcdaTraces.constFind(member.source);
-    if (trace == s.analysis.fcdaTraces.cend()) return SclMmsReportMatch::None;
-    int length = 0;
-    bool hasAttribute = false;
-    NodeId axis = NoNode;
-    for (const auto& step : trace->steps) {
-        Tick();
-        if (step.field == FcdaField::Ix) axis = step.node;
-        if (step.field != FcdaField::DoName && step.field != FcdaField::DaName) continue;
-        if (length >= attribute.templatePath.size() || step.node != attribute.templatePath[length++])
-            return SclMmsReportMatch::None;
-        hasAttribute |= step.field == FcdaField::DaName;
+    return MatchSclDataSetMember(s, attribute, member, [this] { Tick(); });
+}
+
+bool Query::SelectAttribute()
+{
+    if (r.key.kind != SclMmsRecordKind::Address) return false;
+    Addresses(r.key.record);
+    if (!reportAttribute) {
+        out.limitation += QStringLiteral("当前快照/范围未定位到完整属性身份。");
+        return false;
     }
-    if (length == 0 || (member.arrayIndex >= 0 && (axis == NoNode || axis != attribute.key.arrayDeclaration
-        || member.arrayIndex != attribute.key.arrayIndex))) return SclMmsReportMatch::None;
-    if (!hasAttribute) return SclMmsReportMatch::ObjectCoverage;
-    return length == attribute.templatePath.size() && member.arrayIndex == attribute.key.arrayIndex
-        ? SclMmsReportMatch::ExactAttribute : SclMmsReportMatch::AttributeCoverage;
+    out.attributeDirect = reportAttribute->direct;
+    return true;
+}
+
+void Query::ObjectEvidence()
+{
+    SclMmsRow row;
+    if (r.key.kind == SclMmsRecordKind::Address) {
+        if (!SelectAttribute()) return;
+        row = *reportAttribute;
+    } else if (r.key.kind == SclMmsRecordKind::Signal) {
+        if (r.key.record < 0 || r.key.record >= int(s.tasks.catalog.instances.size())) return;
+        row = Signal(r.key.record);
+        if (row.key != r.key || !InScope(row.key.node)) return;
+    } else if (r.key.kind == SclMmsRecordKind::Member) {
+        if (r.key.record < 0 || r.key.record >= int(s.analysis.references.size())) return;
+        const auto& ref = s.analysis.references[r.key.record];
+        if (ref.kind != LinkKind::Fcda || ref.source != r.key.node || ref.memberOrdinal != r.key.ordinal || !InScope(ref.source)) return;
+        row.key = r.key; row.state = ref.state; row.fc = Attr(ref.source,"fc");
+        row.domain = ref.mmsDomain; row.item = ref.mmsItem; row.objectReference = ref.objectReference;
+        row.arrayIndex = ref.arrayIndex; row.component = ref.mmsComponent; row.limitation = ref.detail;
+    } else return;
+    if (r.key.kind != SclMmsRecordKind::Address) row.addressScope = r.scope;
+    auto evidence = ProjectSclObjectEvidence(s,row,[this] { Tick(); });
+    out.objectEvidence = std::make_shared<const SclObjectEvidence>(std::move(evidence));
+}
+
+void Query::DataSetRelations()
+{
+    if (s.mmsIndex.dataSetIndexLimited) {
+        out.limited = true; out.limitation = QStringLiteral("数据集反向索引资源受限，不能给出未引用结论。");
+    }
+    if (r.target != NoNode && (!Valid(r.target) || !doc.nodes[r.target].isScl()
+        || doc.nodes[r.target].name != "DataSet" || !InScope(r.target))) {
+        out.limitation = QStringLiteral("当前范围没有对应的数据集身份。"); return;
+    }
+    if (!SelectAttribute()) return;
+    const auto& attribute = *reportAttribute;
+    if (attribute.state != LinkState::Resolved || attribute.direct == SclMmsDirectState::ArraySelectionRequired) {
+        out.limitation += QStringLiteral("属性身份尚未唯一解析，不能确定数据集关系。"); return;
+    }
+    QHash<NodeId,std::shared_ptr<const SclDataSetUsage>> usages;
+    const auto useOf = [&](NodeId ds) -> std::shared_ptr<const SclDataSetUsage> {
+        if (const auto it = usages.constFind(ds); it != usages.cend()) return *it;
+        auto usage = std::make_shared<SclDataSetUsage>();
+        usage->complete = !s.mmsIndex.dataSetIndexLimited;
+        const auto found = s.mmsIndex.dataSetUsers.constFind(ds);
+        if (found != s.mmsIndex.dataSetUsers.cend()) for (const auto index : *found) {
+            Tick(); const auto& ref = s.analysis.references[index];
+            const auto tag = doc.nodes[ref.source].name;
+            if (tag != "ReportControl" && tag != "GSEControl" && tag != "SampledValueControl") continue;
+            ++usage->observed;
+            if (usage->users.size() >= 512) { usage->complete = false; continue; }
+            usage->users << SclDataSetUser{tag == "ReportControl" ? SclDataSetUserKind::Report
+                : tag == "GSEControl" ? SclDataSetUserKind::Goose : SclDataSetUserKind::Sv,
+                ref.state, SclEvidenceAt(s,ref.source,"datSet")};
+        }
+        if (!usage->complete) { out.limited = true; out.limitation += QStringLiteral("数据集使用方受限；最多交付512项。"); }
+        if (usages.size() < 200) usages.insert(ds,usage);
+        return usage;
+    };
+    const auto visit = [&](int index) {
+        Tick(); const auto& ref = s.analysis.references[index];
+        const auto ds = doc.nodes[ref.source].parent;
+        if (!InScope(ref.source) || (r.target != NoNode && r.target != ds)) return;
+        if (ref.state != LinkState::Resolved || ref.candidates.size() != 1) {
+            if (!CouldSclDataSetMemberAffect(s,attribute,ref,[this] { Tick(); })) return;
+            auto& coverage = out.dataSetCoverage;
+            ++coverage.uncertainOccurrences;
+            if (coverage.uncertainSources.size() < 64) coverage.uncertainSources << SclEvidenceAt(s,ref.source);
+            return;
+        }
+        const auto match = MatchReport(attribute,ref);
+        if (match == SclMmsReportMatch::None) return;
+        ++out.dataSetCoverage.observedMatches;
+        out.dataSetCoverage.conclusion = SclDataSetConclusion::Referenced;
+        SclMmsRow row; row.key = {SclMmsRecordKind::Member,ref.source,index,ref.memberOrdinal};
+        row.dataSet = ds; row.state = ref.state; row.reportMatch = match;
+        row.shape = Shape(ref); row.fc = Attr(ref.source,"fc");
+        row.domain = ref.mmsDomain; row.item = ref.mmsItem;
+        row.objectReference = ref.objectReference; row.addressScope = attribute.addressScope;
+        row.arrayIndex = ref.arrayIndex; row.component = ref.mmsComponent;
+        row.cells = {Attr(ds,"name"),Attr(ref.source,"doName"),Attr(ref.source,"daName"),SclMmsReportMatchText(match)};
+        // Projection is page-bounded. Locate uses the generic rolling page buffer.
+        const bool onPage = r.locate || (out.total >= r.offset && int(out.rows.size()) < r.pageSize);
+        if (onPage && Matches(row)) {
+            auto relation = std::make_shared<SclDataSetRelation>();
+            relation->sha256 = s.analysis.sha256; relation->document = s.analysis.document;
+            relation->member = SclEvidenceAt(s,ref.source); relation->dataSet = SclEvidenceAt(s,ds,"name");
+            relation->ordinal = ref.memberOrdinal; relation->match = match;
+            relation->rawDoName = Attr(ref.source,"doName"); relation->rawDaName = Attr(ref.source,"daName");
+            relation->rawFc = row.fc; relation->rawIx = Attr(ref.source,"ix");
+            relation->daNamePresent = !relation->rawDaName.isNull();
+            relation->sourceIed = Ancestor(ref.source,"IED"); relation->sourceAccessPoint = Ancestor(ref.source,"AccessPoint");
+            relation->sourceServer = Ancestor(ref.source,"Server"); relation->targetLogicalNode = attribute.key.node;
+            relation->usage = useOf(ds); row.dataSetRelation = std::move(relation);
+        }
+        Add(std::move(row));
+    };
+    const auto known = s.mmsIndex.dataSetMembersByLogicalNode.constFind(attribute.key.node);
+    if (known != s.mmsIndex.dataSetMembersByLogicalNode.cend()) for (const auto index : *known) visit(index);
+    const auto unknown = s.mmsIndex.uncertainMembersByServer.constFind(attribute.addressScope.server);
+    if (unknown != s.mmsIndex.uncertainMembersByServer.cend()) for (const auto index : *unknown) visit(index);
+    auto& coverage = out.dataSetCoverage;
+    coverage.scanComplete = !s.mmsIndex.dataSetIndexLimited && !s.mmsIndex.limited;
+    if (coverage.observedMatches == 0 && coverage.scanComplete && coverage.uncertainOccurrences == 0)
+        coverage.conclusion = SclDataSetConclusion::NotReferenced;
 }
 
 void Query::AttributeReports()
@@ -879,6 +1007,10 @@ void Query::Graph(NodeId report)
 
 SclMmsResult Query::Run()
 {
+    const bool evidenceQuery = r.kind == SclMmsQueryKind::ObjectEvidence || r.kind == SclMmsQueryKind::DataSetRelations;
+    if (evidenceQuery && r.identityDocument != s.analysis.document) {
+        out.limited = true; out.limitation = QStringLiteral("证据查询缺少对应快照身份，或身份已过期。"); return std::move(out);
+    }
     checkpoint(task);
     if (r.kind != SclMmsQueryKind::Findings && (!p.complete || p.document != s.analysis.document || p.sha256 != s.analysis.sha256)) {
         out.limited = true; out.limitation = p.limitation.isEmpty() ? QStringLiteral("MMS 投影不可用或快照不一致。") : p.limitation;
@@ -907,6 +1039,8 @@ SclMmsResult Query::Run()
         case SclMmsQueryKind::Addresses: Addresses(r.signal); break;
         case SclMmsQueryKind::Attributes: Attributes(); break;
         case SclMmsQueryKind::AttributeReports: AttributeReports(); break;
+        case SclMmsQueryKind::ObjectEvidence: ObjectEvidence(); break;
+        case SclMmsQueryKind::DataSetRelations: DataSetRelations(); break;
         case SclMmsQueryKind::ReverseSignal: ReverseSignal(r.signal); break;
         case SclMmsQueryKind::Graph: Graph(r.report); break;
         case SclMmsQueryKind::Instances:

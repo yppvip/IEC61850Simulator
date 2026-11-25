@@ -48,6 +48,7 @@ add_library(SclApplication STATIC src/core/SclAnalysisService.cpp src/core/SclAn
     src/core/SclHierarchyQuery.cpp src/core/SclHierarchyQuery.hpp
     src/core/SclMmsQuery.cpp src/core/SclMmsQuery.hpp
     src/core/SclMmsPresentation.cpp
+    src/core/SclObjectEvidence.cpp src/core/SclObjectEvidence.hpp
     src/core/SclReferenceValues.cpp src/core/SclReferenceValues.hpp
     src/core/SclReferenceTrace.cpp src/core/SclReferenceTrace.hpp
     src/core/SclConnections.cpp src/core/SclConnections.hpp
@@ -211,6 +212,12 @@ if(BUILD_TESTING)
     target_compile_definitions(SclMmsQueryTest PRIVATE SCL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/scl")
     add_test(NAME SclMmsQueryTest COMMAND SclMmsQueryTest)
     set_tests_properties(SclMmsQueryTest PROPERTIES TIMEOUT 30)
+
+    add_executable(SclObjectEvidenceTest tests/unit/SclObjectEvidenceTest.cpp)
+    target_link_libraries(SclObjectEvidenceTest PRIVATE SclApplication Qt${QT_VERSION_MAJOR}::Concurrent Qt${QT_VERSION_MAJOR}::Test)
+    target_compile_definitions(SclObjectEvidenceTest PRIVATE SCL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/scl")
+    add_test(NAME SclObjectEvidenceTest COMMAND SclObjectEvidenceTest -o -,txt)
+    set_tests_properties(SclObjectEvidenceTest PROPERTIES TIMEOUT 30)
 
     add_executable(SclHierarchyQueryTest tests/unit/SclHierarchyQueryTest.cpp)
     target_link_libraries(SclHierarchyQueryTest PRIVATE SclApplication Qt${QT_VERSION_MAJOR}::Test)
