@@ -8,8 +8,10 @@ class QTableView; class QLabel; class QLineEdit; class QComboBox;
 class QPushButton; class QGraphicsView; class QGraphicsScene;
 class QToolButton;
 class QHBoxLayout;
+class QVBoxLayout;
 namespace iec61850sim {
 class SclMmsTableModel;
+class SclTableInteraction;
 class SclMmsView final : public QWidget {
     Q_OBJECT
 public:
@@ -23,6 +25,7 @@ public:
         int horizontal = 0, fieldHorizontal = 0;
         Scl::NodeId viewIed = Scl::NoNode;
         bool inspectorVisible = true;
+        bool selectionVisible = true, fieldVisible = true;
         // Business ancestry is part of the workspace history, never another back stack.
         std::shared_ptr<const Location> parent, searchOrigin;
     };
@@ -74,6 +77,12 @@ private:
     const SclMmsRow* SelectedRow() const;
     void Detail();
     void ApplyDetail();
+    void SetupObjectEvidence(QVBoxLayout*);
+    void ResetObjectEvidence();
+    void QueryDataSets();
+    void ApplyDataSets();
+    void RenderObjectEvidence();
+    void OpenDataSets(bool currentOnly);
     void UpdateActions();
     void OpenSource();
     void OpenRowSource();
@@ -93,6 +102,16 @@ private:
     std::optional<Location> m_restore;
     std::shared_ptr<const SclMmsResult> m_result, m_detail;
     SclMmsQuerySession m_list, m_details;
+    SclMmsQuerySession m_relations;
+    std::shared_ptr<const SclMmsResult> m_dataSets;
+    quint64 m_relationRequest = 0;
+    QLabel* m_objectSummary = nullptr;
+    QLabel* m_compactSummary = nullptr;
+    QToolButton* m_objectCompact = nullptr;
+    QVBoxLayout* m_evidenceLayout = nullptr;
+    QHBoxLayout* m_fieldActions = nullptr;
+    QToolButton *m_dataSetSource = nullptr, *m_instanceSource = nullptr, *m_typeSource = nullptr, *m_composition = nullptr;
+    SclTableInteraction *m_tableInteraction = nullptr, *m_fieldInteraction = nullptr;
     QTimer m_delay;
     SclMmsTableModel *m_model, *m_fieldModel;
     QTableView *m_table, *m_fields;

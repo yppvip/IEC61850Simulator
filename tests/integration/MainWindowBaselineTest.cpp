@@ -395,6 +395,8 @@ private slots:
     void SclTask9TraceWorkflow();
     void SclTask9LocalAcceptance();
     void SclTask10Baseline();
+    void SclTask10EvidenceWorkflow_data();
+    void SclTask10EvidenceWorkflow();
     void SclTask8LocalAcceptance();
     void SclMmsLocalAcceptance();
     void SclMmsReview();
@@ -3312,6 +3314,7 @@ void MainWindowBaselineTest::SclTask8AttributeWorkflow()
 #include "SclTask8Acceptance.hpp"
 #include "SclTask9Acceptance.hpp"
 #include "SclTask10Baseline.hpp"
+#include "SclTask10EvidenceWorkflow.hpp"
 
 void MainWindowBaselineTest::SclTask8ReferenceMenus()
 {

@@ -76,6 +76,7 @@ add_subdirectory(third_party/Qt-Advanced-Docking-System-5.0.0)
 
 set(AppTarget IEC61850Simulator)
 set(SclMmsGuiSources src/gui/SclMmsView.cpp src/gui/SclMmsView.hpp src/gui/SclMmsNavigation.cpp
+    src/gui/SclMmsEvidence.cpp
     src/gui/SclReferenceMenu.cpp src/gui/SclReferenceMenu.hpp)
 add_executable(${AppTarget}
     ${SclMmsGuiSources}
@@ -287,6 +288,8 @@ if(BUILD_TESTING)
         endif()
         add_test(NAME MainWindowBaselineTest COMMAND MainWindowBaselineTest)
         set_tests_properties(MainWindowBaselineTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+        add_test(NAME SclObjectEvidenceWorkflow COMMAND MainWindowBaselineTest SclTask10EvidenceWorkflow -o -,txt)
+        set_tests_properties(SclObjectEvidenceWorkflow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
         add_test(NAME SclMmsAttributeWorkflow COMMAND MainWindowBaselineTest SclTask8AttributeWorkflow)
         set_tests_properties(SclMmsAttributeWorkflow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
         add_test(NAME SclReferenceMenus COMMAND MainWindowBaselineTest SclTask8ReferenceMenus)

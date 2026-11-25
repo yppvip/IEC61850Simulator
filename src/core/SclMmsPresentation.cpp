@@ -295,6 +295,60 @@ void PresentSclMms(const SclSnapshot& s, SclMmsResult& result, TaskControl* task
         const auto state = row.key.kind == SclMmsRecordKind::Finding ? (row.key.ordinal ? s.mms.ruleSetVersion : s.analysis.ruleSetVersion)
             : result.request.kind == SclMmsQueryKind::Attributes ? DirectStateText(row.direct) : SclMmsStateText(row.state);
         row.cells = {name, desc, type, parent, row.fc, row.domain, row.item, state};
+        if (row.key.kind != SclMmsRecordKind::Signal && row.key.kind != SclMmsRecordKind::Address
+            && row.key.kind != SclMmsRecordKind::Member) continue;
+        // Page-bounded path metadata. Dataset scans and instance lookup are only
+        // requested for the selected identity, never for every catalogue leaf.
+        auto path = row.templatePath;
+        const bool member = row.key.kind == SclMmsRecordKind::Member;
+        if (member) {
+            const auto trace = s.analysis.fcdaTraces.constFind(row.key.node);
+            if (trace != s.analysis.fcdaTraces.cend()) for (const auto& step : trace->steps) {
+                checkpoint(task);
+                if (step.field == FcdaField::DoName || step.field == FcdaField::DaName) path << step.node;
+            }
+        }
+        QStringList objects, attributes;
+        QString cdc, basicType;
+        for (const auto node : path) {
+            checkpoint(task);
+            const auto& n = s.analysis.document->nodes[node];
+            if (n.name == "DO" || n.name == "SDO") {
+                objects << Attr(s,node,"name"); cdc.clear();
+                const auto range = s.analysis.outgoing.equal_range(node);
+                for (auto it = range.first; it != range.second; ++it) {
+                    checkpoint(task); const auto& link = s.analysis.references[it.value()];
+                    if (link.kind == LinkKind::MemberType && link.state == LinkState::Resolved && link.candidates.size() == 1)
+                        cdc = Attr(s,link.candidates.front(),"cdc");
+                }
+            } else { attributes << Attr(s,node,"name"); basicType = Attr(s,node,"bType"); }
+        }
+        const auto rawDa = member ? Attr(s,row.key.node,"daName") : QString();
+        const auto source = SclEvidenceAt(s,row.key.node);
+        row.cells << (row.key.kind == SclMmsRecordKind::Signal ? name : objects.join('.'))
+            << attributes.join('.') << (row.key.kind == SclMmsRecordKind::Signal ? type : cdc) << basicType
+            << (member ? QStringLiteral("FCDA 文件声明 + 引用解析；地址按规则组合") : QStringLiteral("LN 类型展开 + MMS 规则组合"))
+            << (member ? Attr(s,row.key.node,"doName") : QString())
+            << (member ? rawDa.isNull() ? QStringLiteral("未声明") : rawDa.isEmpty() ? QStringLiteral("已声明空值") : rawDa : QString())
+            << (member ? QString::number(row.key.ordinal) : QString())
+            << (source.precision == SclEvidencePrecision::OpeningTag ? QStringLiteral("标签起始行 %1").arg(source.location.line) : QStringLiteral("无可信位置"));
+        QStringList users;
+        if (row.dataSetRelation) {
+            const auto& relation = *row.dataSetRelation;
+            for (const auto& user : relation.usage->users) {
+                checkpoint(task);
+                const auto kind = user.kind == SclDataSetUserKind::Report ? QStringLiteral("报告")
+                    : user.kind == SclDataSetUserKind::Goose ? QStringLiteral("GOOSE") : QStringLiteral("SV");
+                users << kind + " · " + SclTaskPath(*s.analysis.document,user.declaration.node) + " · " + SclMmsStateText(user.state);
+            }
+            if (users.isEmpty()) users << (relation.usage->complete ? QStringLiteral("未发现已解析使用方") : QStringLiteral("使用方受限，尚未确定"));
+            if (!relation.usage->complete) users << QStringLiteral("使用方受限；以上为已观察项");
+            row.cells[0] = SclTaskPath(*s.analysis.document,relation.dataSet.node);
+            row.cells[3] = SclMmsReportMatchText(relation.match);
+            row.cells[16] = QStringLiteral("DataSet 标签起始行 %1；FCDA 标签起始行 %2")
+                .arg(relation.dataSet.location.line).arg(relation.member.location.line);
+        }
+        row.cells << users.join('\n');
     }
 }
 
@@ -477,6 +531,45 @@ SclMmsResult DescribeSclMms(const SclSnapshot& s, const SclMmsRequest& request, 
         field("scope", "检查范围", f.scope, {f.node, {}, f.rule}); break;
     }
     default: rawNode(key.node); break;
+    }
+    if (key.kind == SclMmsRecordKind::Address || key.kind == SclMmsRecordKind::Signal || key.kind == SclMmsRecordKind::Member) {
+        auto query = request; query.kind = SclMmsQueryKind::ObjectEvidence;
+        query.presentation = false; query.identityDocument = s.analysis.document;
+        const auto evidence = QuerySclMms(s,query,task);
+        out.objectEvidence = evidence.objectEvidence;
+        if (evidence.limited) { out.limited = true; out.limitation += evidence.limitation; }
+        if (out.objectEvidence) {
+            const auto& e = *out.objectEvidence;
+            field("evidence.do", "DO / SDO 路径", e.objectPath);
+            field("evidence.da", "DA / BDA 属性路径", e.attributePath);
+            field("evidence.cdc", "所属对象 CDC", e.cdc, {e.cdcEvidence.node,"cdc",{}}, QStringLiteral("CDC 属于 DO / SDO，不属于叶 BDA"));
+            field("evidence.type", "叶基本类型 / 结构类型", e.basicType, {e.basicTypeEvidence.node,"bType",{}});
+            field("evidence.instance", "实例配置位置", e.instance.state == SclInstanceLocationState::Exact ? QStringLiteral("精确实例配置") : e.instance.reason,
+                {e.instance.target.node,{},{}}, e.instance.state == SclInstanceLocationState::Exact
+                    ? QStringLiteral("精确匹配实例；文件配置不是在线值") : QStringLiteral("回退到同一已证实实例链；未声明叶 DAI 不代表类型不存在"));
+            for (int v = 0; v < e.values.size(); ++v) {
+                const auto& value = e.values[v];
+                field("evidence.value." + QString::number(v), QStringLiteral("完整引用 / 映射规则"), value.value, {}, value.rule + " · " + value.formula);
+                for (int p = 0; p < value.parts.size(); ++p) {
+                    const auto& part = value.parts[p];
+                    const auto method = part.origin == SclEvidenceOrigin::Declaration ? QStringLiteral("文件直接声明")
+                        : part.origin == SclEvidenceOrigin::ReferenceResolution ? QStringLiteral("引用解析")
+                        : part.origin == SclEvidenceOrigin::TypeExpansion ? QStringLiteral("类型展开") : QStringLiteral("规则组合");
+                    if (part.sources.isEmpty()) field(QStringLiteral("evidence.rule.%1.%2").arg(v).arg(p),part.role,part.value,{},method + " · " + part.rule);
+                    for (int k = 0; k < part.sources.size(); ++k) {
+                        const auto& source = part.sources[k];
+                        field(QStringLiteral("evidence.part.%1.%2.%3").arg(v).arg(p).arg(k),part.role,part.value,
+                            {source.node,source.attribute,{}},method + " · " + part.rule,source.present);
+                    }
+                }
+            }
+        }
+    }
+    for (auto& f : out.fields) {
+        checkpoint(task);
+        const auto source = SclEvidenceAt(s,f.evidence.node,f.evidence.attribute);
+        if (source.precision == SclEvidencePrecision::OpeningTag)
+            f.explanation += QStringLiteral(" · 标签起始行 %1").arg(source.location.line);
     }
     if (key.kind != SclMmsRecordKind::Address || referenceRow.key.declaration != NoNode)
         out.references = ProjectSclMmsReferences(s, referenceRow, task, true);

@@ -35,6 +35,10 @@ public:
     const ReferenceTraceHandler& TraceHandler() const { return m_traceHandler; }
     QAbstractItemView* View() const { return m_view; }
     quint64 ReferenceEpoch() const { return m_referenceEpoch; }
+    // One restoration transaction, cancelled by model replacement or user input.
+    // Keep the selected cell reachable while visible rows finish wrapping.
+    void RestorePosition(const QModelIndex& selected, const QModelIndex& top, int offset, int horizontal);
+    void CancelRestore();
 
 signals:
     void OpenSource();
@@ -71,5 +75,7 @@ private:
     bool m_stale = false;
     bool m_swallowRelease = false;
     ReferenceTraceHandler m_traceHandler;
+    QPersistentModelIndex m_restoreCell;
+    quint64 m_restoreGeneration = 0;
 };
 }

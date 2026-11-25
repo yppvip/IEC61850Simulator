@@ -145,6 +145,7 @@ void SclTableInteraction::SetModel(QAbstractItemModel* model)
     if (!model)
         return;
     const auto clearRows = [this] {
+        CancelRestore();
         for (auto it = m_heights.cbegin(); it != m_heights.cend(); ++it)
             m_table->setRowHeight(it.key(), m_table->verticalHeader()->defaultSectionSize());
         m_heights.clear();
@@ -201,6 +202,27 @@ void SclTableInteraction::Invalidate()
 {
     m_stale = true;
     m_cursor = -1;
+    Schedule();
+}
+
+void SclTableInteraction::CancelRestore()
+{
+    ++m_restoreGeneration;
+    m_restoreCell = QPersistentModelIndex{};
+}
+
+void SclTableInteraction::RestorePosition(const QModelIndex& selected, const QModelIndex& top, int offset, int horizontal)
+{
+    CancelRestore();
+    if (!m_table || !m_enabled) return;
+    m_restoreCell = selected;
+    if (top.isValid()) {
+        m_table->scrollTo(top, QAbstractItemView::PositionAtTop);
+        m_table->verticalScrollBar()->setValue(m_table->verticalScrollBar()->value() + offset);
+    }
+    m_table->horizontalScrollBar()->setValue(horizontal);
+    if (selected.isValid() && !m_table->viewport()->visibleRegion().intersects(m_table->visualRect(selected)))
+        m_table->scrollTo(selected, QAbstractItemView::EnsureVisible);
     Schedule();
 }
 
@@ -279,11 +301,24 @@ void SclTableInteraction::Measure()
     }
     auto* scroll = m_view->verticalScrollBar();
     scroll->setValue(header->sectionPosition(top) + qBound(0, offset, m_table->rowHeight(top) - 1));
+    if (m_restoreCell.isValid() && !m_table->viewport()->visibleRegion().intersects(m_table->visualRect(m_restoreCell)))
+        m_table->scrollTo(m_restoreCell, QAbstractItemView::EnsureVisible);
     m_measuring = false;
     const auto elapsedUs = budget.nsecsElapsed() / 1000;
     m_view->setProperty("SclMaxMeasureUs", qMax(m_view->property("SclMaxMeasureUs").toLongLong(), elapsedUs));
-    if (m_cursor <= visibleEnd())
+    const int restoredTop = m_table->rowAt(0);
+    bool pendingVisible = false;
+    for (int row = qMax(0, restoredTop - 2); row <= visibleEnd(); ++row)
+        if (!m_measured.contains(row)) { pendingVisible = true; break; }
+    if (pendingVisible) m_cursor = -1;
+    if (m_cursor <= visibleEnd() || pendingVisible)
         Schedule();
+    else if (m_restoreCell.isValid()) {
+        const auto generation = m_restoreGeneration;
+        QTimer::singleShot(0, this, [this, generation] {
+            if (generation == m_restoreGeneration && !m_timer.isActive() && !m_stale) CancelRestore();
+        });
+    }
 }
 
 void SclTableInteraction::MeasureTree()
@@ -416,6 +451,8 @@ bool SclTableInteraction::OpenContextMenu(const QPoint& global, bool keyboard)
 
 bool SclTableInteraction::eventFilter(QObject* receiver, QEvent* event)
 {
+    if (event->type() == QEvent::Wheel || event->type() == QEvent::MouseButtonPress
+        || event->type() == QEvent::KeyPress || event->type() == QEvent::Hide) CancelRestore();
     if (event->type() == QEvent::ContextMenu && (m_enabled || m_referenceMenus)) {
         const auto* context = static_cast<QContextMenuEvent*>(event);
         return OpenContextMenu(context->globalPos(), context->reason() == QContextMenuEvent::Keyboard);

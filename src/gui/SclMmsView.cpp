@@ -41,6 +41,7 @@ QString Route(SclMmsQueryKind kind) {
     case SclMmsQueryKind::Addresses: return QStringLiteral("信号属性地址");
     case SclMmsQueryKind::Attributes: return QStringLiteral("查找 MMS 属性");
     case SclMmsQueryKind::AttributeReports: return QStringLiteral("属性的报告使用");
+    case SclMmsQueryKind::DataSetRelations: return QStringLiteral("属性的数据集引用 / 覆盖");
     case SclMmsQueryKind::ReverseSignal: return QStringLiteral("数据集与报告使用");
     case SclMmsQueryKind::Endpoints: return QStringLiteral("连接配置");
     case SclMmsQueryKind::Servers: return QStringLiteral("访问点 / Server");
@@ -76,7 +77,7 @@ public:
     }
 };
 
-SclMmsView::SclMmsView(QWidget* parent) : QWidget(parent), m_list(this), m_details(this) {
+SclMmsView::SclMmsView(QWidget* parent) : QWidget(parent), m_list(this), m_details(this), m_relations(this) {
     setObjectName("SclMmsView"); setMinimumSize(0, 0);
     m_list.setObjectName("SclMmsListSession"); m_details.setObjectName("SclMmsDetailsSession");
     auto* layout = new QVBoxLayout(this); layout->setContentsMargins(0, 0, 0, 0);
@@ -160,7 +161,7 @@ SclMmsView::SclMmsView(QWidget* parent) : QWidget(parent), m_list(this), m_detai
         auto* interaction = new SclTableInteraction(table); interaction->SetModel(model); interaction->SetEnabled(true);
         return interaction;
     };
-    auto* interaction = configure(m_table, m_model); m_table->setColumnWidth(1, 260);
+    auto* interaction = configure(m_table, m_model); m_tableInteraction = interaction; m_table->setColumnWidth(1, 260);
     layout->addWidget(m_table, 1);
     m_graph = new QGraphicsView(this); m_graph->setObjectName("SclMmsGraph"); m_graph->setMinimumSize(0, 0);
     m_graph->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
@@ -168,15 +169,17 @@ SclMmsView::SclMmsView(QWidget* parent) : QWidget(parent), m_list(this), m_detai
     m_inspector = new QWidget(this); m_inspector->setObjectName("SclMmsInspector");
     auto* fieldsLayout = new QVBoxLayout(m_inspector); fieldsLayout->setContentsMargins(4, 4, 4, 4);
     auto* fieldActions = new QHBoxLayout;
+    m_fieldActions = fieldActions;
     m_fieldTitle = new QLabel(QStringLiteral("选择一个 MMS 对象以查看字段与依据"), m_inspector);
     m_fieldTitle->setObjectName("SclMmsSelection"); m_fieldTitle->setTextFormat(Qt::PlainText);
     m_fieldTitle->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_source = new QPushButton(QStringLiteral("查看所选字段原文"), m_inspector); m_source->setObjectName("SclMmsSource");
     m_source->setEnabled(false); fieldActions->addWidget(m_fieldTitle, 1); fieldActions->addWidget(m_source);
     fieldsLayout->addLayout(fieldActions);
+    SetupObjectEvidence(fieldsLayout);
     m_fields = new QTableView(m_inspector); m_fields->setObjectName("SclMmsFields");
     m_fieldModel = new SclMmsTableModel(this); m_fieldModel->headers = {QStringLiteral("字段"), QStringLiteral("完整值"), QStringLiteral("解释 / 来源")};
-    auto* fieldInteraction = configure(m_fields, m_fieldModel); m_fields->setColumnWidth(1, 300);
+    auto* fieldInteraction = configure(m_fields, m_fieldModel); m_fieldInteraction = fieldInteraction; m_fields->setColumnWidth(1, 300);
     fieldsLayout->addWidget(m_fields, 1);
     ConnectSclReferenceMenu(interaction, [this](const QModelIndex& index) {
         if (!m_result || index.row() >= int(m_result->rows.size())) return SclReferenceMenuContext{};
@@ -259,7 +262,11 @@ SclMmsView::SclMmsView(QWidget* parent) : QWidget(parent), m_list(this), m_detai
     m_request.kind = SclMmsQueryKind::Reports;
 }
 SclMmsView::~SclMmsView() { Cancel(); }
-void SclMmsView::Cancel() { ++m_epoch; m_delay.stop(); m_list.Cancel(); m_details.Cancel(); }
+void SclMmsView::Cancel() {
+    ++m_epoch; m_delay.stop(); m_list.Cancel(); m_details.Cancel();
+    ResetObjectEvidence();
+    m_tableInteraction->CancelRestore(); m_fieldInteraction->CancelRestore();
+}
 void SclMmsView::hideEvent(QHideEvent* e) { Cancel(); QWidget::hideEvent(e); }
 void SclMmsView::showEvent(QShowEvent* e) { QWidget::showEvent(e); if (m_snapshot) { m_restore = CurrentLocation(); Run(); } }
 void SclMmsView::SetContext(std::shared_ptr<const SclSnapshot> snapshot, Scl::NodeId ied) {
@@ -272,7 +279,7 @@ void SclMmsView::SetContext(std::shared_ptr<const SclSnapshot> snapshot, Scl::No
     Cancel(); m_snapshot = std::move(snapshot); m_ied = ied; m_selected.reset(); m_restore.reset(); m_result.reset(); m_detail.reset();
     m_parent.reset(); m_searchOrigin.reset(); m_ancestors.clear();
     m_navigationSignature.clear(); m_renderedParent = nullptr; m_renderedOrigin = nullptr;
-    m_list.SetContext(m_snapshot, {m_ied}); m_details.SetContext(m_snapshot, {m_ied});
+    m_list.SetContext(m_snapshot, {m_ied}); m_details.SetContext(m_snapshot, {m_ied}); m_relations.SetContext(m_snapshot, {m_ied});
     m_request = {}; m_request.scope.ied = ied;
     if (keepSearch) {
         m_request.kind = SclMmsQueryKind::Attributes;
@@ -307,6 +314,7 @@ void SclMmsView::OpenAttributeTarget(Scl::NodeId node, bool inspectorVisible) {
 
 void SclMmsView::ChangeFilter(const QString& text, const QString& fc) {
     ++m_epoch;
+    ResetObjectEvidence();
     auto restore = CurrentLocation();
     m_list.Cancel(); m_details.Cancel();
     m_request.text = text; m_request.fc = fc; m_request.offset = 0;
@@ -340,6 +348,10 @@ SclMmsView::Location SclMmsView::CurrentLocation() const {
     l.parent = m_parent; l.searchOrigin = m_searchOrigin; l.viewIed = m_ied; l.inspectorVisible = m_inspectorVisible;
     l.horizontal = m_table->horizontalScrollBar()->value(); l.fieldHorizontal = m_fields->horizontalScrollBar()->value();
     l.column = m_table->currentIndex().column();
+    l.selectionVisible = m_table->currentIndex().isValid()
+        && m_table->viewport()->visibleRegion().intersects(m_table->visualRect(m_table->currentIndex()));
+    l.fieldVisible = m_fields->currentIndex().isValid()
+        && m_fields->viewport()->visibleRegion().intersects(m_fields->visualRect(m_fields->currentIndex()));
     const int top = m_table->rowAt(0);
     if (m_result && top >= 0 && top < int(m_result->rows.size())) { l.top = m_result->rows[top].key; l.topOffset = -m_table->rowViewportPosition(top); }
     if (m_detail) {
@@ -400,13 +412,23 @@ void SclMmsView::ApplyList() {
     case SclMmsQueryKind::Reports:
         headers = {QStringLiteral("报告定义"), QStringLiteral("报告类型"), QStringLiteral("数据集 / 成员"), QStringLiteral("说明"), QStringLiteral("解析状态")}; columns = {0,2,3,1,7}; break;
     case SclMmsQueryKind::Signals:
-        headers = {QStringLiteral("对象"), QStringLiteral("描述"), QStringLiteral("所属装置 / LN"), "CDC", QStringLiteral("状态")}; columns = {0,1,3,2,7}; break;
+        headers = {QStringLiteral("DO / SDO 路径"), QStringLiteral("描述"), QStringLiteral("所属装置 / LN"), "CDC", QStringLiteral("状态"), QStringLiteral("对象来源")}; columns = {0,1,3,2,7,12}; break;
     case SclMmsQueryKind::Addresses:
-        headers = {QStringLiteral("属性"), "MMS Domain", "MMS Item", "FC", QStringLiteral("访问形态"), QStringLiteral("说明 / 来源"), QStringLiteral("状态")}; columns = {0,5,6,4,2,1,7}; break;
+        headers = {QStringLiteral("属性"), "MMS Domain", "MMS Item", "FC", QStringLiteral("访问形态"), QStringLiteral("说明 / 来源"), QStringLiteral("状态"),
+            QStringLiteral("DO / SDO 路径"), QStringLiteral("DA / BDA 路径"), QStringLiteral("所属对象 CDC"), QStringLiteral("基本类型"), QStringLiteral("地址来源")}; columns = {0,5,6,4,2,1,7,8,9,10,11,12}; break;
     case SclMmsQueryKind::Attributes:
         headers = {QStringLiteral("属性路径"), QStringLiteral("IED / AP / Server / LD / LN"), "FC",
-            QStringLiteral("直接映射"), QStringLiteral("匹配依据"), QStringLiteral("描述 / 说明"), "MMS Domain", "MMS Item"};
-        columns = {0,3,4,7,2,1,5,6}; break;
+            QStringLiteral("直接映射"), QStringLiteral("匹配依据"), QStringLiteral("描述 / 说明"), "MMS Domain", "MMS Item",
+            QStringLiteral("DO / SDO 路径"), QStringLiteral("DA / BDA 路径"), QStringLiteral("所属对象 CDC"), QStringLiteral("基本类型"), QStringLiteral("地址来源")};
+        columns = {0,3,4,7,2,1,5,6,8,9,10,11,12}; break;
+    case SclMmsQueryKind::Members:
+        headers = {QStringLiteral("原始序号"), QStringLiteral("原始 doName"), QStringLiteral("原始 daName"), QStringLiteral("成员层级"), "FC",
+            QStringLiteral("所属对象 CDC"), QStringLiteral("基本类型"), "MMS Domain", QStringLiteral("声明层 MMS Item"), QStringLiteral("解析状态"), QStringLiteral("原文位置")};
+        columns = {15,13,14,2,4,10,11,5,6,7,16}; break;
+    case SclMmsQueryKind::DataSetRelations:
+        headers = {QStringLiteral("DataSet 完整路径"), QStringLiteral("原始序号"), QStringLiteral("匹配 / 覆盖"), QStringLiteral("原始 doName"),
+            QStringLiteral("原始 daName"), QStringLiteral("成员层级"), "FC", QStringLiteral("原文位置"), QStringLiteral("静态使用方（在线未验证）")};
+        columns = {0,15,3,13,14,2,4,16,17}; break;
     case SclMmsQueryKind::AttributeReports:
         headers = {QStringLiteral("报告定义"), QStringLiteral("匹配证据"), QStringLiteral("数据集"),
             QStringLiteral("FCDA 原始序号 / 成员"), "FC", "MMS Domain", "MMS Item"};
@@ -449,6 +471,13 @@ void SclMmsView::ApplyList() {
     if (attributes && !m_request.fc.isEmpty()) m_status->setText(m_status->text() + " · FC " + m_request.fc);
     if (result->limited) m_status->setText(m_status->text() + '\n' + result->limitation + QStringLiteral(" 请缩小范围；结果不完整。"));
     else if (!result->limitation.isEmpty()) m_status->setText(m_status->text() + '\n' + result->limitation);
+    if (m_request.kind == SclMmsQueryKind::DataSetRelations) {
+        const auto& c = result->dataSetCoverage;
+        m_status->setText(m_status->text() + '\n' + (result->limited || !c.scanComplete || c.uncertainOccurrences
+            ? QStringLiteral("检索受限或尚有未确定声明；不能据此排除其他引用。")
+            : c.conclusion == SclDataSetConclusion::NotReferenced ? QStringLiteral("当前范围已检索，未发现数据集引用。")
+            : QStringLiteral("精确 / 结构 / DO 覆盖保留原始 FCDA；不代表在线收发。")));
+    }
     m_previous->setEnabled(m_request.offset > 0);
     m_next->setEnabled(result->total > m_request.offset + int(result->rows.size()) && !result->rows.empty());
     m_table->setVisible(m_request.kind != SclMmsQueryKind::Graph); m_graph->setVisible(m_request.kind == SclMmsQueryKind::Graph);
@@ -478,9 +507,10 @@ void SclMmsView::ApplyList() {
 void SclMmsView::Select(int row, bool navigate) {
     if (!m_result || row < 0 || row >= int(m_result->rows.size())) return;
     if (navigate) { ++m_epoch; m_restore.reset(); }
+    ResetObjectEvidence();
     m_selected = m_result->rows[row].key;
     if (!m_restore || m_restore->selected != m_selected) emit SelectedNode(m_selected->node);
-    Detail(); UpdateActions();
+    Detail(); QueryDataSets(); UpdateActions();
     if (!m_restore) emit LocationUpdated();
 }
 const SclMmsRow* SclMmsView::SelectedRow() const {
@@ -507,6 +537,7 @@ void SclMmsView::ApplyDetail() {
     if (!result || !m_snapshot || result->document != m_snapshot->analysis.document || result->source != m_snapshot->analysis.source
         || !m_selected || !Same(*m_selected, result->request.key)) return;
     const QScopedValueRollback<bool> guard(m_applying, true); m_detail = result;
+    RenderObjectEvidence();
     m_fields->setEnabled(true);
     m_fieldTitle->setText(result->title); m_fieldTitle->setToolTip((result->summary + '\n' + result->limitation).toHtmlEscaped());
     std::vector<QStringList> rows;
@@ -612,7 +643,11 @@ void SclMmsView::UpdateActions() {
     for (const auto kind : {SclMmsQueryKind::Members, SclMmsQueryKind::Instances, SclMmsQueryKind::Clients, SclMmsQueryKind::Graph}) {
         auto* action = menu->addAction(Route(kind), this, [this, kind] { Continue(kind); }); action->setEnabled(report);
     }
-    auto* usage = menu->addAction(QStringLiteral("信号被哪些数据集/报告使用"), this, [this] { Continue(SclMmsQueryKind::ReverseSignal); });
+    auto* usage = menu->addAction(selected && selected->key.kind == SclMmsRecordKind::Address
+        ? QStringLiteral("属性的数据集引用 / 覆盖与静态使用方") : QStringLiteral("信号被哪些数据集/报告使用"), this, [this] {
+        if (m_selected && m_selected->kind == SclMmsRecordKind::Address) OpenDataSets(false);
+        else Continue(SclMmsQueryKind::ReverseSignal);
+    });
     usage->setEnabled(selected && (selected->key.kind == SclMmsRecordKind::Signal || selected->key.kind == SclMmsRecordKind::Address));
     if (attributes || evidence || m_request.kind == SclMmsQueryKind::Addresses) {
         auto* inspector = menu->addAction(QStringLiteral("查看字段与依据"), this, &SclMmsView::ShowInspector);

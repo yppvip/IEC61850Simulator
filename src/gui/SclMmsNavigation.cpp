@@ -1,4 +1,5 @@
 #include "SclMmsView.hpp"
+#include "SclTableInteraction.hpp"
 #include <QApplication>
 #include <QClipboard>
 #include <QLabel>
@@ -23,6 +24,7 @@ QString PageName(SclMmsQueryKind kind) {
     case SclMmsQueryKind::Addresses: return QStringLiteral("属性与地址");
     case SclMmsQueryKind::Attributes: return QStringLiteral("查找属性");
     case SclMmsQueryKind::AttributeReports: return QStringLiteral("属性的报告使用");
+    case SclMmsQueryKind::DataSetRelations: return QStringLiteral("属性的数据集引用 / 覆盖");
     case SclMmsQueryKind::Search: return QStringLiteral("全工程搜索");
     case SclMmsQueryKind::Instances: return QStringLiteral("预期实例");
     case SclMmsQueryKind::Clients: return QStringLiteral("客户端声明");
@@ -151,6 +153,17 @@ QString SclMmsView::PageLabel(const Location& location, bool selection) const {
 void SclMmsView::UpdateNavigation() {
     const bool shortWindow = window()->height() < 650;
     const bool narrow = width() < 600 || shortWindow;
+    if (m_objectCompact) {
+        if (shortWindow && m_fieldActions->indexOf(m_objectCompact) < 0) {
+            m_evidenceLayout->removeWidget(m_objectCompact); m_fieldActions->insertWidget(0,m_objectCompact);
+        } else if (!shortWindow && m_fieldActions->indexOf(m_objectCompact) >= 0) {
+            m_fieldActions->removeWidget(m_objectCompact); m_evidenceLayout->insertWidget(m_evidenceLayout->indexOf(m_fields),m_objectCompact);
+        }
+        m_fieldTitle->setVisible(!shortWindow);
+        m_objectCompact->setVisible(shortWindow);
+        m_objectSummary->setVisible(!shortWindow);
+        for (auto* b : {m_dataSetSource,m_instanceSource,m_typeSource,m_composition}) b->setVisible(!shortWindow);
+    }
     if (m_controlsLayout && m_pathLayout && shortWindow != m_compactPaths) {
         m_compactPaths = shortWindow;
         m_pathLayout->removeWidget(m_searchReturn); m_pathLayout->removeWidget(m_pathMenu);
@@ -232,6 +245,10 @@ void SclMmsView::CompleteRestore() {
                 }
             m_table->horizontalScrollBar()->setValue(restore.horizontal);
             m_fields->horizontalScrollBar()->setValue(restore.fieldHorizontal);
+            // Row measurement is asynchronous; the interaction owns the final visibility
+            // correction for this model/width generation, after restoring the old anchor.
+            m_tableInteraction->RestorePosition(restore.selectionVisible ? m_table->currentIndex() : QModelIndex{}, {}, 0, restore.horizontal);
+            m_fieldInteraction->RestorePosition(restore.fieldVisible ? m_fields->currentIndex() : QModelIndex{}, {}, 0, restore.fieldHorizontal);
             m_restore.reset();
         }
         UpdateNavigation(); emit LocationUpdated();
