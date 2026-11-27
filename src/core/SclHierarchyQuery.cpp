@@ -334,6 +334,15 @@ private:
                 member.target = ref.candidates.front();
         }
         member.description = DescribeSclMember(analysis, node, m_task);
+        const auto meta = m_snapshot.browse.objects.constFind(node);
+        if (meta != m_snapshot.browse.objects.cend()) {
+            member.objectPath = meta->objectPath; member.attributePath = meta->attributePath;
+            if (meta->cdcType != NoNode) {
+                member.cdc = Attr(meta->cdcType,"cdc"); member.objectType = Attr(meta->cdcType,"id");
+            }
+            if (meta->declaration != NoNode) member.basicType = Attr(meta->declaration,"bType");
+            member.level = SclMemberLevel(m_doc,meta->declaration);
+        } else member.level = QStringLiteral("尚未确定（结构索引未覆盖）");
         return member;
     }
 

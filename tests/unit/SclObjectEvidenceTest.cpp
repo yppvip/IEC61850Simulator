@@ -1,5 +1,6 @@
 #include "SclAnalysisService.hpp"
 #include "SclReferenceTrace.hpp"
+#include "SclHierarchyQuery.hpp"
 #include <QtTest>
 #include <QFile>
 #include <algorithm>
@@ -60,6 +61,85 @@ QByteArray AddMember(const QByteArray& declaration)
 class SclObjectEvidenceTest : public QObject {
     Q_OBJECT
 private slots:
+    void AdvancedStructureMatchesTaskEvidence()
+    {
+        const auto s = Snapshot(); const auto row = Address(*s,"PhV.phsA","cVal.mag.f");
+        const auto task = QuerySclMms(*s,Request(*s,SclMmsQueryKind::ObjectEvidence,row),nullptr).objectEvidence;
+        QVERIFY(task && task->instance.state == SclInstanceLocationState::Exact);
+        SclMmsRequest r; r.kind = SclMmsQueryKind::NodeEvidence; r.identityDocument = s->analysis.document;
+        r.target = task->instance.target.node; r.scope = row.addressScope;
+        const auto advanced = QuerySclMms(*s,r,nullptr).objectEvidence; QVERIFY(advanced);
+        QCOMPARE(advanced->cdc,task->cdc); QCOMPARE(advanced->objectType,task->objectType);
+        QCOMPARE(advanced->objectPath,task->objectPath); QCOMPARE(advanced->attributePath,task->attributePath);
+        QCOMPARE(advanced->fcEvidence.node,task->fcEvidence.node);
+        QCOMPARE(advanced->instance.target.node,task->instance.target.node);
+        QVERIFY(std::none_of(advanced->values.begin(),advanced->values.end(),[](const auto& value) {
+            return value.kind == SclReferenceValueKind::MmsItem && !value.value.isEmpty();
+        })); // Structure evidence does not fabricate an Item.
+        const auto meta = s->browse.objects.value(r.target);
+        QCOMPARE(meta.cdcType,task->objectType); QCOMPARE(meta.objectPath,task->objectPath);
+        QCOMPARE(meta.attributePath,task->attributePath);
+        r.target = row.key.declaration;
+        const auto unbound = QuerySclMms(*s,r,nullptr).objectEvidence; QVERIFY(unbound);
+        QVERIFY(unbound->values.isEmpty()); QCOMPARE(unbound->logicalNode,NoNode);
+        QCOMPARE(unbound->instance.target.node,NoNode); QVERIFY(unbound->limitation.contains(QStringLiteral("未绑定")));
+        SclHierarchyRequest hierarchy; hierarchy.kind = SclHierarchyKind::Members;
+        for (const auto* name : {"LeafDs","ObjectDs","StructDs"}) {
+            hierarchy.dataSet = Named(*s,"DataSet",name);
+            const auto members = QuerySclHierarchy(s,hierarchy,nullptr); QVERIFY(!members.rows.empty());
+            const auto& member = *members.rows.front().member;
+            QCOMPARE(member.cdc,task->cdc); QCOMPARE(member.objectType,QStringLiteral("Phase"));
+            r.target = members.rows.front().node;
+            const auto e = QuerySclMms(*s,r,nullptr).objectEvidence; QVERIFY(e);
+            QCOMPARE(e->cdc,member.cdc); QCOMPARE(e->objectPath,member.objectPath);
+            QCOMPARE(e->attributePath,member.attributePath);
+            if (QString::fromLatin1(name) == "LeafDs") QVERIFY(member.level.contains(QStringLiteral("精确属性")));
+            else if (QString::fromLatin1(name) == "ObjectDs") QVERIFY(member.level.contains(QStringLiteral("DO / SDO")));
+            else QVERIFY(member.level.contains(QStringLiteral("结构属性")));
+        }
+        r.target = task->instance.target.node; r.workLimit = 1;
+        const auto limited = QuerySclMms(*s,r,nullptr); QVERIFY(limited.limited && !limited.objectEvidence);
+        r.workLimit = 100000; r.identityDocument = Snapshot()->analysis.document;
+        QVERIFY(!QuerySclMms(*s,r,nullptr).objectEvidence);
+    }
+
+    void AdvancedMissingAndAmbiguousDefinitions()
+    {
+        auto xml = Fixture(); xml.replace("<DA name=\"cVal\" fc=\"MX\"", "<DA name='cVal' fc='CF' bType='Struct' type='Vector'/><DA name=\"cVal\" fc=\"MX\"");
+        auto s = Snapshot(xml);
+        const auto node = Named(*s,"SDI","cVal"); QVERIFY(node != NoNode);
+        QCOMPARE(s->browse.objects.value(node).state,LinkState::Ambiguous);
+        QCOMPARE(s->browse.objects.value(node).declaration,NoNode);
+        SclMmsRequest r; r.kind = SclMmsQueryKind::NodeEvidence; r.identityDocument = s->analysis.document; r.target = node;
+        const auto e = QuerySclMms(*s,r,nullptr).objectEvidence; QVERIFY(e);
+        QVERIFY(e->state != LinkState::Resolved); QVERIFY(e->values.isEmpty());
+        xml = Fixture(); xml.replace("type=\"Phase\"","type=\"UnknownPhase\""); s = Snapshot(xml);
+        const auto phase = Named(*s,"SDI","phsA");
+        QCOMPARE(s->browse.objects.value(phase).state,LinkState::Missing);
+        QVERIFY(s->browse.objects.value(phase).cdcType == NoNode);
+    }
+
+    void AdvancedPathBudgetDoesNotRestartAtDescendants()
+    {
+        QByteArray instances, definitions;
+        const auto name = [](int i) { return QByteArray("Part") + QByteArray(110,'x') + QByteArray::number(i); };
+        for (int i = 0; i < 24; ++i) {
+            instances += (i ? "<SDI name='" : "<DOI name='") + name(i) + "'>";
+            definitions += "<DOType id='T" + QByteArray::number(i) + "' cdc='SPS'>";
+            if (i < 23) definitions += "<SDO name='" + name(i+1) + "' type='T" + QByteArray::number(i+1) + "'/>";
+            definitions += "</DOType>";
+        }
+        instances += QByteArray("</SDI>").repeated(23) + "</DOI>";
+        const auto s = Snapshot("<SCL xmlns='http://www.iec.ch/61850/2003/SCL'><IED name='Budget'><AccessPoint name='AP'><Server>"
+            "<LDevice inst='LD'><LN lnClass='GGIO' inst='1' lnType='L'>" + instances + "</LN></LDevice></Server></AccessPoint></IED>"
+            "<DataTypeTemplates><LNodeType id='L' lnClass='GGIO'><DO name='" + name(0) + "' type='T0'/></LNodeType>"
+            + definitions + "</DataTypeTemplates></SCL>");
+        QVERIFY(s->browse.objectsLimited);
+        const auto last = Named(*s,"SDI",name(23).constData()); QVERIFY(last != NoNode);
+        const auto meta = s->browse.objects.value(last);
+        QCOMPARE(meta.state,LinkState::Unsupported); QVERIFY(meta.objectPath.isEmpty());
+        QCOMPARE(meta.declaration,NoNode);
+    }
     void TypedPathsOriginsAndCopyConsistency()
     {
         const auto s = Snapshot();

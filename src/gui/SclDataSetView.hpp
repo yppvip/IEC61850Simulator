@@ -35,6 +35,7 @@ public:
         Scl::NodeId anchor = Scl::NoNode;
         Scl::NodeId anchorParent = Scl::NoNode;
         int anchorDelta = 0;
+        bool selectionVisible = true;
         std::vector<Scl::NodeId> expanded;
     };
 

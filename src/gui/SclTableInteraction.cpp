@@ -214,8 +214,18 @@ void SclTableInteraction::CancelRestore()
 void SclTableInteraction::RestorePosition(const QModelIndex& selected, const QModelIndex& top, int offset, int horizontal)
 {
     CancelRestore();
-    if (!m_table || !m_enabled) return;
+    if (!m_enabled) return;
     m_restoreCell = selected;
+    if (m_tree) {
+        if (top.isValid()) {
+            m_tree->scrollTo(top,QAbstractItemView::PositionAtTop);
+            m_tree->verticalScrollBar()->setValue(m_tree->verticalScrollBar()->value() + offset);
+        }
+        m_tree->horizontalScrollBar()->setValue(horizontal);
+        if (selected.isValid() && !m_tree->viewport()->visibleRegion().intersects(m_tree->visualRect(selected)))
+            m_tree->scrollTo(selected,QAbstractItemView::EnsureVisible);
+        Schedule(); return;
+    }
     if (top.isValid()) {
         m_table->scrollTo(top, QAbstractItemView::PositionAtTop);
         m_table->verticalScrollBar()->setValue(m_table->verticalScrollBar()->value() + offset);
@@ -366,11 +376,19 @@ void SclTableInteraction::MeasureTree()
         m_tree->verticalScrollBar()->setValue(m_tree->verticalScrollBar()->value()
             + qBound(0, offset, qMax(0, m_tree->visualRect(top).height() - 1)));
     }
+    if (m_restoreCell.isValid() && !m_tree->viewport()->visibleRegion().intersects(m_tree->visualRect(m_restoreCell)))
+        m_tree->scrollTo(m_restoreCell,QAbstractItemView::EnsureVisible);
     m_measuring = false;
     if (measured)
         m_tree->setProperty("SclTreeMeasureUs", qMax(qint64(1), timer.nsecsElapsed() / 1000));
     if (changed)
         Schedule();
+    else if (m_restoreCell.isValid()) {
+        const auto generation = m_restoreGeneration;
+        QTimer::singleShot(0,this,[this,generation] {
+            if (generation == m_restoreGeneration && !m_timer.isActive() && !m_stale) CancelRestore();
+        });
+    }
 }
 
 void SclTableInteraction::Copy(const QModelIndex& index, bool row)

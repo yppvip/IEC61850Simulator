@@ -73,7 +73,7 @@ public:
         return index.internalId() ? Root(NodeId(index.internalId() - 1)) : QModelIndex{};
     }
 
-    int columnCount(const QModelIndex& = {}) const override { return 5; }
+    int columnCount(const QModelIndex& = {}) const override { return 12; }
 
     int rowCount(const QModelIndex& parent = {}) const override
     {
@@ -89,7 +89,8 @@ public:
     QVariant headerData(int section, Qt::Orientation orientation, int role) const override
     {
         static const QStringList headers{tr("名称 / 成员序号"), tr("所属位置 / 声明范围"), tr("类别 / FC"),
-            tr("状态 / 数量"), tr("描述")};
+            tr("状态 / 数量"), tr("描述"), tr("原始 doName"), tr("原始 daName"), tr("DO / SDO 路径"),
+            tr("DA / BDA 路径"), tr("所属对象 CDC"), tr("DOType / 基本类型"), tr("成员层级 / 覆盖")};
         return role == Qt::DisplayRole && orientation == Qt::Horizontal ? QVariant(headers.value(section)) : QVariant{};
     }
 
@@ -143,6 +144,13 @@ public:
                 else
                     value = row->description;
                 break;
+            case 5: value = member.doName; break;
+            case 6: value = member.daName.isNull() ? tr("未声明") : member.daName.isEmpty() ? tr("已声明空值") : member.daName; break;
+            case 7: value = member.objectPath; break;
+            case 8: value = member.attributePath; break;
+            case 9: value = member.cdc; break;
+            case 10: value = member.objectType + (member.basicType.isEmpty() ? QString() : " / " + member.basicType); break;
+            case 11: value = member.level; break;
             }
         }
         if (role == Qt::DisplayRole && value.size() > SclTableInteraction::PreviewLimit)
@@ -633,6 +641,11 @@ void SclDataSetView::ApplySelection(bool locate)
             m_tree->setCurrentIndex(index);
             m_tree->scrollTo(index);
         }
+        if (locate) {
+            const auto top = m_tree->indexAt(QPoint(0,0));
+            m_tree->findChild<SclTableInteraction*>()->RestorePosition(index,top,
+                top.isValid() ? -m_tree->visualRect(top).top() : 0,m_tree->horizontalScrollBar()->value());
+        }
         emit FilterHidesSelection(false);
     }
     else
@@ -746,6 +759,11 @@ void SclDataSetView::ReceiveBranch()
         ContinueRestore();
     else
         RestoreAnchor(anchor);
+    if (result->request.locate == m_node && m_tree->currentIndex().isValid()) {
+        const auto top = m_tree->indexAt(QPoint(0,0));
+        m_tree->findChild<SclTableInteraction*>()->RestorePosition(m_tree->currentIndex(),top,
+            top.isValid() ? -m_tree->visualRect(top).top() : 0,m_tree->horizontalScrollBar()->value());
+    }
     UpdateActions();
     m_tree->setProperty("SclBranchWorkerUs", result->workerUs);
     m_tree->setProperty("SclBranchApplyUs", delivery.nsecsElapsed() / 1000);
@@ -799,6 +817,8 @@ SclDataSetView::Location SclDataSetView::CurrentLocation() const
     value.anchor = m_model->Node(top);
     value.anchorParent = m_model->Node(top.parent());
     value.anchorDelta = top.isValid() ? -m_tree->visualRect(top).top() : 0;
+    value.selectionVisible = m_tree->currentIndex().isValid()
+        && m_tree->viewport()->visibleRegion().intersects(m_tree->visualRect(m_tree->currentIndex()));
     for (int row = 0; row < m_model->rowCount() && value.expanded.size() < 8; ++row)
     {
         const auto index = m_model->index(row, 0);
@@ -814,8 +834,8 @@ void SclDataSetView::RestoreAnchor(const Location& location)
         : m_model->Find(location.anchor, location.anchorParent);
     if (index.isValid() && (!index.parent().isValid() || m_tree->isExpanded(index.parent())))
     {
-        m_tree->scrollTo(index, QAbstractItemView::PositionAtTop);
-        m_tree->verticalScrollBar()->setValue(m_tree->verticalScrollBar()->value() + location.anchorDelta);
+        m_tree->findChild<SclTableInteraction*>()->RestorePosition(location.selectionVisible ? m_tree->currentIndex() : QModelIndex{},
+            index,location.anchorDelta,m_tree->horizontalScrollBar()->value());
     }
 }
 

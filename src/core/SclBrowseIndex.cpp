@@ -1,5 +1,6 @@
 #include "SclBrowseIndex.hpp"
 #include <QSet>
+#include <QElapsedTimer>
 #include <algorithm>
 
 namespace iec61850sim
@@ -78,6 +79,9 @@ SclBrowseIndex::SclBrowseIndex(const Scl::Document& document, Scl::TaskControl* 
 
 void SclBrowseIndex::BuildScopes(const Scl::ReferenceAnalysis& analysis, Scl::TaskControl* task)
 {
+    QElapsedTimer objectsTimer; objectsTimer.start();
+    objects = BuildSclObjectStructures(analysis, task, objectsLimited);
+    objectsBuildUs = objectsTimer.nsecsElapsed() / 1000;
     const auto& doc = *analysis.document;
     // Communication is outside the IED subtree. Only a unique declaration is
     // accepted as ownership evidence; duplicate names remain engineering scope.

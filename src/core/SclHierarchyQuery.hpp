@@ -50,6 +50,7 @@ struct SclHierarchyMember
     Scl::NodeId target = Scl::NoNode; // Only a unique resolved target.
     int arrayIndex = -1;
     SclDescription description;
+    QString objectPath, attributePath, cdc, objectType, basicType, level;
 };
 
 struct SclHierarchyRow

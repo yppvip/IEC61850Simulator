@@ -118,6 +118,7 @@ void SclWorkspace::CreateTopologyControls(QVBoxLayout* layout)
 void SclWorkspace::AddTopologyAction(QAbstractItemView* view)
 {
     auto* interaction = new SclTableInteraction(view);
+    if (view->objectName() == "SclObjects" || view->objectName() == "SclTemplates") interaction->SetEnabled(true);
     interaction->EnableReferenceMenus();
     connect(interaction, &SclTableInteraction::PopulateContextMenu, this, [this, view](QMenu& menu, const QModelIndex& index) {
         if (!m_snapshot) return;
@@ -137,9 +138,13 @@ void SclWorkspace::AddMmsAttributeAction(QMenu& menu, Scl::NodeId node, QAbstrac
     if (!m_snapshot || !IsSclMmsAttributeTarget(*m_snapshot, node)) return;
     const std::weak_ptr<const SclSnapshot> snapshot = m_snapshot;
     const auto scope = m_ied;
+    const auto generation = m_referenceGeneration;
+    const auto identity = index.data(Qt::UserRole);
     auto* action = menu.addAction(QStringLiteral("在 MMS 中查阅属性"), this,
-        [this, snapshot, scope, node, view = QPointer<QAbstractItemView>(view), hit = QPersistentModelIndex(index)] {
-        if (snapshot.lock() != m_snapshot || scope != m_ied || !view || !hit.isValid()) return;
+        [this, snapshot, scope, node, generation, identity, view = QPointer<QAbstractItemView>(view), hit = QPersistentModelIndex(index)] {
+        if (snapshot.lock() != m_snapshot || scope != m_ied || generation != m_referenceGeneration
+            || !view || !view->isVisible() || !view->isEnabled() || !hit.isValid()
+            || view->model() != hit.model() || hit.data(Qt::UserRole) != identity) return;
         view->setCurrentIndex(hit);
         OpenMmsAttributeTarget(node);
     });

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SclReferenceResolver.hpp"
+#include "SclObjectStructure.hpp"
 #include <array>
 
 namespace iec61850sim
@@ -16,6 +17,9 @@ struct SclBrowseIndex
 
     explicit SclBrowseIndex(const Scl::Document& document, Scl::TaskControl* task);
     void BuildScopes(const Scl::ReferenceAnalysis& analysis, Scl::TaskControl* task);
+    QHash<Scl::NodeId, SclObjectStructure> objects;
+    bool objectsLimited = false;
+    qint64 objectsBuildUs = 0;
     bool InScope(Scl::NodeId node, Scl::NodeId ied) const;
     using ScopeRows = std::array<std::vector<int>, size_t(SclView::Count)>;
     QHash<Scl::NodeId, ScopeRows> scopedRows;

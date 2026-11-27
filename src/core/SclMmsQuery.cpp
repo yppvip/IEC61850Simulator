@@ -1007,7 +1007,8 @@ void Query::Graph(NodeId report)
 
 SclMmsResult Query::Run()
 {
-    const bool evidenceQuery = r.kind == SclMmsQueryKind::ObjectEvidence || r.kind == SclMmsQueryKind::DataSetRelations;
+    const bool evidenceQuery = r.kind == SclMmsQueryKind::ObjectEvidence || r.kind == SclMmsQueryKind::DataSetRelations
+        || r.kind == SclMmsQueryKind::NodeEvidence;
     if (evidenceQuery && r.identityDocument != s.analysis.document) {
         out.limited = true; out.limitation = QStringLiteral("证据查询缺少对应快照身份，或身份已过期。"); return std::move(out);
     }
@@ -1040,6 +1041,11 @@ SclMmsResult Query::Run()
         case SclMmsQueryKind::Attributes: Attributes(); break;
         case SclMmsQueryKind::AttributeReports: AttributeReports(); break;
         case SclMmsQueryKind::ObjectEvidence: ObjectEvidence(); break;
+        case SclMmsQueryKind::NodeEvidence:
+            if (Valid(r.target) && s.browse.InScope(r.target,r.scope.ied)
+                && (s.browse.iedOwners[r.target] == NoNode || InScope(r.target)))
+                out.objectEvidence = std::make_shared<const SclObjectEvidence>(ProjectSclNodeEvidence(s,r.target,[this] { Tick(); }));
+            break;
         case SclMmsQueryKind::DataSetRelations: DataSetRelations(); break;
         case SclMmsQueryKind::ReverseSignal: ReverseSignal(r.signal); break;
         case SclMmsQueryKind::Graph: Graph(r.report); break;

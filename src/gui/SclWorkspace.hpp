@@ -49,6 +49,7 @@ public:
     bool UpdateSession(std::shared_ptr<const SclSnapshot> snapshot, const Scl::Result& failure);
 
 protected:
+    bool eventFilter(QObject*, QEvent*) override;
     void hideEvent(QHideEvent* event) override;
     void showEvent(QShowEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
@@ -77,6 +78,10 @@ private:
         int reference = -1;
         Scl::NodeId candidate = Scl::NoNode;
         std::shared_ptr<SclReferenceTraceLocation> trace;
+        SclQuery filter;
+        int searchMode = 0, column = 0, horizontal = 0, topOffset = 0;
+        Scl::NodeId top = Scl::NoNode;
+        bool allTemplates = false, selectionVisible = true;
     };
     void Select(Scl::NodeId id, bool route = false, int finding = -1, bool openSource = false, bool keepScope = false,
         std::optional<Relationship> relationship = {});
@@ -105,6 +110,10 @@ private:
     void UpdatePath();
     void UpdateReferencePath(const QModelIndex& index);
     void UpdateDetails();
+    void QueryAdvancedEvidence();
+    void ApplyAdvancedEvidence();
+    void RestoreAdvancedPosition(const Location&);
+    void CancelAdvancedRestore();
     void CreateSearchBar(QVBoxLayout* layout);
     void AttachSearchResults();
     void ScheduleSearch();
@@ -133,6 +142,10 @@ private:
     std::shared_ptr<const SclSnapshot> m_snapshot;
     bool m_closing = false;
     quint64 m_referenceGeneration = 0;
+    SclMmsQuerySession* m_advancedEvidence;
+    quint64 m_advancedEvidenceId = 0;
+    QString m_propertyHtml;
+    std::optional<Location> m_advancedRestore;
     Scl::Result m_failure;
     Scl::NodeId m_selected = Scl::NoNode;
     int m_finding = -1;

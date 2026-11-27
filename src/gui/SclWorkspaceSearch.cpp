@@ -306,6 +306,7 @@ void SclWorkspace::AttachSearchResults()
         m_searchError = error;
         if (m_filteredTable && error.isEmpty())
             ApplyTableFilter(m_filteredTable, std::move(m_filteredRows));
+        else if (!error.isEmpty()) CancelAdvancedRestore();
         UpdateSearchStatus();
 
         if (m_motion->isChecked() && isVisible())
@@ -324,6 +325,7 @@ void SclWorkspace::AttachSearchResults()
 
 void SclWorkspace::ResetSearch(bool clearInputs)
 {
+    CancelAdvancedRestore();
     ++m_referenceGeneration;
     m_search->Cancel();
     m_searchDelay->stop();
@@ -423,6 +425,7 @@ void SclWorkspace::BeginSearch()
 
 void SclWorkspace::CancelSearch()
 {
+    CancelAdvancedRestore();
     m_search->Cancel();
     m_searchDelay->stop();
     m_searching = false;

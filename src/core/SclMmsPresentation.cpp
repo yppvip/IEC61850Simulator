@@ -235,6 +235,8 @@ void PresentSclMms(const SclSnapshot& s, SclMmsResult& result, TaskControl* task
             if (row.description) for (const auto& f : row.description->fields)
                 if (!f.value.isEmpty()) desc += '\n' + SclDescriptionLabel(f.source) + ": " + f.value;
             type = Shape(row.shape);
+            if (const auto meta = s.browse.objects.constFind(row.key.node); meta != s.browse.objects.cend())
+                type = SclMemberLevel(*s.analysis.document,meta->declaration);
             if (row.key.record >= 0 && row.key.record < int(s.analysis.references.size()))
                 parent = s.analysis.references[row.key.record].objectReference;
             if (result.request.kind == SclMmsQueryKind::AttributeReports) {

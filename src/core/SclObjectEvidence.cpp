@@ -5,6 +5,74 @@
 namespace iec61850sim {
 using namespace Scl;
 
+SclObjectEvidence ProjectSclNodeEvidence(const SclSnapshot& s, NodeId id, const std::function<void()>& tick)
+{
+    const auto& doc = *s.analysis.document;
+    const auto& tag = doc.nodes[id].name;
+    if (tag == "FCDA") {
+        const auto entry = s.mmsIndex.memberReferences.constFind(id);
+        if (entry != s.mmsIndex.memberReferences.cend()) {
+            const auto& ref = s.analysis.references[*entry];
+            SclMmsRow row; row.key = {SclMmsRecordKind::Member,id,*entry,ref.memberOrdinal};
+            row.state = ref.state; row.fc = doc.attribute(id,"fc"); row.arrayIndex = ref.arrayIndex;
+            row.component = ref.mmsComponent; row.domain = ref.mmsDomain; row.item = ref.mmsItem;
+            row.objectReference = ref.objectReference; row.limitation = ref.detail;
+            return ProjectSclObjectEvidence(s,row,tick);
+        }
+    }
+    SclObjectEvidence out; out.document = s.analysis.document; out.sha256 = s.analysis.sha256;
+    const auto meta = s.browse.objects.constFind(id);
+    if (meta == s.browse.objects.cend()) {
+        out.limitation = s.browse.objectsLimited ? QStringLiteral("结构索引受限；尚未确定。") : QStringLiteral("该节点不是对象或模板结构。");
+        return out;
+    }
+    out.state = meta->state;
+    if (s.browse.iedOwners[id] != NoNode && tag != "LN" && tag != "LN0") {
+        // Use the same declaration chain and instance locator as task details.
+        SclMmsRow row; row.key.kind = SclMmsRecordKind::Address; row.state = meta->state;
+        auto n = id;
+        while (n != NoNode && doc.nodes[n].name != "LN" && doc.nodes[n].name != "LN0") {
+            tick();
+            const auto part = s.browse.objects.constFind(n);
+            if (part == s.browse.objects.cend() || part->declaration == NoNode) break;
+            row.templatePath.prepend(part->declaration);
+            const auto ix = doc.attribute(n,"ix");
+            if (!ix.isNull()) {
+                bool ok = false; const auto value = ix.toInt(&ok);
+                if (row.key.arrayDeclaration != NoNode || !ok || value < 0) row.state = LinkState::Unsupported;
+                else { row.key.arrayDeclaration = part->declaration; row.arrayIndex = value; row.arraySelector = n; }
+            }
+            n = doc.nodes[n].parent;
+        }
+        if (n != NoNode && (doc.nodes[n].name == "LN" || doc.nodes[n].name == "LN0")) {
+            row.key.node = n;
+            if (meta->fcDeclaration != NoNode) row.fc = doc.attribute(meta->fcDeclaration,"fc");
+            row.fcEvidence = {meta->fcDeclaration,"fc",{}};
+            return ProjectSclObjectEvidence(s,row,tick);
+        }
+    }
+    // A template has no selected LN, Domain or Item. Do not bind a first user.
+    out.objectPath = meta->objectPath; out.attributePath = meta->attributePath;
+    out.objectType = meta->cdcType;
+    if (meta->cdcType != NoNode) {
+        out.cdc = doc.attribute(meta->cdcType,"cdc"); out.cdcEvidence = SclEvidenceAt(s,meta->cdcType,"cdc");
+    }
+    if (meta->declaration != NoNode) {
+        out.declarations << SclEvidenceAt(s,meta->declaration,"name");
+        out.basicType = doc.attribute(meta->declaration,"bType");
+        out.basicTypeEvidence = SclEvidenceAt(s,meta->declaration,"bType");
+    }
+    if (meta->type != NoNode) out.typeLinks << SclEvidenceAt(s,meta->type,"id");
+    if (meta->fcDeclaration != NoNode) {
+        out.fc = doc.attribute(meta->fcDeclaration,"fc"); out.fcEvidence = SclEvidenceAt(s,meta->fcDeclaration,"fc");
+    }
+    out.instance.reason = s.browse.iedOwners[id] != NoNode
+        ? QStringLiteral("LN / 实例尚无唯一对象类型链；不生成地址。请查看声明与引用依据。")
+        : QStringLiteral("模板结构未绑定 LN 实例；路径相对所属定义，不生成实例地址。复用候选请查看引用与使用方。");
+    out.limitation = out.instance.reason;
+    return out;
+}
+
 SclEvidenceSource SclEvidenceAt(const SclSnapshot& s, NodeId id, const QString& attribute)
 {
     SclEvidenceSource out;

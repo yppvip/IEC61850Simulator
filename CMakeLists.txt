@@ -49,6 +49,7 @@ add_library(SclApplication STATIC src/core/SclAnalysisService.cpp src/core/SclAn
     src/core/SclMmsQuery.cpp src/core/SclMmsQuery.hpp
     src/core/SclMmsPresentation.cpp
     src/core/SclObjectEvidence.cpp src/core/SclObjectEvidence.hpp
+    src/core/SclObjectStructure.cpp src/core/SclObjectStructure.hpp
     src/core/SclReferenceValues.cpp src/core/SclReferenceValues.hpp
     src/core/SclReferenceTrace.cpp src/core/SclReferenceTrace.hpp
     src/core/SclConnections.cpp src/core/SclConnections.hpp
@@ -100,7 +101,7 @@ add_executable(${AppTarget}
     src/gui/SclConnectionView.cpp src/gui/SclConnectionView.hpp
     src/gui/SclSourcePreview.cpp
     src/gui/SclSourcePreview.hpp
-    src/gui/SclWorkspaceTopology.cpp
+    src/gui/SclWorkspaceTopology.cpp src/gui/SclWorkspaceEvidence.cpp
     src/gui/SclSearchSession.cpp
     src/gui/SclSearchSession.hpp
     src/gui/SclWorkspaceSearch.cpp
@@ -267,7 +268,7 @@ if(BUILD_TESTING)
             src/gui/MainWindow.cpp src/gui/MainWindow.hpp src/gui/SclWorkspace.cpp src/gui/SclWorkspace.hpp
             src/gui/SclDataSetView.cpp src/gui/SclDataSetView.hpp
             src/gui/SclSearchSession.cpp src/gui/SclSearchSession.hpp src/gui/SclWorkspaceSearch.cpp
-            src/gui/SclSourcePreview.cpp src/gui/SclSourcePreview.hpp src/gui/SclWorkspaceTopology.cpp)
+            src/gui/SclSourcePreview.cpp src/gui/SclSourcePreview.hpp src/gui/SclWorkspaceTopology.cpp src/gui/SclWorkspaceEvidence.cpp)
         target_sources(MainWindowBaselineTest PRIVATE src/gui/SclReferenceTraceView.cpp src/gui/SclReferenceTraceView.hpp)
         target_include_directories(MainWindowBaselineTest PRIVATE src/gui)
         target_link_libraries(MainWindowBaselineTest PRIVATE Qt${QT_VERSION_MAJOR}::Widgets
@@ -289,6 +290,8 @@ if(BUILD_TESTING)
         add_test(NAME MainWindowBaselineTest COMMAND MainWindowBaselineTest)
         set_tests_properties(MainWindowBaselineTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
         add_test(NAME SclObjectEvidenceWorkflow COMMAND MainWindowBaselineTest SclTask10EvidenceWorkflow -o -,txt)
+        add_test(NAME SclAdvancedEvidenceWorkflow COMMAND MainWindowBaselineTest SclTask10AdvancedWorkflow -o -,txt)
+        set_tests_properties(SclAdvancedEvidenceWorkflow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
         set_tests_properties(SclObjectEvidenceWorkflow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
         add_test(NAME SclMmsAttributeWorkflow COMMAND MainWindowBaselineTest SclTask8AttributeWorkflow)
         set_tests_properties(SclMmsAttributeWorkflow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)

@@ -106,6 +106,7 @@ struct SclDataSetRelation {
 // through tick with address lookup, projection and reverse-query traversal.
 SclEvidenceSource SclEvidenceAt(const SclSnapshot&, Scl::NodeId, const QString& attribute = {});
 SclObjectEvidence ProjectSclObjectEvidence(const SclSnapshot&, const SclMmsRow&, const std::function<void()>& tick);
+SclObjectEvidence ProjectSclNodeEvidence(const SclSnapshot&, Scl::NodeId, const std::function<void()>& tick);
 SclMmsReportMatch MatchSclDataSetMember(const SclSnapshot&, const SclMmsRow&, const Scl::Reference&,
                                      const std::function<void()>& tick);
 bool CouldSclDataSetMemberAffect(const SclSnapshot&, const SclMmsRow&, const Scl::Reference&,

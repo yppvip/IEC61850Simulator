@@ -171,13 +171,17 @@ QStringList Headers(Table table)
     case Table::Reports: return {QStringLiteral("报告"), QStringLiteral("所属位置"), QStringLiteral("原始 rptID"),
         QStringLiteral("datSet"), QStringLiteral("BRCB / URCB"), QStringLiteral("定义引用"), QStringLiteral("描述")};
     case Table::Objects: return {QStringLiteral("对象"), QStringLiteral("所属位置"), QStringLiteral("描述"),
-        QStringLiteral("lnType / type"), QStringLiteral("bType"), QStringLiteral("FC"), QStringLiteral("count / ix")};
+        QStringLiteral("lnType / type"), QStringLiteral("bType"), QStringLiteral("FC"), QStringLiteral("count / ix"),
+        QStringLiteral("所属对象 CDC"), QStringLiteral("DOType"), QStringLiteral("DO / SDO 路径"),
+        QStringLiteral("DA / BDA 路径"), QStringLiteral("结构 / 解析状态")};
     case Table::Communication: return {QStringLiteral("通信对象"), QStringLiteral("所属位置"), QStringLiteral("IED / AP"),
         QStringLiteral("控制块 / 来源"), QStringLiteral("地址参数"), QStringLiteral("描述")};
-    case Table::Templates: return {QStringLiteral("模板"), QStringLiteral("LN 类 / CDC"), QStringLiteral("使用方"), QStringLiteral("描述")};
+    case Table::Templates: return {QStringLiteral("模板"), QStringLiteral("LN 类 / CDC"), QStringLiteral("使用方"), QStringLiteral("描述"), QStringLiteral("绑定状态")};
     case Table::Findings: return {QStringLiteral("级别"), QStringLiteral("规则"), QStringLiteral("行"), QStringLiteral("对象"), QStringLiteral("发现"), QStringLiteral("建议"), QStringLiteral("对象描述")};
     case Table::Members: return {QStringLiteral("序号"), QStringLiteral("FCDA 声明"), QStringLiteral("FC"), QStringLiteral("状态"), QStringLiteral("对象引用"),
-        QStringLiteral("成员描述"), QStringLiteral("解析目标描述"), QStringLiteral("MMS Item"), QStringLiteral("实例描述（dU）")};
+        QStringLiteral("成员描述"), QStringLiteral("解析目标描述"), QStringLiteral("MMS Item"), QStringLiteral("实例描述（dU）"),
+        QStringLiteral("原始 doName"), QStringLiteral("原始 daName"), QStringLiteral("所属对象 CDC"),
+        QStringLiteral("DOType"), QStringLiteral("成员层级 / 覆盖")};
     case Table::Links: return {QStringLiteral("方向"), QStringLiteral("声明"), QStringLiteral("状态"), QStringLiteral("相关对象"), QStringLiteral("说明"), QStringLiteral("相关对象描述")};
     case Table::Candidates: return {QStringLiteral("候选目标"), QStringLiteral("所属位置"), QStringLiteral("行"), QStringLiteral("描述")};
     }
@@ -428,7 +432,8 @@ public:
             m_displayRow = row;
         }
         const auto value = m_displayCells.value(index.column());
-        if (m_table == Table::Members && role == Qt::DisplayRole && value.size() > SclTableInteraction::PreviewLimit)
+        if ((m_table == Table::Members || m_table == Table::Objects || m_table == Table::Templates)
+            && role == Qt::DisplayRole && value.size() > SclTableInteraction::PreviewLimit)
             return value.left(SclTableInteraction::PreviewLimit) + QStringLiteral("…（查看完整值）");
         if (role == Qt::ToolTipRole && !value.isEmpty())
             return QStringLiteral("<qt>%1</qt>").arg(value.toHtmlEscaped().replace('\n', QStringLiteral("<br>")));
@@ -557,9 +562,16 @@ private:
             return {Title(snapshot, id), Path(snapshot, id, true), report.rptId, report.declaredDataSet,
                     mode, report.definitionReference, description(id)};
         }
-        case Table::Objects:
+        case Table::Objects: {
+            const auto meta = snapshot.browse.objects.value(id);
+            const auto cdc = meta.cdcType == NoNode ? QString() : Attribute(snapshot,meta.cdcType,"cdc");
+            const auto type = meta.cdcType == NoNode ? QString() : Attribute(snapshot,meta.cdcType,"id");
+            const auto basic = meta.declaration == NoNode ? attr("bType") : Attribute(snapshot,meta.declaration,"bType");
+            const auto fc = meta.fcDeclaration == NoNode ? attr("fc") : Attribute(snapshot,meta.fcDeclaration,"fc");
             return {Title(snapshot, id), Path(snapshot, id, true), attr("desc"), attr("lnType") + attr("type"),
-                    attr("bType"), attr("fc"), attr("count") + attr("ix")};
+                    basic, fc, attr("count") + attr("ix"), cdc, type, meta.objectPath, meta.attributePath,
+                    (snapshot.browse.iedOwners[id] == NoNode ? QStringLiteral("模板结构 · 未绑定实例 · ") : QString()) + LinkState(meta.state)};
+        }
         case Table::Communication:
         {
             QStringList address;
@@ -584,7 +596,7 @@ private:
                     description(id)};
         }
         case Table::Templates:
-            return {Title(snapshot, id), attr("lnClass") + attr("cdc"), QString::number(analysis.incoming.count(id)), description(id)};
+            return {Title(snapshot, id), attr("lnClass") + attr("cdc"), QString::number(analysis.incoming.count(id)), description(id), QStringLiteral("模板结构 · 未绑定 LN；不生成实例地址")};
         case Table::Members: {
             const auto found = analysis.outgoing.constFind(id);
             if (found == analysis.outgoing.cend())
@@ -592,9 +604,13 @@ private:
             const auto& ref = analysis.references[*found];
             const auto targetDescription = ref.state == Scl::LinkState::Resolved && ref.candidates.size() == 1
                 ? description(ref.candidates.front()) : QString();
+            const auto meta = snapshot.browse.objects.value(id);
             return {QString::number(ref.memberOrdinal), ref.declared, attr("fc"), LinkState(ref.state), ref.objectReference,
                     description(id), targetDescription, ref.mmsItem,
-                    ref.instanceDescription == NoNode ? QString() : analysis.document->nodes[ref.instanceDescription].text};
+                    ref.instanceDescription == NoNode ? QString() : analysis.document->nodes[ref.instanceDescription].text,
+                    attr("doName"), attr("daName").isNull() ? QStringLiteral("未声明") : attr("daName").isEmpty() ? QStringLiteral("已声明空值") : attr("daName"),
+                    meta.cdcType == NoNode ? QString() : Attribute(snapshot,meta.cdcType,"cdc"),
+                    meta.cdcType == NoNode ? QString() : Attribute(snapshot,meta.cdcType,"id"), SclMemberLevel(*analysis.document,meta.declaration)};
         }
         case Table::Candidates:
             return {snapshot.browse.iedOwners[id] == NoNode ? Title(snapshot, id)
@@ -623,7 +639,37 @@ void SclWorkspace::ApplyTableFilter(QTableView* table, std::optional<std::vector
         static_cast<SclTableModel*>(table->model())->Filter(std::move(rows));
         if (table == m_tables->currentWidget() && !m_restoring)
             LocateTableRow();
+        if (m_advancedRestore) {
+            const auto location = *m_advancedRestore; m_advancedRestore.reset();
+            table->setEnabled(true);
+            RestoreAdvancedPosition(location);
+        }
     }
+}
+
+void SclWorkspace::RestoreAdvancedPosition(const Location& location)
+{
+    auto* table = qobject_cast<QTableView*>(m_tables->currentWidget());
+    if (!table || table == m_results || table == m_findings || location.taskView || m_tableModes->currentIndex() != 0
+        || m_tables->currentIndex() != location.table || m_selected != location.node || m_ied != location.ied
+        || m_dataSet != location.dataSet) return;
+    auto* model = static_cast<SclTableModel*>(table->model());
+    const auto indexFor = [model](NodeId node, int column) {
+        return node == NoNode ? QModelIndex{} : model->index(model->VisibleRow(model->RowForNode(node)),column);
+    };
+    const auto selected = indexFor(location.node,qBound(0,location.column,model->columnCount()-1));
+    const QScopedValueRollback<bool> guard(m_restoring,true);
+    if (selected.isValid()) table->setCurrentIndex(selected);
+    else table->selectionModel()->clear();
+    if (auto* interaction = table->findChild<SclTableInteraction*>())
+        interaction->RestorePosition(location.selectionVisible ? selected : QModelIndex{},indexFor(location.top,0),
+            location.topOffset,location.horizontal);
+}
+
+void SclWorkspace::CancelAdvancedRestore()
+{
+    if (m_advancedRestore) m_tables->widget(m_advancedRestore->table)->setEnabled(true);
+    m_advancedRestore.reset();
 }
 
 SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
@@ -729,6 +775,7 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
             ResetSearch();
         static_cast<SclTableModel*>(m_routeTables.back()->model())->SetIed(m_allTemplates->isChecked() ? NoNode : m_ied);
         UpdateOverview();
+        QueryAdvancedEvidence();
         LocateTableRow();
         if (m_searchMode->currentIndex() == 1)
             ScheduleSearch();
@@ -746,6 +793,7 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
             m_browseScope->setCurrentIndex(0);
             Select(target, true);
         }
+        else LocateTableRow();
     });
 
     m_docks = new ads::CDockManager(this);
@@ -1024,6 +1072,7 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
             view->setColumnWidth(3, 85);
         }
         view->horizontalHeader()->setStretchLastSection(true);
+        view->installEventFilter(this); view->viewport()->installEventFilter(this);
         return view;
     };
     const auto addTable = [&](Table table, const QString& label, const char* name) {
@@ -1135,12 +1184,26 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     m_properties->setReadOnly(true);
     m_properties->setOpenLinks(false);
     connect(m_properties, &QTextBrowser::anchorClicked, this, [this](const QUrl& link) {
+        if (link.scheme() == "scl-evidence" || link.scheme() == "scl-attributes") {
+            const auto result = m_advancedEvidence->result();
+            if (!result || !m_snapshot || result->document != m_snapshot->analysis.document
+                || result->requestId != m_advancedEvidenceId || result->request.target != m_selected
+                || link.host() != QStringLiteral("request-%1").arg(m_advancedEvidenceId) || m_tableModes->currentIndex() != 0) return;
+            bool valid = false; const auto target = link.path().mid(1).toInt(&valid);
+            if (!valid) return;
+            if (link.scheme() == "scl-attributes") OpenMmsAttributeTarget(target);
+            else { RememberView(); m_inspectorDock->toggleView(true); Select(target,false,-1,true,true); }
+            return;
+        }
         bool ok = false;
         const auto id = link.path().toInt(&ok);
         if (ok && link.isRelative())
             Select(id, true, -1, true);
     });
     m_inspector->addTab(m_properties, QStringLiteral("属性"));
+    m_advancedEvidence = new SclMmsQuerySession(this);
+    m_advancedEvidence->setObjectName("SclAdvancedEvidenceSession");
+    connect(m_advancedEvidence,&SclMmsQuerySession::Ready,this,&SclWorkspace::ApplyAdvancedEvidence);
 
     auto* relations = new QWidget(m_inspector);
     auto* relationsLayout = new QVBoxLayout(relations);
@@ -1306,6 +1369,7 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
         mmsView->Table()->horizontalScrollBar(), mmsView->Fields()->horizontalScrollBar()})
         connect(scroll, &QScrollBar::rangeChanged, this, &SclWorkspace::BalanceMmsPanels, Qt::QueuedConnection);
     connect(m_inspectorDock, &ads::CDockWidget::viewToggled, mmsView, &SclMmsView::SetInspectorVisible);
+    connect(m_inspectorDock,&ads::CDockWidget::viewToggled,this,[this] { QueryAdvancedEvidence(); });
     connect(mmsView, &SclMmsView::RestoreInspector, this, [this, mmsView](bool visible) {
         m_inspectorDock->toggleView(visible);
         if (visible) m_inspector->setCurrentWidget(mmsView->Inspector());
@@ -1470,6 +1534,7 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     });
     connect(m_inspector, &QTabWidget::currentChanged, this, [this] {
         RefreshSourcePreview();
+        QueryAdvancedEvidence();
         RememberView();
     });
     connect(m_referenceTrace, &SclReferenceTraceView::ReturnToSource, this, [this] { Navigate(-1); });
@@ -1505,6 +1570,7 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
 SclWorkspace::~SclWorkspace()
 {
     m_closing = true;
+    m_advancedEvidence->SetContext({});
     for (auto* object : findChildren<QObject*>()) QObject::disconnect(object, nullptr, this, nullptr);
     QSettings settings(QSettings::defaultFormat(), QSettings::UserScope,
         QStringLiteral("IEC61850Simulator"), QStringLiteral("IEC61850Simulator"));
@@ -1520,10 +1586,19 @@ SclWorkspace::~SclWorkspace()
 
 void SclWorkspace::hideEvent(QHideEvent* event)
 {
+    CancelAdvancedRestore();
+    m_advancedEvidence->Cancel(); m_advancedEvidenceId = 0;
     m_overviewQuery->Cancel();
     m_dataSets->CloseUsers();
     m_docks->hideManagerAndFloatingWidgets();
     QWidget::hideEvent(event);
+}
+
+bool SclWorkspace::eventFilter(QObject* object, QEvent* event)
+{
+    if (event->type() == QEvent::Wheel || event->type() == QEvent::MouseButtonPress || event->type() == QEvent::KeyPress)
+        CancelAdvancedRestore();
+    return QWidget::eventFilter(object,event);
 }
 
 void SclWorkspace::showEvent(QShowEvent* event)
@@ -1532,6 +1607,7 @@ void SclWorkspace::showEvent(QShowEvent* event)
     m_docks->show();
     RefreshOverviewSummary();
     RefreshSourcePreview();
+    QueryAdvancedEvidence();
     QTimer::singleShot(0, this, &SclWorkspace::BalanceAdvancedPanels);
 }
 
@@ -1596,6 +1672,7 @@ bool SclWorkspace::UpdateSession(Snapshot snapshot, const Scl::Result& failure)
     UpdateHistoryButtons();
     ResetSearch(true);
     m_snapshot = std::move(snapshot);
+    m_advancedEvidence->SetContext(m_snapshot); m_advancedEvidenceId = 0;
     m_dataSets->SetContext(m_snapshot, NoNode);
     m_overviewQuery->SetContext(m_snapshot);
     m_taskBrowser->SetSnapshot(m_snapshot);
@@ -1851,6 +1928,13 @@ void SclWorkspace::LocateTableRow()
         const auto index = model->index(visible, current.isValid() ? current.column() : 0);
         table->setCurrentIndex(index);
         table->scrollTo(index);
+        if (table->objectName() == "SclObjects" || table->objectName() == "SclTemplates" || table == m_members) {
+            const int topRow = table->rowAt(0);
+            const auto top = model->index(topRow,0);
+            if (auto* interaction = table->findChild<SclTableInteraction*>())
+                interaction->RestorePosition(index,top,topRow < 0 ? 0 : -table->rowViewportPosition(topRow),
+                    table->horizontalScrollBar()->value());
+        }
         m_tabNodes[m_tables->currentIndex()] = m_selected;
         if (table == m_findings)
             m_tabFinding = m_finding;
@@ -1867,6 +1951,7 @@ void SclWorkspace::SetIedScope(NodeId ied)
     if (m_ied == ied)
         return;
     ++m_referenceGeneration;
+    m_advancedEvidence->Cancel(); m_advancedEvidenceId = 0;
     const QScopedValueRollback<bool> guard(m_restoring, true);
     if (m_searchMode->currentIndex() == 1)
         ResetSearch();
@@ -1975,12 +2060,33 @@ void SclWorkspace::RememberView()
             link.isValid() ? static_cast<SclTableModel*>(m_links->model())->ReferenceIndex(link.row()) : -1,
             candidate.isValid() ? candidate.data(Qt::UserRole).toInt() : NoNode,
             IsReferenceTrace() ? m_referenceTrace->Location() : nullptr};
+        auto& location = m_history[m_historyIndex];
+        location.filter.text = m_query->text(); location.filter.ied = m_iedFilter->text();
+        location.filter.type = m_typeFilter->text(); location.filter.fc = m_fcFilter->text();
+        location.filter.severity = m_severityFilter->currentIndex() - 1; location.filter.exact = m_exact->isChecked();
+        location.searchMode = m_searchMode->currentIndex(); location.allTemplates = m_allTemplates->isChecked();
+        if (auto* table = qobject_cast<QTableView*>(m_tables->currentWidget()); table && table != m_results) {
+            const auto selected = table->currentIndex(); const auto top = table->indexAt(QPoint(0,0));
+            location.column = selected.isValid() ? selected.column() : 0;
+            location.horizontal = table->horizontalScrollBar()->value();
+            location.top = top.isValid() ? top.data(Qt::UserRole).toInt() : NoNode;
+            location.topOffset = top.isValid() ? -table->visualRect(top).top() : 0;
+            location.selectionVisible = selected.isValid() && table->viewport()->visibleRegion().intersects(table->visualRect(selected));
+        }
     }
 }
 
 void SclWorkspace::ShowTaskView(bool show, bool remember)
 {
     const bool changed = show != (m_tableModes->currentIndex() == 1);
+    auto advancedTarget = m_selected;
+    if (!show && remember && changed && m_taskBrowser->IsMmsPage() && m_snapshot) {
+        if (const auto evidence = m_taskBrowser->View()->MmsView()->ObjectEvidence();
+            evidence && evidence->document == m_snapshot->analysis.document) {
+            if (evidence->member.node != NoNode) advancedTarget = evidence->member.node;
+            else if (evidence->instance.target.node != NoNode) advancedTarget = evidence->instance.target.node;
+        }
+    }
     if (remember) {
         RememberView();
         LeaveReferenceTrace();
@@ -1997,11 +2103,13 @@ void SclWorkspace::ShowTaskView(bool show, bool remember)
         m_inspectorDock->toggleView(show ? m_taskBrowser->IsSignalPage() || m_taskBrowser->IsMmsPage() : m_advancedInspectorVisible);
         if (!show && m_snapshot && m_selected >= 0) {
             const QScopedValueRollback<bool> guard(m_restoring, true);
-            Select(m_selected, true, m_finding);
+            Select(advancedTarget, true, m_finding, false, true);
             UpdateDetails();
         }
     }
     m_advancedScope->setVisible(!show);
+    if (show) { m_advancedEvidence->Cancel(); m_advancedEvidenceId = 0; }
+    else QueryAdvancedEvidence();
     m_advancedSearch->setVisible(!show);
     m_navigationKind->setCurrentIndex(show ? 0 : 1);
     m_taskSwitch->setText(show ? QStringLiteral("高级视图") : QStringLiteral("任务视图"));
@@ -2074,6 +2182,8 @@ void SclWorkspace::BalanceAdvancedPanels()
         table = m_members;
     else if (m_tables->currentWidget() == m_dataSets)
         table = m_dataSets->Tree();
+    else if (m_tables->currentWidget()->objectName() == "SclObjects" || m_tables->currentWidget()->objectName() == "SclTemplates")
+        table = qobject_cast<QTableView*>(m_tables->currentWidget());
     if (!table || !table->isVisible())
         return;
     const int rowHeight = table->fontMetrics().height() + 8;
@@ -2109,6 +2219,7 @@ void SclWorkspace::Navigate(int direction)
         return;
     RememberView();
     const auto location = m_history[next];
+    CancelAdvancedRestore();
     if (direction == -1 && IsReferenceTrace() && !location.trace) {
         const QPointer<QAbstractItemView> sourceView = m_referenceTrace->SourceView();
         const auto sizes = m_referenceTrace->SourceSplitterSizes();
@@ -2143,6 +2254,16 @@ void SclWorkspace::Navigate(int direction)
         m_signalEvidence = location.signalEvidence;
         m_relationship = location.relationship;
         SetIedScope(location.ied);
+        {
+            const QSignalBlocker text(m_query), ied(m_iedFilter), type(m_typeFilter), fc(m_fcFilter),
+                severity(m_severityFilter), exact(m_exact), mode(m_searchMode), templates(m_allTemplates);
+            ResetSearch();
+            m_query->setText(location.filter.text); m_iedFilter->setText(location.filter.ied);
+            m_typeFilter->setText(location.filter.type); m_fcFilter->setText(location.filter.fc);
+            m_severityFilter->setCurrentIndex(location.filter.severity + 1); m_exact->setChecked(location.filter.exact);
+            m_searchMode->setCurrentIndex(location.searchMode); m_allTemplates->setChecked(location.allTemplates);
+            static_cast<SclTableModel*>(m_routeTables.back()->model())->SetIed(location.allTemplates ? NoNode : location.ied);
+        }
         Select(location.node, false, location.finding, location.taskView
             && location.task.page == SclTaskPages::Signals && !location.task.inputs && location.inspector == 2);
         SetMemberScope(location.dataSet);
@@ -2200,6 +2321,14 @@ void SclWorkspace::Navigate(int direction)
         || (m_tables->currentWidget() == m_members && previousScope != m_dataSet)))
         ScheduleSearch();
     LocateTableRow();
+    if (!location.taskView && m_tables->currentWidget() != m_dataSets && m_tables->currentWidget() != m_results) {
+        if (location.searchMode == 1 && !location.filter.empty()) {
+            ScheduleSearch(); m_advancedRestore = location;
+            if (auto* table = qobject_cast<QTableView*>(m_tables->currentWidget())) {
+                table->selectionModel()->clear(); table->setEnabled(false);
+            }
+        } else RestoreAdvancedPosition(location);
+    }
 }
 
 void SclWorkspace::SetMemberScope(NodeId dataSet)
@@ -2276,6 +2405,8 @@ void SclWorkspace::UpdateOverview()
     const auto description = Attribute(*m_snapshot, id, "desc");
     if (!description.isEmpty())
         text += QStringLiteral("\n声明描述：%1").arg(description);
+    if (browse.objectsLimited)
+        text += QStringLiteral("\n对象结构索引 / 路径资源受限；未覆盖项尚不能确定。");
     m_overviewStructure->setText(QStringLiteral("在结构树查看范围 · %1 个 LD / %2 个 LN")
         .arg(structure.devices).arg(structure.logicalNodes));
     m_overviewStructure->setVisible(structure.devices > 0 || structure.logicalNodes > 0);
@@ -2416,7 +2547,9 @@ void SclWorkspace::UpdateDetails()
     {
         const SclTiming timing("setHtml");
         m_properties->setHtml(html);
+        m_propertyHtml = html;
     }
+    QueryAdvancedEvidence();
     {
         const SclTiming timing("Links Reset");
         auto* model = static_cast<SclTableModel*>(m_links->model());

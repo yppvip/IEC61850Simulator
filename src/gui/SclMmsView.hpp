@@ -45,6 +45,9 @@ public:
     QTableView* Fields() const { return m_fields; }
     std::shared_ptr<const SclMmsResult> Result() const { return m_result; }
     std::optional<SclMmsKey> Selected() const { return m_selected; }
+    std::shared_ptr<const SclObjectEvidence> ObjectEvidence() const {
+        return m_detail && m_selected && m_detail->request.key == *m_selected ? m_detail->objectEvidence : nullptr;
+    }
     bool IsNavigating() const { return m_navigating; }
 signals:
     void BeforeNavigate();

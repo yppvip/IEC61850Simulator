@@ -294,6 +294,8 @@ void MainWindowBaselineTest::SclTask10Baseline()
     QJsonObject result{{"version", 1}, {"readyMs", readyMs}, {"sha256", QString::fromLatin1(digest)},
         {"qt", qVersion()}, {"width", window.width()}, {"height", window.height()}, {"dpr", window.devicePixelRatioF()},
         {"workingSet", Memory().workingSet}, {"peakWorkingSet", Memory().peakWorkingSet},
+        {"structureIndexUs", snapshot->browse.objectsBuildUs}, {"structureIndexRecords", snapshot->browse.objects.size()},
+        {"structureIndexLimited", snapshot->browse.objectsLimited},
         {"cases", cases}, {"memberUi",memberUi}, {"advanced", advanced}, {"returnUs", returns}, {"detailUs", detailTimes}};
     QFile out(output); QVERIFY(out.open(QIODevice::WriteOnly));
     QVERIFY(out.write(QJsonDocument(result).toJson()) > 0); out.close();

@@ -36,7 +36,7 @@ struct SclMmsScope {
 };
 enum class SclMmsQueryKind { Reports, Instances, Members, Clients, Servers, Endpoints,
     Capabilities, Signals, Addresses, ReverseClients, ReverseSignal, Search, Graph, Findings, Detail,
-    Attributes, AttributeReports, ObjectEvidence, DataSetRelations };
+    Attributes, AttributeReports, ObjectEvidence, DataSetRelations, NodeEvidence };
 enum class SclMmsRecordKind { Report, Instance, Member, Client, Server, Endpoint, Capability, Signal, Address, DataSet, Reference, Finding };
 enum class SclMmsAddressShape { None, Scalar, Structure, ArrayTemplate, ObjectMember, AlternateAccess };
 enum class SclMmsDirectState { Unavailable, Mapped, Structure, ArraySelectionRequired, AlternateAccess,

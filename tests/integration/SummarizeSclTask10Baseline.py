@@ -47,6 +47,10 @@ for label in ("Scd", "Icd"):
         "returnVisibleUsSuccessfulOnly": stats([a["returnVisibilityUs"] for a in visible]),
         "returnChecks": len(attributes), "returnsNotVisible": len(attributes) - len(visible),
         "allReturnsVisible": len(visible) == len(attributes), "cases": by_case}
+    if all("structureIndexUs" in record for record in records):
+        summary["samples"][label]["structureIndexUs"] = stats([r["structureIndexUs"] for r in records])
+        summary["samples"][label]["structureIndexRecords"] = stats([r["structureIndexRecords"] for r in records])
+        summary["samples"][label]["structureIndexLimited"] = any(r["structureIndexLimited"] for r in records)
 target = root / "Summary.json"
 target.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 print(json.dumps(summary, ensure_ascii=True, indent=2))

@@ -6,6 +6,7 @@
 #include "SclTaskPages.hpp"
 #include "SclConnectionView.hpp"
 #include "SclMmsView.hpp"
+#include "SclDataSetView.hpp"
 #include "SclTableInteraction.hpp"
 
 #include <QAction>
@@ -397,6 +398,8 @@ private slots:
     void SclTask10Baseline();
     void SclTask10EvidenceWorkflow_data();
     void SclTask10EvidenceWorkflow();
+    void SclTask10AdvancedWorkflow_data();
+    void SclTask10AdvancedWorkflow();
     void SclTask8LocalAcceptance();
     void SclMmsLocalAcceptance();
     void SclMmsReview();
@@ -2407,7 +2410,11 @@ void MainWindowBaselineTest::SclReferenceDetails()
     };
     const auto description = QStringLiteral("有序成员，含 DO 引用及重复成员");
     tabs->setCurrentWidget(dataSets->parentWidget());
-    QTRY_COMPARE(lastColumn(dataSets).data().toString(), description);
+    int descriptionColumn = -1;
+    for (int column = 0; column < dataSets->model()->columnCount(); ++column)
+        if (dataSets->model()->headerData(column,Qt::Horizontal).toString() == QStringLiteral("描述")) descriptionColumn = column;
+    QVERIFY(descriptionColumn >= 0);
+    QTRY_COMPARE(dataSets->model()->index(0,descriptionColumn).data().toString(), description);
     QCOMPARE(lastColumn(links).data().toString(), description);
     copy->click();
     QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("dsEvents"));
@@ -3315,6 +3322,7 @@ void MainWindowBaselineTest::SclTask8AttributeWorkflow()
 #include "SclTask9Acceptance.hpp"
 #include "SclTask10Baseline.hpp"
 #include "SclTask10EvidenceWorkflow.hpp"
+#include "SclTask10AdvancedWorkflow.hpp"
 
 void MainWindowBaselineTest::SclTask8ReferenceMenus()
 {
