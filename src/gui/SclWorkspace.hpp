@@ -40,6 +40,8 @@ struct SclReferenceTraceSelection;
 struct SclReferenceTraceLocation;
 struct SclReferenceMenuContext;
 struct SclReferenceRequest;
+class SclOfflineCheckView;
+struct SclCheckLocation;
 
 class SclWorkspace final : public QWidget
 {
@@ -82,6 +84,7 @@ private:
         int searchMode = 0, column = 0, horizontal = 0, topOffset = 0;
         Scl::NodeId top = Scl::NoNode;
         bool allTemplates = false, selectionVisible = true;
+        std::shared_ptr<SclCheckLocation> check;
     };
     void Select(Scl::NodeId id, bool route = false, int finding = -1, bool openSource = false, bool keepScope = false,
         std::optional<Relationship> relationship = {});
@@ -138,6 +141,7 @@ private:
     void OpenReferenceTrace(std::shared_ptr<const SclReferenceTraceSelection>);
     bool IsReferenceTrace() const;
     void LeaveReferenceTrace();
+    void OpenOfflineCheck();
 
     std::shared_ptr<const SclSnapshot> m_snapshot;
     bool m_closing = false;
@@ -194,6 +198,7 @@ private:
     QStackedWidget* m_tableModes;
     QStackedWidget* m_centerPages;
     SclReferenceTraceView* m_referenceTrace;
+    SclOfflineCheckView* m_offlineCheck;
     SclTaskBrowser* m_taskBrowser;
     QPushButton* m_taskSwitch;
     bool m_preferTaskView = true;

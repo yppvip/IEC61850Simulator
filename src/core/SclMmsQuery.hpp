@@ -36,7 +36,7 @@ struct SclMmsScope {
 };
 enum class SclMmsQueryKind { Reports, Instances, Members, Clients, Servers, Endpoints,
     Capabilities, Signals, Addresses, ReverseClients, ReverseSignal, Search, Graph, Findings, Detail,
-    Attributes, AttributeReports, ObjectEvidence, DataSetRelations, NodeEvidence };
+    Attributes, AttributeReports, ObjectEvidence, DataSetRelations, NodeEvidence, OfflineCheck };
 enum class SclMmsRecordKind { Report, Instance, Member, Client, Server, Endpoint, Capability, Signal, Address, DataSet, Reference, Finding };
 enum class SclMmsAddressShape { None, Scalar, Structure, ArrayTemplate, ObjectMember, AlternateAccess };
 enum class SclMmsDirectState { Unavailable, Mapped, Structure, ArraySelectionRequired, AlternateAccess,
@@ -119,6 +119,33 @@ struct SclMmsRow {
     std::optional<SclDescription> description;
     std::shared_ptr<const SclDataSetRelation> dataSetRelation;
 };
+enum class SclCheckInputKind { ObjectReference, MmsItem };
+enum class SclCheckState { Supported, Unsupported, ContextRequired, Uncertain, Rejected };
+struct SclCheckInput {
+    SclCheckInputKind kind = SclCheckInputKind::ObjectReference;
+    QString original, domain, fc;
+    Scl::NodeId logicalDevice = Scl::NoNode; // Explicit candidate choice, snapshot-local.
+};
+struct SclCheckStep {
+    QString segment, conclusion;
+    SclEvidenceSource source;
+};
+struct SclCheckCandidate { Scl::NodeId logicalDevice; QString label; };
+struct SclOfflineCheck {
+    SclCheckState state = SclCheckState::Uncertain;
+    QString format, model, mapping, domain, logicalNode, path, fc, stoppedAt;
+    QStringList fcCandidates;
+    QList<SclCheckStep> steps;
+    QList<SclCheckCandidate> candidates; // Bounded, explicit choices only.
+    QList<SclEvidenceSource> typeCandidates; // Evidence only; never a navigation success.
+    SclEvidenceSource lastConfirmed;
+    std::optional<SclMmsRow> target;
+    SclDataSetCoverage dataSets;
+    QList<SclMmsReportMatch> coverageKinds;
+    bool mappingPassed = false;
+    int workUsed = 0;
+    qint64 elapsedUs = 0;
+};
 struct SclMmsRequest {
     SclMmsQueryKind kind = SclMmsQueryKind::Reports;
     SclMmsScope scope;
@@ -135,6 +162,7 @@ struct SclMmsRequest {
     std::optional<SclMmsKey> locate; // Locate a stable identity's page in the worker, after scope/filter.
     // Mandatory for ObjectEvidence/DataSetRelations: IDs cannot cross snapshots.
     std::shared_ptr<const Scl::Document> identityDocument;
+    SclCheckInput check;
 };
 struct SclMmsDetailField {
     QString key, label, value, explanation;
@@ -161,6 +189,7 @@ struct SclMmsResult {
     std::vector<SclReferenceValue> references; // Full values for the requested detail key.
     std::shared_ptr<const SclObjectEvidence> objectEvidence;
     SclDataSetCoverage dataSetCoverage;
+    std::shared_ptr<const SclOfflineCheck> check;
 };
 
 // Worker-only entry. No XML parsing, I/O, or online queries; evidence and

@@ -3,6 +3,7 @@
 #include <QtConcurrentRun>
 #include <QSet>
 #include <QRegularExpression>
+#include <QElapsedTimer>
 #include <algorithm>
 #include <tuple>
 
@@ -102,7 +103,7 @@ SclMmsIndex SclMmsIndex::Build(const MmsProjection& p, const ReferenceAnalysis& 
 }
 
 namespace {
-struct BudgetEnd {};
+struct BudgetEnd { QString reason; };
 struct ArraySelection {
     NodeId declaration = NoNode;
     int index = -1;
@@ -135,6 +136,12 @@ SclMmsDirectState DirectState(const SclMmsRow& row)
     if (row.state != LinkState::Resolved) return SclMmsDirectState::Blocked;
     if (row.shape == SclMmsAddressShape::AlternateAccess) return SclMmsDirectState::AlternateAccess;
     return row.shape == SclMmsAddressShape::Structure ? SclMmsDirectState::Structure : SclMmsDirectState::Mapped;
+}
+
+void ComposePlainAddress(SclMmsRow& row, const QString& ln, const QStringList& parts)
+{
+    row.item = ln + '$' + row.fc + '$' + parts.join('$');
+    row.objectReference = row.domain + '/' + ln + '.' + parts.join('.');
 }
 
 class Query {
@@ -189,6 +196,7 @@ private:
     void AttributeReports();
     void ObjectEvidence();
     void DataSetRelations();
+    void OfflineCheck();
     bool SelectAttribute();
     ArraySelection RequestedArray(const SclMmsKey& signal);
     SclMmsReportMatch MatchReport(const SclMmsRow& attribute, const Reference& member);
@@ -377,7 +385,7 @@ void Query::Members(NodeId report)
 ArraySelection Query::RequestedArray(const SclMmsKey& signal)
 {
     const auto& key = r.kind == SclMmsQueryKind::AttributeReports || r.kind == SclMmsQueryKind::ObjectEvidence
-        || r.kind == SclMmsQueryKind::DataSetRelations ? r.key : r.locate.value_or(SclMmsKey{});
+        || r.kind == SclMmsQueryKind::DataSetRelations || r.kind == SclMmsQueryKind::OfflineCheck ? r.key : r.locate.value_or(SclMmsKey{});
     if (key.kind == SclMmsRecordKind::Address && key.node == signal.node && key.record == signal.record
         && key.arrayDeclaration != NoNode)
         return {key.arrayDeclaration, key.arrayIndex};
@@ -501,7 +509,8 @@ void Query::Addresses(int i)
     }
     uniquePath &= objectType == def.type && objectType != NoNode;
     const bool reportQuery = r.kind == SclMmsQueryKind::AttributeReports
-        || r.kind == SclMmsQueryKind::ObjectEvidence || r.kind == SclMmsQueryKind::DataSetRelations;
+        || r.kind == SclMmsQueryKind::ObjectEvidence || r.kind == SclMmsQueryKind::DataSetRelations
+        || r.kind == SclMmsQueryKind::OfflineCheck;
     const bool search = r.kind == SclMmsQueryKind::Attributes;
     const auto publish = [&](SclMmsRow row) {
         if (reportQuery) {
@@ -600,7 +609,7 @@ void Query::Addresses(int i)
                     row.component = parts.mid(axis + 1).join('$');
                     parts[axis] += '(' + QString::number(index) + ')';
                 } else {
-                    row.item = ln + '$' + fc + '$' + parts.join('$');
+                    ComposePlainAddress(row,ln,parts);
                 }
                 row.objectReference = row.domain + '/' + ln + '.' + parts.join('.');
             } else row.limitation = QStringLiteral("名称、FC 或类型未唯一解析；不生成确定地址。");
@@ -1005,10 +1014,315 @@ void Query::Graph(NodeId report)
     if (out.total > int(out.rows.size())) out.limitation += QStringLiteral(" 局部图节点上限 %1；总量为已观察下界。").arg(r.graphLimit);
 }
 
+void Query::OfflineCheck()
+{
+    auto check = std::make_shared<SclOfflineCheck>();
+    out.check = check; // Publish partial evidence on budget exhaustion, never a successful target.
+    const auto stop = [&](SclCheckState state, const QString& reason) {
+        check->state = state; check->model = reason;
+    };
+    auto input = r.check.original.trimmed();
+    check->domain = r.check.domain.trimmed(); check->fc = r.check.fc.trimmed();
+    if (input.size() > 4096 || check->domain.size() > 256) {
+        stop(SclCheckState::Unsupported, QStringLiteral("输入长度超出支持范围。")); return;
+    }
+    const bool object = r.check.kind == SclCheckInputKind::ObjectReference;
+    const auto slash = input.split('/');
+    if (slash.size() == 2) {
+        if (!check->domain.isEmpty() && check->domain != slash[0]) {
+            check->format = QStringLiteral("Domain 栏与粘贴原文冲突。"); check->state = SclCheckState::Rejected; return;
+        }
+        check->domain = slash[0]; input = slash[1];
+    } else if (slash.size() != 1 || object) {
+        check->format = QStringLiteral("对象引用需要一个 LDName/路径分隔符；MMS 输入最多一个 Domain/Item 分隔符。");
+        check->state = SclCheckState::Rejected; return;
+    }
+    QStringList parts;
+    if (object) {
+        parts = input.split('.');
+        if (parts.size() < 2) { check->format = QStringLiteral("对象引用需要 LN.DO 路径。"); check->state = SclCheckState::Rejected; return; }
+    } else {
+        parts = input.split('$');
+        if (parts.size() >= 2 && QSet<QString>{"RP","BR","GO","GS","MS","US"}.contains(parts[1])) {
+            stop(SclCheckState::Unsupported, QStringLiteral("控制块或数据集类别不在普通信号 Item 校核范围；请使用报告/数据集/收发任务入口。")); return;
+        }
+        if (parts.size() < 3) { stop(SclCheckState::Unsupported, QStringLiteral("未识别为普通 LN$FC$对象 Item；数据集列表名与 rptID 请使用既有任务入口。")); return; }
+        if (!check->fc.isEmpty() && check->fc != parts[1]) {
+            check->format = QStringLiteral("FC 栏与 Item 中的 FC 冲突。"); check->state = SclCheckState::Rejected; return;
+        }
+        check->fc = parts.takeAt(1);
+        if (check->fc.isEmpty()) { check->format = QStringLiteral("MMS Item 的 FC 段不能为空。"); check->state = SclCheckState::Rejected; return; }
+    }
+    if (parts.contains(QString()) || (slash.size() == 2 && check->domain.isEmpty())) {
+        check->format = QStringLiteral("支持的引用语法不允许空段。"); check->state = SclCheckState::Rejected; return;
+    }
+    static const QRegularExpression identifier(QStringLiteral("^[A-Za-z0-9_]+$"));
+    static const QRegularExpression indexed(QStringLiteral("^([A-Za-z0-9_]+)\\(([0-9]+)\\)$"));
+    int arrayPart = -1, arrayIndex = -1;
+    for (int i = 0; i < parts.size(); ++i) {
+        Tick();
+        const auto match = indexed.match(parts[i]);
+        if (i > 0 && match.hasMatch()) {
+            if (arrayPart >= 0) { stop(SclCheckState::Unsupported, QStringLiteral("多维数组选择尚未支持。")); return; }
+            arrayPart = i - 1; arrayIndex = UnsignedIndex(match.captured(2)); parts[i] = match.captured(1);
+            if (arrayIndex < 0) { stop(SclCheckState::Unsupported, QStringLiteral("数组下标超出支持整数范围。")); return; }
+        } else if (!identifier.match(parts[i]).hasMatch()) {
+            stop(SclCheckState::Unsupported, QStringLiteral("含未知标识或扩展语法；未将其判为非法。")); return;
+        }
+    }
+    if ((!check->domain.isEmpty() && !identifier.match(check->domain).hasMatch())
+        || (!check->fc.isEmpty() && !identifier.match(check->fc).hasMatch())) {
+        stop(SclCheckState::Unsupported, QStringLiteral("Domain/FC 含尚未支持的语法。")); return;
+    }
+    static const QSet<QString> signalFcs = {"ST","MX","SP","SV","CF","DC","SG","SE","SR","OR","BL","EX","CO"};
+    if (!check->fc.isEmpty() && !signalFcs.contains(check->fc)) {
+        stop(SclCheckState::Unsupported, QStringLiteral("此 FC 的普通信号映射尚未解释。")); return;
+    }
+    check->format = QStringLiteral("支持的普通对象语法；数组以 name(index) 表示，索引从 0 起。");
+    const auto version = Attr(0,"version");
+    if (!version.isEmpty() && version != "2003" && version != "2007") {
+        stop(SclCheckState::Uncertain,QStringLiteral("当前文件版本尚未解释；不宣告映射通过。")); return;
+    }
+    check->logicalNode = parts.takeFirst(); check->path = parts.join('.');
+    QList<NodeId> devices; bool unknownDomain = false;
+    for (const auto& access : p.servers) {
+        Tick();
+        if ((r.scope.ied == NoNode || access.ied == r.scope.ied)
+            && (r.scope.accessPoint == NoNode || access.accessPoint == r.scope.accessPoint)
+            && (r.scope.server == NoNode || access.model.candidates.contains(r.scope.server))
+            && r.check.logicalDevice == NoNode
+            && access.model.state != LinkState::Resolved) unknownDomain = true;
+    }
+    for (auto d = s.mmsIndex.domainsByDevice.cbegin(); d != s.mmsIndex.domainsByDevice.cend(); ++d) {
+        Tick(); const auto n = d.key(); if (!InScope(n)) continue;
+        if (r.check.logicalDevice != NoNode && n != r.check.logicalDevice) continue;
+        if (d->state != MmsValueState::Derived) { unknownDomain = true; continue; }
+        if ((!check->domain.isEmpty() && d->name != check->domain) || (r.check.logicalDevice != NoNode && n != r.check.logicalDevice)) continue;
+        // With no Domain, narrow only to devices that actually declare this LN.
+        bool hasLn = !check->domain.isEmpty();
+        for (auto c = doc.nodes[n].firstChild; c != NoNode && !hasLn; c = doc.nodes[c].nextSibling) {
+            Tick(); if (!doc.nodes[c].isScl() || (doc.nodes[c].name != "LN" && doc.nodes[c].name != "LN0")) continue;
+            hasLn = (doc.nodes[c].name == "LN0" ? QStringLiteral("LLN0") : Attr(c,"prefix") + Attr(c,"lnClass") + Attr(c,"inst")) == check->logicalNode;
+        }
+        if (hasLn) devices << n;
+        if (devices.size() > 64) { out.limited = true; break; }
+    }
+    std::sort(devices.begin(),devices.end());
+    if (devices.size() != 1 || check->domain.isEmpty()) {
+        for (auto ld : devices.mid(0,64)) {
+            Tick(); const auto domain = s.mmsIndex.domainsByDevice.value(ld).name;
+            check->candidates << SclCheckCandidate{ld, domain + " · " + SclTaskPath(doc,ld)};
+        }
+        stop(devices.size() > 1 || unknownDomain || out.limited ? SclCheckState::Uncertain
+            : check->domain.isEmpty() ? SclCheckState::ContextRequired : SclCheckState::Rejected,
+            check->domain.isEmpty() ? QStringLiteral("需补充 Domain；请显式选择范围候选后重新校核。")
+            : devices.isEmpty() ? QStringLiteral("当前可检查范围没有此 Domain；未知命名分支另保留不确定。")
+            : QStringLiteral("Domain 在多个 Server/LD 中同名；请显式选择候选。")); return;
+    }
+    if (unknownDomain) { stop(SclCheckState::Uncertain,QStringLiteral("范围中存在命名未确定的 LD，不能证明 Domain 唯一。")); return; }
+    const auto ld = devices.front();
+    check->lastConfirmed = SclEvidenceAt(s,ld);
+    check->steps << SclCheckStep{check->domain,QStringLiteral("唯一 LD；命名依据见声明"),SclEvidenceAt(s,ld,s.mmsIndex.domainsByDevice.value(ld).evidence.attribute)};
+    QList<NodeId> lns; bool unknownLn = false;
+    for (auto n = doc.nodes[ld].firstChild; n != NoNode; n = doc.nodes[n].nextSibling) {
+        Tick(); if (!doc.nodes[n].isScl() || (doc.nodes[n].name != "LN" && doc.nodes[n].name != "LN0")) continue;
+        if (doc.nodes[n].name == "LN" && (Attr(n,"lnClass").isEmpty() || Attr(n,"inst").isNull())) unknownLn = true;
+        const auto name = doc.nodes[n].name == "LN0" ? QStringLiteral("LLN0") : Attr(n,"prefix") + Attr(n,"lnClass") + Attr(n,"inst");
+        if (name == check->logicalNode) lns << n;
+    }
+    if (lns.size() != 1 || unknownLn) { stop(lns.isEmpty() && !unknownLn ? SclCheckState::Rejected : SclCheckState::Uncertain,
+        QStringLiteral("LN 不存在或未唯一声明。")); check->stoppedAt = check->logicalNode; return; }
+    const auto ln = lns.front();
+    if (doc.nodes[ln].name == "LN0" ? Attr(ln,"lnClass") != "LLN0" || !Attr(ln,"inst").isEmpty()
+        : Attr(ln,"lnClass").isEmpty() || Attr(ln,"inst").isNull()) {
+        stop(SclCheckState::Uncertain,QStringLiteral("LN 实例声明不满足现有映射前提。")); return;
+    }
+    check->lastConfirmed = SclEvidenceAt(s,ln);
+    check->steps << SclCheckStep{check->logicalNode,QStringLiteral("唯一 LN 实例"),check->lastConfirmed};
+    for (auto n = doc.nodes[ln].firstChild; n != NoNode; n = doc.nodes[n].nextSibling) {
+        Tick(); const auto& node = doc.nodes[n];
+        if (node.isScl() && (node.name == "ReportControl" || node.name == "DataSet" || node.name == "GSEControl"
+            || node.name == "SampledValueControl" || node.name == "LogControl") && Attr(n,"name") == parts.front()) {
+            check->lastConfirmed = SclEvidenceAt(s,n);
+            stop(SclCheckState::Unsupported,QStringLiteral("这是控制块或数据集声明；请使用相应任务入口，不按普通信号路径判错。")); return;
+        }
+    }
+    const auto typeOf = [&](NodeId declaration, LinkKind kind) {
+        NodeId target = NoNode; int links = 0;
+        const auto refs = s.analysis.outgoing.equal_range(declaration);
+        for (auto it = refs.first; it != refs.second; ++it) {
+            Tick(); const auto& ref = s.analysis.references[it.value()]; if (ref.kind != kind) continue;
+            ++links;
+            if (ref.state == LinkState::Resolved && ref.candidates.size() == 1) target = ref.candidates.front();
+            else for (auto candidate : ref.candidates) {
+                Tick(); if (check->typeCandidates.size() < 64) check->typeCandidates << SclEvidenceAt(s,candidate);
+            }
+        }
+        return links == 1 ? target : NoNode;
+    };
+    auto type = typeOf(ln,LinkKind::LogicalNodeType);
+    const auto addFc = [&](QStringList& values,const QString& fc) {
+        if (values.contains(fc)) return;
+        if (values.size() >= 64) { out.limited = true; throw BudgetEnd{QStringLiteral("FC 候选预览预算 64 项已用尽；不能交付完整候选或成功目标。")}; }
+        values << fc;
+    };
+    NodeId declaration = NoNode, arrayDeclaration = NoNode;
+    QString objectPath, field, effectiveFc;
+    QList<NodeId> path;
+    bool arrayMissing = false;
+    for (int i = 0; i < parts.size(); ++i) {
+        Tick(); check->stoppedAt = parts[i];
+        if (type == NoNode) { stop(SclCheckState::Uncertain,QStringLiteral("必要类型缺失、歧义或未支持；不能判路径不存在。")); return; }
+        check->lastConfirmed = SclEvidenceAt(s,type);
+        QList<NodeId> found; QStringList possibleFc;
+        for (auto n = doc.nodes[type].firstChild; n != NoNode; n = doc.nodes[n].nextSibling) {
+            Tick(); const auto& node = doc.nodes[n];
+            if (!node.isScl() || (node.name != "DO" && node.name != "SDO" && node.name != "DA" && node.name != "BDA") || Attr(n,"name") != parts[i]) continue;
+            if (node.name == "DA") {
+                addFc(possibleFc,Attr(n,"fc"));
+                if (!check->fc.isEmpty() && Attr(n,"fc") != check->fc) continue;
+            }
+            found << n;
+        }
+        possibleFc.removeDuplicates();
+        if (found.size() != 1) {
+            if (found.size() > 1) for (auto candidate : found) {
+                Tick(); if (check->typeCandidates.size() < 64) check->typeCandidates << SclEvidenceAt(s,candidate);
+            }
+            check->fcCandidates = possibleFc;
+            stop(found.size() > 1 ? (check->fc.isEmpty() && possibleFc.size() > 1 ? SclCheckState::ContextRequired : SclCheckState::Uncertain)
+                : SclCheckState::Rejected, found.isEmpty() ? (possibleFc.isEmpty() ? QStringLiteral("实际类型声明中不存在此路径段。") : QStringLiteral("该属性的实际 FC 与输入不符。"))
+                : QStringLiteral("路径候选不唯一；需选择 FC 或修复歧义，不能取首项。")); return;
+        }
+        declaration = found.front(); path << declaration;
+        const auto& tag = doc.nodes[declaration].name;
+        const bool isObject = tag == "DO" || tag == "SDO";
+        auto& name = isObject ? objectPath : field; name += (name.isEmpty() ? QString() : QStringLiteral(".")) + parts[i];
+        if (tag == "DA") effectiveFc = Attr(declaration,"fc");
+        const auto count = Attr(declaration,"count");
+        if (!count.isNull()) {
+            const auto size = UnsignedIndex(count);
+            if (size <= 0) { stop(SclCheckState::Uncertain,QStringLiteral("数组边界未确定。")); return; }
+            if (arrayDeclaration != NoNode) { stop(SclCheckState::Unsupported,QStringLiteral("多维数组尚未支持。")); return; }
+            arrayDeclaration = declaration;
+            if (arrayPart != i) arrayMissing = true;
+            else if (arrayIndex >= size) { stop(SclCheckState::Rejected,QStringLiteral("下标超出实际 count 边界。")); return; }
+        } else if (arrayPart == i) { stop(SclCheckState::Rejected,QStringLiteral("此段没有数组声明，不能使用下标。")); return; }
+        check->lastConfirmed = SclEvidenceAt(s,declaration);
+        check->steps << SclCheckStep{parts[i],isObject ? QStringLiteral("对象声明；CDC 属于其 DOType") : QStringLiteral("属性声明；有效 FC：") + effectiveFc,check->lastConfirmed};
+        const auto bt = Attr(declaration,"bType");
+        type = isObject || bt == "Struct" || bt == "Enum" ? typeOf(declaration,LinkKind::MemberType) : NoNode;
+        if (isObject && type == NoNode) { stop(SclCheckState::Uncertain,QStringLiteral("对象类型未唯一解析。")); return; }
+        if (i + 1 < parts.size() && !isObject && bt != "Struct") {
+            if (bt.isEmpty()) stop(SclCheckState::Uncertain,QStringLiteral("属性基本类型未确定。"));
+            else {
+                static const QSet<QString> terminalTypes = {"BOOLEAN","INT8","INT16","INT24","INT32","INT64","INT128",
+                    "INT8U","INT16U","INT24U","INT32U","FLOAT32","FLOAT64","Enum","Dbpos","Tcmd","Quality","Timestamp",
+                    "VisString32","VisString64","VisString65","VisString129","VisString255","Octet64","Unicode255",
+                    "EntryID","Check","Octet6","Octet8","Currency","PhyComAddr","ObjRef","TrgOps","OptFlds","SvOptFlds","LogOptFlds"};
+                stop(terminalTypes.contains(bt) ? SclCheckState::Rejected : SclCheckState::Uncertain,
+                    terminalTypes.contains(bt) ? QStringLiteral("实际属性不是结构，不能继续展开。") : QStringLiteral("基本类型未支持，不能断言下级路径不存在。"));
+            }
+            check->stoppedAt = parts[i+1]; return;
+        }
+    }
+    check->stoppedAt.clear();
+    bool fcScanComplete = true;
+    if (field.isEmpty()) {
+        QSet<NodeId> ancestors;
+        const auto collect = [&](auto&& self,NodeId objectType,int depth) -> void {
+            Tick();
+            if (objectType == NoNode) { fcScanComplete = false; return; }
+            if (depth >= 32 || ancestors.contains(objectType)) { fcScanComplete = false; out.limited = true; return; }
+            ancestors.insert(objectType);
+            for (auto n = doc.nodes[objectType].firstChild; n != NoNode; n = doc.nodes[n].nextSibling) {
+                Tick(); if (!doc.nodes[n].isScl()) continue;
+                if (doc.nodes[n].name == "DA") addFc(check->fcCandidates,Attr(n,"fc"));
+                else if (doc.nodes[n].name == "SDO") self(self,typeOf(n,LinkKind::MemberType),depth+1);
+            }
+            ancestors.remove(objectType);
+        };
+        collect(collect,type,0);
+    } else check->fcCandidates << effectiveFc;
+    check->fcCandidates.removeDuplicates();
+    if (!fcScanComplete) { stop(SclCheckState::Uncertain,QStringLiteral("对象下级类型/FC 未完整解析，不能宣告完整映射通过。")); return; }
+    if (check->fc.isEmpty() || arrayMissing) {
+        stop(SclCheckState::ContextRequired, arrayMissing ? QStringLiteral("路径存在；需补充数组选择。") : QStringLiteral("路径存在；需补充实际 FC 后核对映射。")); return;
+    }
+    if (field.isEmpty() && !check->fcCandidates.contains(check->fc)) {
+        stop(fcScanComplete ? SclCheckState::Rejected : SclCheckState::Uncertain,
+            fcScanComplete ? QStringLiteral("对象类型没有声明该 FC 的属性。") : QStringLiteral("对象下级类型未完整解析，不能否定此 FC。")); return;
+    }
+    // Resolve the catalog identity; failure under its resource budget is uncertainty, not absence.
+    int signal = -1;
+    const auto signalEntries = s.tasks.signalsByIed.constFind(s.browse.iedOwners[ln]);
+    if (signalEntries != s.tasks.signalsByIed.cend()) for (auto i : *signalEntries) {
+        Tick(); const auto& entry = s.tasks.catalog.instances[i];
+        if (entry.logicalNode == ln && s.tasks.catalog.definitions[entry.definition].path == objectPath) {
+            if (signal >= 0) { stop(SclCheckState::Uncertain,QStringLiteral("对象目录身份歧义。")); return; }
+            signal = i;
+        }
+    }
+    if (signal < 0) { stop(SclCheckState::Uncertain,QStringLiteral("有界对象目录未交付身份；不能据此否定路径。")); return; }
+    const SclMmsScope scope{s.browse.iedOwners[ln],r.scope.accessPoint == NoNode ? Ancestor(ln,"AccessPoint") : r.scope.accessPoint,Ancestor(ln,"Server")};
+    if (field.isEmpty()) {
+        if (arrayDeclaration != NoNode) { stop(SclCheckState::Unsupported,QStringLiteral("对象级数组映射请使用数组查阅入口。")); return; }
+        auto row = Signal(signal); row.addressScope = scope; row.logicalDevice = ld; row.objectPath = objectPath;
+        row.domain = check->domain; row.fc = check->fc; row.state = LinkState::Resolved;
+        row.shape = SclMmsAddressShape::ObjectMember; row.templatePath = path;
+        ComposePlainAddress(row,check->logicalNode,objectPath.split('.'));
+        check->target = row;
+    } else {
+        r.key = {SclMmsRecordKind::Address,ln,signal,0,field,effectiveFc,declaration,arrayDeclaration,arrayIndex};
+        if (arrayDeclaration == NoNode) r.key.arrayIndex = -1;
+        Addresses(signal);
+        if (!reportAttribute || reportAttribute->state != LinkState::Resolved || out.limited) {
+            stop(SclCheckState::Uncertain,QStringLiteral("类型路径存在，现有映射未交付唯一完整地址。")); return;
+        }
+        check->target = *reportAttribute;
+    }
+    const auto& target = *check->target;
+    const auto canonical = object ? target.objectReference : target.item;
+    const auto supplied = object ? check->domain + '/' + input : input;
+    if (canonical != supplied || (!object && target.shape == SclMmsAddressShape::AlternateAccess)) {
+        check->target.reset(); stop(SclCheckState::Unsupported,QStringLiteral("路径已解析，输入尚不能与现有映射完整重组一致；alternate access 组件需独立表示。")); return;
+    }
+    check->mapping = target.domain + '/' + target.item;
+    check->model = QStringLiteral("唯一类型链支持此路径；结构/对象不代表标量读取。");
+    check->state = SclCheckState::Supported; check->mappingPassed = true;
+    out.objectEvidence = std::make_shared<const SclObjectEvidence>(ProjectSclObjectEvidence(s,target,[this] { Tick(); }));
+    if (target.key.kind == SclMmsRecordKind::Address) {
+        // All work, including reverse evidence, shares this Query's Tick budget.
+        DataSetRelations(); check->dataSets = out.dataSetCoverage;
+        for (const auto& row : out.rows) if (!check->coverageKinds.contains(row.reportMatch)) check->coverageKinds << row.reportMatch;
+        out.rows.clear(); out.total = 0;
+    } else {
+        // Object-level coverage uses exactly the same FCDA trace matcher; no virtual leaves.
+        const auto visit = [&](int index) {
+            Tick(); const auto& ref = s.analysis.references[index];
+            if (ref.state != LinkState::Resolved || ref.candidates.size() != 1) {
+                if (CouldSclDataSetMemberAffect(s,target,ref,[this] { Tick(); })) ++check->dataSets.uncertainOccurrences;
+                return;
+            }
+            const auto match = MatchReport(target,ref);
+            if (match == SclMmsReportMatch::None) return;
+            ++check->dataSets.observedMatches;
+            if (!check->coverageKinds.contains(match)) check->coverageKinds << match;
+        };
+        const auto known = s.mmsIndex.dataSetMembersByLogicalNode.constFind(ln);
+        if (known != s.mmsIndex.dataSetMembersByLogicalNode.cend()) for (auto index : *known) visit(index);
+        const auto unknown = s.mmsIndex.uncertainMembersByServer.constFind(scope.server);
+        if (unknown != s.mmsIndex.uncertainMembersByServer.cend()) for (auto index : *unknown) visit(index);
+        check->dataSets.scanComplete = !s.mmsIndex.dataSetIndexLimited && !s.mmsIndex.limited;
+        check->dataSets.conclusion = check->dataSets.observedMatches ? SclDataSetConclusion::Referenced
+            : check->dataSets.scanComplete && !check->dataSets.uncertainOccurrences ? SclDataSetConclusion::NotReferenced : SclDataSetConclusion::Uncertain;
+    }
+}
+
 SclMmsResult Query::Run()
 {
     const bool evidenceQuery = r.kind == SclMmsQueryKind::ObjectEvidence || r.kind == SclMmsQueryKind::DataSetRelations
-        || r.kind == SclMmsQueryKind::NodeEvidence;
+        || r.kind == SclMmsQueryKind::NodeEvidence || r.kind == SclMmsQueryKind::OfflineCheck;
     if (evidenceQuery && r.identityDocument != s.analysis.document) {
         out.limited = true; out.limitation = QStringLiteral("证据查询缺少对应快照身份，或身份已过期。"); return std::move(out);
     }
@@ -1023,6 +1337,7 @@ SclMmsResult Query::Run()
     }
     try {
         switch (r.kind) {
+        case SclMmsQueryKind::OfflineCheck: OfflineCheck(); break;
         case SclMmsQueryKind::Detail: return DescribeSclMms(s, r, task);
         case SclMmsQueryKind::Findings: {
             const auto append = [&](const std::vector<Finding>& findings, int source) {
@@ -1172,15 +1487,32 @@ SclMmsResult Query::Run()
             }
             break;
         }
-    } catch (const BudgetEnd&) {
-        out.limited = true; out.limitation = QStringLiteral("查询工作预算 %1 已用尽；总量为已观察下界。").arg(r.workLimit);
+    } catch (const BudgetEnd& end) {
+        out.limited = true; out.limitation = end.reason.isEmpty()
+            ? QStringLiteral("查询工作预算 %1 已用尽；总量为已观察下界。").arg(r.workLimit) : end.reason;
+        if (out.check) {
+            auto check = std::make_shared<SclOfflineCheck>(*out.check);
+            check->state = SclCheckState::Uncertain; check->mappingPassed = false; check->target.reset();
+            out.check = std::move(check);
+        }
     }
     if (s.mmsIndex.limited) { out.limited = true; out.limitation += QStringLiteral(" MMS 引用索引资源受限。"); }
+    if (out.check && out.limited) {
+        auto check = std::make_shared<SclOfflineCheck>(*out.check);
+        check->state = SclCheckState::Uncertain; check->mappingPassed = false; check->target.reset();
+        out.check = std::move(check);
+    }
     if (r.locate && !out.locateFound) {
         out.rows.clear();
         out.limitation += QStringLiteral(" 未定位到所选身份；可能被范围或筛选遮挡，或查询已受限。");
     }
+    // A check publishes layered evidence only. In particular, a budget failure
+    // during reverse lookup must not trigger unrelated row/reference projections.
+    if (r.kind == SclMmsQueryKind::OfflineCheck) { out.rows.clear(); out.total = 0; }
     out.hasMore = out.total > qint64(out.request.offset) + qint64(out.rows.size()) || out.limited;
+    if (out.check) {
+        auto check = std::make_shared<SclOfflineCheck>(*out.check); check->workUsed = work; out.check = std::move(check);
+    }
     checkpoint(task);
     return std::move(out);
 }
@@ -1188,10 +1520,15 @@ SclMmsResult Query::Run()
 
 SclMmsResult QuerySclMms(const SclSnapshot& s, const SclMmsRequest& request, TaskControl* task)
 {
+    QElapsedTimer timer; if (request.kind == SclMmsQueryKind::OfflineCheck) timer.start();
     auto result = Query(s, request, task).Run();
     for (auto& row : result.rows)
         row.references = ProjectSclMmsReferences(s, row, task);
     if (request.presentation && request.kind != SclMmsQueryKind::Detail) PresentSclMms(s, result, task);
+    if (result.check) {
+        auto check = std::make_shared<SclOfflineCheck>(*result.check); check->elapsedUs = timer.nsecsElapsed()/1000;
+        result.check = std::move(check);
+    }
     return result;
 }
 

@@ -2,6 +2,7 @@
 #include "SclTableInteraction.hpp"
 #include "SclReferenceMenu.hpp"
 #include "SclReferenceTraceView.hpp"
+#include "SclOfflineCheckView.hpp"
 #include "SclTiming.hpp"
 #include "SclTopology.hpp"
 #include <QStackedWidget>
@@ -820,6 +821,41 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
     m_centerPages->addWidget(m_tableModes);
     m_referenceTrace = new SclReferenceTraceView(m_centerPages);
     m_centerPages->addWidget(m_referenceTrace);
+    m_offlineCheck = new SclOfflineCheckView(m_centerPages);
+    m_centerPages->addWidget(m_offlineCheck);
+    auto* checkButton = new QPushButton(QStringLiteral("离线校核"),this);
+    checkButton->setObjectName("SclOpenOfflineCheck");
+    navigation->addWidget(checkButton);
+    connect(checkButton,&QPushButton::clicked,this,&SclWorkspace::OpenOfflineCheck);
+    connect(m_offlineCheck,&SclOfflineCheckView::Changed,this,&SclWorkspace::RememberView);
+    connect(m_offlineCheck,&SclOfflineCheckView::Back,this,[this] { Navigate(-1); });
+    connect(m_offlineCheck,&SclOfflineCheckView::OpenTarget,this,[this](const SclMmsRow& target) {
+        if (!m_snapshot || m_centerPages->currentWidget() != m_offlineCheck) return;
+        const auto result = m_offlineCheck->Result();
+        if (!result || result->document != m_snapshot->analysis.document || !result->check
+            || !result->check->mappingPassed || !result->check->target || result->check->target->key != target.key) return;
+        RememberView();
+        {
+            const QScopedValueRollback<bool> restoring(m_restoring,true);
+            m_centerPages->setCurrentWidget(m_tableModes);
+            ShowTaskView(true); m_taskBrowser->View()->SetPage(SclTaskPages::Mms);
+            m_taskBrowser->View()->MmsView()->OpenCheckedTarget(target);
+        }
+        PushTaskHistory();
+    });
+    connect(m_offlineCheck,&SclOfflineCheckView::InspectConfirmed,this,[this](int node) {
+        if (m_centerPages->currentWidget() != m_offlineCheck) return;
+        OpenMmsAttributeTarget(node);
+    });
+    connect(m_offlineCheck,&SclOfflineCheckView::OpenSource,this,[this](int node) {
+        if (!m_snapshot || m_centerPages->currentWidget() != m_offlineCheck) return;
+        m_inspectorDock->toggleView(true); m_inspector->setCurrentWidget(m_source->parentWidget());
+        // Source is the existing inspector; the check page stays the current history entry.
+        m_sourceDirty = true;
+        Preview(m_snapshot->analysis.source.get(),m_snapshot->analysis.document->nodes[node].source,
+            QStringLiteral("离线校核依据（标签起始位置）"));
+        RememberView();
+    });
     m_taskSwitch = new QPushButton(QStringLiteral("任务视图"), this);
     m_taskSwitch->setObjectName("SclTaskViewSwitch");
     navigation->addWidget(m_taskSwitch);
@@ -1570,6 +1606,7 @@ SclWorkspace::SclWorkspace(QWidget* parent) : QWidget(parent)
 SclWorkspace::~SclWorkspace()
 {
     m_closing = true;
+    m_offlineCheck->SetContext({},{});
     m_advancedEvidence->SetContext({});
     for (auto* object : findChildren<QObject*>()) QObject::disconnect(object, nullptr, this, nullptr);
     QSettings settings(QSettings::defaultFormat(), QSettings::UserScope,
@@ -1588,6 +1625,7 @@ void SclWorkspace::hideEvent(QHideEvent* event)
 {
     CancelAdvancedRestore();
     m_advancedEvidence->Cancel(); m_advancedEvidenceId = 0;
+    m_offlineCheck->Cancel();
     m_overviewQuery->Cancel();
     m_dataSets->CloseUsers();
     m_docks->hideManagerAndFloatingWidgets();
@@ -1672,6 +1710,7 @@ bool SclWorkspace::UpdateSession(Snapshot snapshot, const Scl::Result& failure)
     UpdateHistoryButtons();
     ResetSearch(true);
     m_snapshot = std::move(snapshot);
+    m_offlineCheck->SetContext(m_snapshot,{m_ied});
     m_advancedEvidence->SetContext(m_snapshot); m_advancedEvidenceId = 0;
     m_dataSets->SetContext(m_snapshot, NoNode);
     m_overviewQuery->SetContext(m_snapshot);
@@ -1956,6 +1995,7 @@ void SclWorkspace::SetIedScope(NodeId ied)
     if (m_searchMode->currentIndex() == 1)
         ResetSearch();
     m_ied = ied;
+    m_offlineCheck->SetContext(m_snapshot,{ied});
     m_dataSets->SetContext(m_snapshot, ied);
     m_overviewQuery->SetContext(m_snapshot, {ied});
     m_taskBrowser->SetScope(ied);
@@ -2061,6 +2101,7 @@ void SclWorkspace::RememberView()
             candidate.isValid() ? candidate.data(Qt::UserRole).toInt() : NoNode,
             IsReferenceTrace() ? m_referenceTrace->Location() : nullptr};
         auto& location = m_history[m_historyIndex];
+        location.check = m_centerPages->currentWidget() == m_offlineCheck ? m_offlineCheck->Location() : nullptr;
         location.filter.text = m_query->text(); location.filter.ied = m_iedFilter->text();
         location.filter.type = m_typeFilter->text(); location.filter.fc = m_fcFilter->text();
         location.filter.severity = m_severityFilter->currentIndex() - 1; location.filter.exact = m_exact->isChecked();
@@ -2133,6 +2174,7 @@ void SclWorkspace::OpenMmsAttributeTarget(NodeId node)
     const bool detailsVisible = !m_inspectorDock->isClosed();
     {
         const QScopedValueRollback<bool> restoring(m_restoring, true);
+        LeaveReferenceTrace();
         ShowTaskView(true);
         m_taskBrowser->View()->SetPage(SclTaskPages::Mms);
         m_taskBrowser->View()->MmsView()->OpenAttributeTarget(node, detailsVisible);
@@ -2220,6 +2262,13 @@ void SclWorkspace::Navigate(int direction)
     RememberView();
     const auto location = m_history[next];
     CancelAdvancedRestore();
+    if (location.check) {
+        const QScopedValueRollback<bool> restoring(m_restoring,true);
+        m_historyIndex = next; SetIedScope(location.ied);
+        if (m_offlineCheck->Restore(location.check)) m_centerPages->setCurrentWidget(m_offlineCheck);
+        m_inspectorDock->toggleView(location.inspectorVisible); UpdateHistoryButtons(); return;
+    }
+    if (m_centerPages->currentWidget() == m_offlineCheck) m_centerPages->setCurrentWidget(m_tableModes);
     if (direction == -1 && IsReferenceTrace() && !location.trace) {
         const QPointer<QAbstractItemView> sourceView = m_referenceTrace->SourceView();
         const auto sizes = m_referenceTrace->SourceSplitterSizes();
@@ -2665,6 +2714,17 @@ void SclWorkspace::UpdateReferencePath(const QModelIndex& index)
 
 void SclWorkspace::RefreshSourcePreview()
 {
+    if (m_centerPages->currentWidget() == m_offlineCheck) {
+        const auto id = m_offlineCheck->OpenedSource();
+        m_structureTitle->hide();
+        if (m_snapshot && m_inspector->currentIndex() == 2 && id >= 0
+            && id < int(m_snapshot->analysis.document->nodes.size())) {
+            Preview(m_snapshot->analysis.source.get(),m_snapshot->analysis.document->nodes[id].source,
+                QStringLiteral("离线校核依据（标签起始位置）"));
+            QTimer::singleShot(0,this,&SclWorkspace::BalanceTraceSource);
+        }
+        return;
+    }
     if (IsReferenceTrace()) {
         const auto id = m_referenceTrace->OpenedEvidence();
         if (m_snapshot && m_inspector->currentIndex() == 2 && id >= 0
@@ -2758,10 +2818,24 @@ void SclWorkspace::OpenReferenceTrace(std::shared_ptr<const SclReferenceTraceSel
 
 void SclWorkspace::LeaveReferenceTrace()
 {
+    if (m_centerPages->currentWidget() == m_offlineCheck) m_centerPages->setCurrentWidget(m_tableModes);
     if (!IsReferenceTrace()) return;
     m_centerPages->setCurrentWidget(m_tableModes);
     m_referenceTrace->Clear();
     m_sourceDirty = true;
+}
+
+void SclWorkspace::OpenOfflineCheck()
+{
+    if (!m_snapshot) return;
+    RememberView();
+    {
+        const QScopedValueRollback<bool> restoring(m_restoring,true);
+        LeaveReferenceTrace(); m_offlineCheck->SetContext(m_snapshot,{m_ied});
+        m_centerPages->setCurrentWidget(m_offlineCheck); m_offlineCheck->Open();
+        m_inspectorDock->toggleView(false);
+    }
+    PushTaskHistory();
 }
 
 void SclWorkspace::Preview(const Scl::SourceIndex* source, Scl::SourceLocation location, const QString& path)

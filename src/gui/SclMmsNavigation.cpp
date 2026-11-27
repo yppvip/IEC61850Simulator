@@ -73,6 +73,18 @@ void SclMmsView::OpenAncestor(std::shared_ptr<const Location> location) {
     if (location && location->snapshot == m_snapshot) Commit(*location);
 }
 
+void SclMmsView::OpenCheckedTarget(const SclMmsRow& row) {
+    if (!m_snapshot) return;
+    Location location; location.snapshot = m_snapshot; location.viewIed = row.addressScope.ied;
+    location.request.scope = row.addressScope; location.inspectorVisible = true;
+    location.selected = row.key; location.request.locate = row.key;
+    if (row.key.kind == SclMmsRecordKind::Address) {
+        location.request.kind = SclMmsQueryKind::Addresses; location.request.signal = row.key.record;
+    } else if (row.key.kind == SclMmsRecordKind::Signal) location.request.kind = SclMmsQueryKind::Signals;
+    else return;
+    Commit(std::move(location));
+}
+
 void SclMmsView::ChangePage(int offset) {
     auto location = CurrentLocation(); location.request.offset = offset; location.request.locate.reset();
     location.selected.reset(); location.top.reset(); location.topOffset = 0;

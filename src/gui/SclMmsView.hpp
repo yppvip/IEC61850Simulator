@@ -36,6 +36,7 @@ public:
     void Open(SclMmsQueryKind);
     void OpenNode(Scl::NodeId);
     void OpenAttributeTarget(Scl::NodeId, bool inspectorVisible);
+    void OpenCheckedTarget(const SclMmsRow&);
     Location CurrentLocation() const;
     void RestoreLocation(const Location&);
     void Cancel();

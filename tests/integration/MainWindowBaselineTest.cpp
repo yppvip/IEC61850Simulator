@@ -8,6 +8,7 @@
 #include "SclMmsView.hpp"
 #include "SclDataSetView.hpp"
 #include "SclTableInteraction.hpp"
+#include "SclOfflineCheckView.hpp"
 
 #include <QAction>
 #include <QApplication>
@@ -400,6 +401,8 @@ private slots:
     void SclTask10EvidenceWorkflow();
     void SclTask10AdvancedWorkflow_data();
     void SclTask10AdvancedWorkflow();
+    void SclTask10OfflineWorkflow_data();
+    void SclTask10OfflineWorkflow();
     void SclTask8LocalAcceptance();
     void SclMmsLocalAcceptance();
     void SclMmsReview();
@@ -3323,6 +3326,7 @@ void MainWindowBaselineTest::SclTask8AttributeWorkflow()
 #include "SclTask10Baseline.hpp"
 #include "SclTask10EvidenceWorkflow.hpp"
 #include "SclTask10AdvancedWorkflow.hpp"
+#include "SclTask10OfflineWorkflow.hpp"
 
 void MainWindowBaselineTest::SclTask8ReferenceMenus()
 {

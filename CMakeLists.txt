@@ -94,6 +94,7 @@ add_executable(${AppTarget}
     src/gui/SclWorkspace.cpp
     src/gui/SclWorkspace.hpp
     src/gui/SclReferenceTraceView.cpp src/gui/SclReferenceTraceView.hpp
+    src/gui/SclOfflineCheckView.cpp src/gui/SclOfflineCheckView.hpp
     src/gui/SclDataSetView.cpp src/gui/SclDataSetView.hpp
     src/gui/SclTaskPages.cpp src/gui/SclTaskPages.hpp
     src/gui/SclTableInteraction.cpp src/gui/SclTableInteraction.hpp
@@ -220,6 +221,11 @@ if(BUILD_TESTING)
     target_compile_definitions(SclObjectEvidenceTest PRIVATE SCL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/scl")
     add_test(NAME SclObjectEvidenceTest COMMAND SclObjectEvidenceTest -o -,txt)
     set_tests_properties(SclObjectEvidenceTest PROPERTIES TIMEOUT 30)
+    add_executable(SclOfflineCheckTest tests/unit/SclOfflineCheckTest.cpp)
+    target_link_libraries(SclOfflineCheckTest PRIVATE SclApplication Qt${QT_VERSION_MAJOR}::Test)
+    target_compile_definitions(SclOfflineCheckTest PRIVATE SCL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/scl")
+    add_test(NAME SclOfflineCheckTest COMMAND SclOfflineCheckTest -o -,txt)
+    set_tests_properties(SclOfflineCheckTest PROPERTIES TIMEOUT 30)
 
     add_executable(SclHierarchyQueryTest tests/unit/SclHierarchyQueryTest.cpp)
     target_link_libraries(SclHierarchyQueryTest PRIVATE SclApplication Qt${QT_VERSION_MAJOR}::Test)
@@ -270,6 +276,7 @@ if(BUILD_TESTING)
             src/gui/SclSearchSession.cpp src/gui/SclSearchSession.hpp src/gui/SclWorkspaceSearch.cpp
             src/gui/SclSourcePreview.cpp src/gui/SclSourcePreview.hpp src/gui/SclWorkspaceTopology.cpp src/gui/SclWorkspaceEvidence.cpp)
         target_sources(MainWindowBaselineTest PRIVATE src/gui/SclReferenceTraceView.cpp src/gui/SclReferenceTraceView.hpp)
+        target_sources(MainWindowBaselineTest PRIVATE src/gui/SclOfflineCheckView.cpp src/gui/SclOfflineCheckView.hpp)
         target_include_directories(MainWindowBaselineTest PRIVATE src/gui)
         target_link_libraries(MainWindowBaselineTest PRIVATE Qt${QT_VERSION_MAJOR}::Widgets
             Qt${QT_VERSION_MAJOR}::Test Qt${QT_VERSION_MAJOR}::Concurrent SclApplication ads::qtadvanceddocking-qt${QT_VERSION_MAJOR})
@@ -291,6 +298,8 @@ if(BUILD_TESTING)
         set_tests_properties(MainWindowBaselineTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
         add_test(NAME SclObjectEvidenceWorkflow COMMAND MainWindowBaselineTest SclTask10EvidenceWorkflow -o -,txt)
         add_test(NAME SclAdvancedEvidenceWorkflow COMMAND MainWindowBaselineTest SclTask10AdvancedWorkflow -o -,txt)
+        add_test(NAME SclOfflineCheckWorkflow COMMAND MainWindowBaselineTest SclTask10OfflineWorkflow -o -,txt)
+        set_tests_properties(SclOfflineCheckWorkflow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
         set_tests_properties(SclAdvancedEvidenceWorkflow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
         set_tests_properties(SclObjectEvidenceWorkflow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
         add_test(NAME SclMmsAttributeWorkflow COMMAND MainWindowBaselineTest SclTask8AttributeWorkflow)
